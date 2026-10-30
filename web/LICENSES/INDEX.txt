@@ -1,0 +1,28 @@
+第三方许可清单
+==============
+
+DopusMdViewer 的 web\ 目录随插件分发，其中打包了以下第三方代码。
+每个库的许可全文在同目录下对应文件里；txt 后缀只是便于 Windows 记事本打开。
+
+  文件                         组件                      许可
+  ------------------------------------------------------------------------
+  markdown-it.txt              markdown-it 15.0.3        MIT
+  markdown-it-footnote.txt     markdown-it-footnote 4    MIT
+  markdown-it-deflist.txt      markdown-it-deflist 3     MIT
+  markdown-it-task-lists.txt   markdown-it-task-lists 2  ISC
+  markdown-it-sub.txt          markdown-it-sub 2         MIT
+  markdown-it-sup.txt          markdown-it-sup 2         MIT
+  markdown-it-mark.txt         markdown-it-mark 4        MIT
+  markdown-it-texmath.txt      markdown-it-texmath 1     MIT
+  dompurify.txt                DOMPurify 3.4.17          MPL-2.0 OR Apache-2.0
+  highlight.js.txt             highlight.js 11.12.0      BSD-3-Clause
+  katex.txt                    KaTeX 0.19.1（代码与 CSS）MIT
+  katex-fonts-NOTE.txt         KaTeX 字体（woff2）       SIL OFL 1.1
+  mermaid.txt                  Mermaid 12.2.0            MIT
+
+说明
+----
+- markdown-it-task-lists 是唯一的非 MIT 组件（ISC），义务与 MIT 相同：保留版权与许可全文。
+- DOMPurify 是双许可，取 MPL-2.0 分支：只保留声明即可，未修改其源码。
+- KaTeX 的 woff2 字体属 SIL OFL 1.1，单独说明见 katex-fonts-NOTE.txt。
+- Esbuild 只用于构建，不随插件分发，因此不在本清单内。

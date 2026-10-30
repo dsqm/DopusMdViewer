@@ -1,0 +1,15 @@
+KaTeX 字体（web\fonts\*.woff2）的许可
+=====================================
+
+web\fonts\ 下 20 个 woff2 是 KaTeX 的排版字体，源自 Computer Modern，
+按 SIL Open Font License 1.1 分发；KaTeX 的代码与 CSS 则是 MIT（见 katex.txt）。
+
+KaTeX 0.19.1 的 npm 包与 GitHub 仓库里都不带 OFL 全文（仓库内既没有 OFL.txt，
+fonts\README.md 也不提许可）。每个 woff2 的 name 表里嵌了许可声明（name ID 13），
+所以这里按同样做法给出说明与官方出处，而不自行转录一份可能走样的法条：
+
+  https://scripts.sil.org/OFL
+  https://github.com/KaTeX/KaTeX
+
+OFL 1.1 对再分发的要求是随附许可文本并保留版权声明；字体未被修改、未单独售卖、
+未改名，因此满足其保留字体名与不单独分发的要求。
