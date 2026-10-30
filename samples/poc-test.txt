@@ -1,0 +1,2 @@
+Plain text control file, present only so the smoke host can prove that
+DVP_IdentifyFileW returns FALSE for a non-Markdown extension.

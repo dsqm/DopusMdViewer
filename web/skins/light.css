@@ -1,0 +1,65 @@
+/* name: GitHub Light
+   id: light — 默认皮肤，同时是皮肤模板。
+   26 个（实际 27 个）变量全部列出；只想要配色时改这里就够，
+   要改排版再往下写选择器。字体不归皮肤：font-family / font-size /
+   line-height / 行宽由 <style id="fx"> 最后写出并压住。 */
+
+:root {
+  color-scheme: light;
+
+  /* —— 底与字 —— */
+  --md-bg: #ffffff;
+  --md-bg-alt: #f6f8fa;
+  --md-fg: #1f2328;
+  --md-fg-muted: #656d76;
+  --md-fg-heading: #1f2328;
+  --md-border: #d0d7de;
+
+  /* —— 链接与交互 —— */
+  --md-link: #0969da;
+  --md-link-hover: #0550ae;
+  --md-selection: #b6d7ff;
+  --md-hit: #fff3b0;
+  --md-hit-current: #ffd33d;
+  --md-mark-bg: #fff8c5;
+
+  /* —— 代码 —— */
+  --md-code-bg: #eff1f3;
+  --md-code-fg: #1f2328;
+  --md-block-bg: #f6f8fa;
+  --md-block-fg: #1f2328;
+  --md-block-border: #d0d7de;
+
+  /* —— 引用与表格 —— */
+  --md-quote-bar: #d0d7de;
+  --md-quote-fg: #57606a;
+  --md-table-head-bg: #f6f8fa;
+  --md-table-zebra: #f6f8fa;
+
+  /* —— 滚动条与界面件 —— */
+  --md-scrollbar: #c9d1d9;
+  --md-scrollbar-hover: #adb5bd;
+  --md-outline-bg: #ffffff;
+  --md-outline-fg: #1f2328;
+
+  /* —— 形状 —— */
+  --md-radius: 6px;
+  --md-space-block: 1em;
+}
+
+/* —— 语法高亮 token（不在变量契约内，由皮肤以选择器提供） —— */
+.hljs-keyword, .hljs-selector-tag, .hljs-doctag { color: #cf222e; }
+.hljs-string, .hljs-regexp { color: #0a3069; }
+.hljs-comment, .hljs-quote { color: #6e7781; font-style: italic; }
+.hljs-number, .hljs-literal, .hljs-built_in, .hljs-attr, .hljs-attribute { color: #0550ae; }
+.hljs-title, .hljs-title.function_, .hljs-section { color: #8250df; }
+.hljs-type, .hljs-variable, .hljs-template-variable { color: #953800; }
+.hljs-name, .hljs-tag, .hljs-selector-class, .hljs-selector-id { color: #116329; }
+.hljs-meta, .hljs-symbol, .hljs-bullet, .hljs-link { color: #6e7781; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+.hljs-deletion { color: #82071e; background: #ffebe9; }
+.hljs-addition { color: #116329; background: #dafbe1; }
+
+/* —— 皮肤可以改的排版细节 —— */
+.measure { padding-top: 2em; }

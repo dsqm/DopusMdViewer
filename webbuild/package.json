@@ -1,0 +1,28 @@
+{
+  "name": "dopus-md-viewer-webbuild",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Build-time only: bundles web/app.js and web/mermaid.js. Nothing here is shipped.",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node dev-server.mjs"
+  },
+  "dependencies": {
+    "dompurify": "^3.2.0",
+    "highlight.js": "^11.11.0",
+    "katex": "^0.19.0",
+    "markdown-it": "^15.0.0",
+    "markdown-it-deflist": "^3.0.0",
+    "markdown-it-footnote": "^4.0.0",
+    "markdown-it-mark": "^4.0.0",
+    "markdown-it-sub": "^2.0.0",
+    "markdown-it-sup": "^2.0.0",
+    "markdown-it-task-lists": "^2.1.1",
+    "markdown-it-texmath": "^1.0.0",
+    "mermaid": "^12.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

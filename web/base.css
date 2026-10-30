@@ -1,0 +1,295 @@
+/* ============================================================
+   base.css — 排版骨架，随 web\ 分发。
+
+   颜色：一律取 --md-* 变量，规则里不出现字面色值。
+   类型：一律取 --fx-* 变量（票 06 的三槽位 / px 字号 / 倍数行高 / em 行宽），
+         由 <style id="fx"> 最后覆盖，皮肤改不动。
+   唯一的字面色值集中在 :root 默认块，供"皮肤只写两三行"时兜底。
+   语法高亮的 token 配色不在本文件，由皮肤以选择器提供。
+   ============================================================ */
+
+:root {
+  /* —— 变量契约（票 07，27 个） —— */
+  --md-bg: #ffffff;
+  --md-bg-alt: #f6f8fa;
+  --md-fg: #1f2328;
+  --md-fg-muted: #656d76;
+  --md-fg-heading: #1f2328;
+  --md-border: #d0d7de;
+
+  --md-link: #0969da;
+  --md-link-hover: #0550ae;
+  --md-selection: #b6d7ff;
+  --md-hit: #fff3b0;
+  --md-hit-current: #ffd33d;
+  --md-mark-bg: #fff8c5;
+
+  --md-code-bg: #eff1f3;
+  --md-code-fg: #1f2328;
+  --md-block-bg: #f6f8fa;
+  --md-block-fg: #1f2328;
+  --md-block-border: #d0d7de;
+
+  --md-quote-bar: #d0d7de;
+  --md-quote-fg: #57606a;
+  --md-table-head-bg: #f6f8fa;
+  --md-table-zebra: #f6f8fa;
+
+  --md-scrollbar: #c9d1d9;
+  --md-scrollbar-hover: #adb5bd;
+  --md-outline-bg: #ffffff;
+  --md-outline-fg: #1f2328;
+
+  --md-radius: 6px;
+  --md-space-block: 1em;
+
+  /* —— 字体与行宽（票 06），#fx 会整组覆盖 —— */
+  --fx-ui: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  --fx-body: var(--fx-ui);
+  --fx-mono: "Cascadia Mono", "Consolas", "Courier New", monospace;
+  --fx-size: 15px;
+  --fx-lh: 1.65;
+  --fx-measure: 40em;
+}
+
+/* ---------------- 骨架 ---------------- */
+
+* { box-sizing: border-box; }
+
+html {
+  background: var(--md-bg);
+  scrollbar-color: var(--md-scrollbar) transparent;
+}
+
+body.mdv-root {
+  margin: 0;
+  background: var(--md-bg);
+  color: var(--md-fg);
+  font-family: var(--fx-body);
+  font-size: var(--fx-size);
+  line-height: var(--fx-lh);
+  overflow-wrap: break-word;
+  -webkit-font-smoothing: antialiased;
+}
+
+.measure {
+  max-width: var(--fx-measure);
+  margin: 0 auto;
+  padding: 1.5em 1.5em 3em;
+}
+
+::selection { background: var(--md-selection); }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--md-scrollbar);
+  border: 3px solid var(--md-bg);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--md-scrollbar-hover); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---------------- 区块 ---------------- */
+
+.blk { }
+.blk + .blk { margin-top: var(--md-space-block); }
+.blk--big { }
+
+/* ---------------- 标题 ---------------- */
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 1.6em 0 0.6em;
+  color: var(--md-fg-heading);
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.mdv-root > *:first-child,
+.measure > *:first-child { margin-top: 0; }
+
+h1 { font-size: 2em; padding-bottom: 0.25em; border-bottom: 1px solid var(--md-border); }
+h2 { font-size: 1.5em; padding-bottom: 0.22em; border-bottom: 1px solid var(--md-border); }
+h3 { font-size: 1.22em; }
+h4 { font-size: 1.05em; }
+h5 { font-size: 0.95em; }
+h6 { font-size: 0.9em; color: var(--md-fg-muted); }
+
+/* ---------------- 正文 ---------------- */
+
+p { margin: var(--md-space-block) 0; }
+
+a { color: var(--md-link); text-decoration: none; }
+a:hover { color: var(--md-link-hover); text-decoration: underline; }
+
+strong { font-weight: 600; }
+del { color: var(--md-fg-muted); }
+
+hr {
+  height: 0;
+  margin: 1.8em 0;
+  border: 0;
+  border-top: 2px solid var(--md-border);
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+
+mark {
+  background: var(--md-mark-bg);
+  color: inherit;
+  padding: 0.05em 0.15em;
+  border-radius: 2px;
+}
+
+mark.hit { background: var(--md-hit); }
+mark.hit--current { background: var(--md-hit-current); }
+
+/* ---------------- 列表 ---------------- */
+
+ul, ol { margin: var(--md-space-block) 0; padding-left: 1.9em; }
+li { margin: 0.25em 0; }
+li > ul, li > ol { margin: 0.25em 0; }
+
+li.task-list-item { list-style: none; }
+li.task-list-item > input[type="checkbox"] {
+  margin: 0 0.45em 0 -1.4em;
+  vertical-align: middle;
+}
+
+/* 定义列表 */
+dl { margin: var(--md-space-block) 0; }
+dt { font-weight: 600; margin-top: 0.6em; }
+dd { margin: 0.2em 0 0.2em 1.6em; color: var(--md-fg-muted); }
+
+/* ---------------- 代码 ---------------- */
+
+code, kbd, samp, pre {
+  font-family: var(--fx-mono);
+  font-size: 1em;
+}
+
+:not(pre) > code {
+  font-size: 0.92em;
+  padding: 0.15em 0.35em;
+  background: var(--md-code-bg);
+  color: var(--md-code-fg);
+  border-radius: calc(var(--md-radius) * 0.6);
+}
+
+pre {
+  margin: var(--md-space-block) 0;
+  padding: 0.8em 1em;
+  background: var(--md-block-bg);
+  color: var(--md-block-fg);
+  border: 1px solid var(--md-block-border);
+  border-radius: var(--md-radius);
+  overflow-x: auto;
+  line-height: var(--fx-lh);
+  tab-size: 4;
+}
+
+pre > code {
+  display: block;
+  padding: 0;
+  background: none;
+  color: inherit;
+  border: 0;
+  white-space: pre;
+}
+
+.hljs { background: transparent; }
+
+/* 超过高亮闸门的代码块顶部的说明条 */
+.code-note {
+  margin: 0 0 0.5em;
+  padding-bottom: 0.4em;
+  border-bottom: 1px dashed var(--md-block-border);
+  color: var(--md-fg-muted);
+  font-family: var(--fx-ui);
+  font-size: 0.85em;
+}
+
+/* ---------------- 引用 ---------------- */
+
+blockquote {
+  margin: var(--md-space-block) 0;
+  padding: 0.1em 1em;
+  border-left: 0.25em solid var(--md-quote-bar);
+  color: var(--md-quote-fg);
+}
+
+blockquote > *:first-child { margin-top: 0; }
+blockquote > *:last-child { margin-bottom: 0; }
+
+/* ---------------- 表格 ---------------- */
+
+table {
+  margin: var(--md-space-block) 0;
+  border-collapse: collapse;
+  border-spacing: 0;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+th, td {
+  padding: 0.4em 0.85em;
+  border: 1px solid var(--md-border);
+}
+
+th {
+  background: var(--md-table-head-bg);
+  font-weight: 600;
+}
+
+tbody tr:nth-child(2n) { background: var(--md-table-zebra); }
+
+/* ---------------- 脚注 ---------------- */
+
+.footnotes {
+  margin-top: 2.5em;
+  padding-top: 1em;
+  border-top: 1px solid var(--md-border);
+  font-size: 0.92em;
+  color: var(--md-fg-muted);
+}
+
+.footnotes ol { padding-left: 1.4em; }
+.footnote-ref { font-size: 0.85em; }
+.footnote-backref { text-decoration: none; }
+
+/* ---------------- 公式与图表 ---------------- */
+
+.katex-display {
+  margin: 1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+}
+
+/* 图表保持自然尺寸、容器横向滚动：缩到几百像素宽时字会小到不可读，
+   取舍与代码块保持一致 */
+.mermaid-block {
+  margin: var(--md-space-block) 0;
+  overflow-x: auto;
+  text-align: center;
+}
+.mermaid-block > svg { max-width: none; height: auto; }
+
+pre.mermaid-src {
+  border-left: 0.25em solid var(--md-block-border);
+}
+
+/* ---------------- 界面件（大纲 / 搜索），票 06 的 .ui ---------------- */
+
+.ui {
+  font-family: var(--fx-ui);
+  font-size: 12px;
+  line-height: 1.4;
+  background: var(--md-outline-bg);
+  color: var(--md-outline-fg);
+}

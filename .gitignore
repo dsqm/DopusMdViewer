@@ -1,0 +1,24 @@
+# —— 构建产物 ——
+bin/
+obj/
+*.obj
+*.res
+*.exp
+*.pdb
+*.ilk
+*.exe
+
+# —— 前端打包产物：node build.mjs 重新生成 ——
+web/app.js
+web/mermaid.js
+web/katex.css
+web/fonts/
+
+# —— 前端构建依赖 ——
+webbuild/node_modules/
+
+# —— 会话过程产物：决策地图、票、调研原始输出、验收截图 ——
+.scratch/
+
+# —— 本机临时文件 ——
+*.log

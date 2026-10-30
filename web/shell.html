@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DopusMdViewer</title>
+
+<!-- 三层样式，顺序即层叠顺序：base（本文件）→ skin（C++ 注入）→ fx（字体，永远最后） -->
+<link rel="stylesheet" id="base" href="base.css">
+<link rel="stylesheet" href="katex.css">
+<style id="skin"></style>
+<style id="fx"></style>
+</head>
+
+<body class="mdv-root">
+<div id="doc" class="measure"></div>
+<script src="app.js"></script>
+</body>
+</html>

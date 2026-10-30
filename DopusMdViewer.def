@@ -1,0 +1,13 @@
+; DopusMdViewer.def - export table for the Directory Opus viewer plugin.
+; Names must be undecorated: the implementations are extern "C".
+; Verify after building with: dumpbin /exports bin\DopusMdViewer.dll
+
+LIBRARY DopusMdViewer
+
+EXPORTS
+    DVP_Init
+    DVP_InitEx
+    DVP_Uninit
+    DVP_IdentifyW
+    DVP_IdentifyFileW
+    DVP_CreateViewer
