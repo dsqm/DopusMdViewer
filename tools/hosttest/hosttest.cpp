@@ -24,7 +24,9 @@ const UINT_PTR kQuitTimerId = 1;
 const UINT_PTR kShotTimerId = 2;
 const UINT_PTR kCycleTimerId = 3;
 const UINT_PTR kTwoTimerId = 4;
+const UINT_PTR kTwoCloseTimerId = 5;
 const UINT kTwoAfterMs = 3000;
+const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
 const UINT kQuitAfterMs = 40000;
 const UINT kShotAfterDefaultMs = 5000;
@@ -85,7 +87,7 @@ DWORD WINAPI SecondThreadProc(LPVOID param) {
   ::RegisterClassExW(&wc);
 
   ctx->frame = ::CreateWindowExW(0, kThreadFrameClass, L"thread2", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                                 320, 320, 620, 470, nullptr, nullptr, g_hInst, nullptr);
+                                 1080, 60, 620, 470, nullptr, nullptr, g_hInst, nullptr);
 
   RECT rc;
   ::GetClientRect(ctx->frame, &rc);
@@ -193,6 +195,13 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         ::KillTimer(hwnd, kTwoTimerId);
         g_threadCtx = new ThreadCtx();
         g_thread = ::CreateThread(nullptr, 0, SecondThreadProc, g_threadCtx, 0, nullptr);
+      } else if (wParam == kTwoCloseTimerId) {
+        // 关掉第二个查看器所在的窗口：宿主应当按借用历史交回主线程的那个，
+        // 主窗口的画面要自己回来（这正是 Opus 里关掉独立查看器后侧边栏恢复的路径）。
+        ::KillTimer(hwnd, kTwoCloseTimerId);
+        if (g_threadCtx && g_threadCtx->frame) {
+          ::PostMessageW(g_threadCtx->frame, WM_CLOSE, 0, 0);
+        }
       } else if (wParam == kCycleTimerId) {
         // Opus 换文件时会销毁并重建查看器；这里照做一遍，验证宿主与 controller 能否撑住
         ::KillTimer(hwnd, kCycleTimerId);
@@ -293,6 +302,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_twoThreads) {
     ::SetTimer(g_hwndMain, kTwoTimerId, kTwoAfterMs, nullptr);
+    ::SetTimer(g_hwndMain, kTwoCloseTimerId, kTwoCloseAfterMs, nullptr);
   }
 
   if (g_szShot[0]) {

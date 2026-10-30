@@ -9,7 +9,10 @@
 //     Opus 的查看器窗口通过 SetParent 借用（票 10）。归还必须在 WM_DESTROY 做：
 //     DestroyWindow 会连子窗口一起销毁，等到 WM_NCDESTROY 宿主已经没了。
 //  3. 宿主线程与进程同寿命，controller 不按空闲回收——这样关掉窗口再打开只是
-//     一次 SetParent 加一次推送，不必再付浏览器进程冷启动的两三秒。
+//     一次 SetParent 加一次推送，不必再付浏览器进程冷启动的两三秒。代价是**同一
+//     时刻只有一个查看器有画面**：其它查看器借用会抢走宿主，归还时按借用历史交回
+//     上一个还活着的查看器（WM_MDV_HOST_LOST / WM_MDV_RECLAIM），不这样做关掉一个
+//     窗口就会留下另一片空白。
 //  4. 虚拟主机映射出来的响应由 WebView2 自己合成，加不了响应头；而**映射过的请求
 //     也不会进 WebResourceRequested**（实测：通配过滤器 + ALL 上下文一次都不触发）。
 //     所以 CSP 只能写在 shell.html 的 meta 里。
@@ -67,6 +70,12 @@ struct Host {
 
 Host g_host;
 
+// 借用方历史（MRU，最多 8 个）。宿主只有一个窗口，谁最后借用谁显示；归还时按这里
+// 把宿主交给上一个还活着的查看器，否则关掉一个窗口就会留下另一片空白。
+const int kMaxBorrowHistory = 8;
+HWND g_history[kMaxBorrowHistory] = {};
+int g_historyCount = 0;
+
 // 跨线程读取的标志与句柄。
 volatile LONG g_readyFlag = 0;
 volatile LONG g_hasThread = 0;
@@ -112,6 +121,44 @@ void PostEvent(int kind, const wchar_t* text) {
 void Fail(const wchar_t* reason) {
   LogLine(L"WEBHOST: 失败 - %s", reason);
   PostEvent(MDV_EVT_FAILED, reason);
+}
+
+// ---- 借用历史（只在宿主线程上访问） ----
+
+void HistoryPush(HWND viewer) {
+  if (!viewer) return;
+  int slot = -1;
+  for (int i = 0; i < g_historyCount; ++i) {
+    if (g_history[i] == viewer) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot < 0) {
+    if (g_historyCount < kMaxBorrowHistory) {
+      slot = g_historyCount++;
+    } else {
+      slot = kMaxBorrowHistory - 1;  // 溢出时挤掉最旧的一个
+    }
+  }
+  for (int i = slot; i > 0; --i) g_history[i] = g_history[i - 1];
+  g_history[0] = viewer;
+}
+
+void HistoryDrop(HWND viewer) {
+  for (int i = 0; i < g_historyCount; ++i) {
+    if (g_history[i] != viewer) continue;
+    for (int k = i; k + 1 < g_historyCount; ++k) g_history[k] = g_history[k + 1];
+    --g_historyCount;
+    return;
+  }
+}
+
+HWND HistoryFirstLive(HWND except) {
+  for (int i = 0; i < g_historyCount; ++i) {
+    if (g_history[i] != except && ::IsWindow(g_history[i])) return g_history[i];
+  }
+  return nullptr;
 }
 
 // ---- 宿主线程内部 ----
@@ -297,45 +344,86 @@ void SetChildStyle(bool child) {
   ::SetWindowLongPtrW(g_host.host, GWL_STYLE, style);
 }
 
+// 把宿主塞进 viewer 的客户区。别人正在借用时先通知它「宿主被拿走了」。
+bool BorrowHost(HWND viewer, const RECT* rc) {
+  if (!g_host.host || !viewer || !::IsWindow(viewer)) return false;
+
+  RECT rcClient = {0, 0, 0, 0};
+  if (rc) {
+    rcClient = *rc;
+  } else {
+    ::GetClientRect(viewer, &rcClient);
+  }
+
+  HWND prev = g_host.borrower;
+  if (prev && prev != viewer && ::IsWindow(prev)) {
+    LogLine(L"WEBHOST: 宿主改借 %p（原 %p 转空白）", viewer, prev);
+    ::PostMessageW(prev, WM_MDV_HOST_LOST, 0, 0);
+  } else {
+    LogLine(L"WEBHOST: 借用 → viewer=%p size=%ldx%ld", viewer, rcClient.right - rcClient.left,
+            rcClient.bottom - rcClient.top);
+  }
+
+  HistoryPush(viewer);
+  g_host.borrower = viewer;
+  g_host.borrowed = true;
+
+  SetChildStyle(true);
+  ::SetParent(g_host.host, viewer);
+  ::SetWindowPos(g_host.host, nullptr, 0, 0, rcClient.right - rcClient.left,
+                 rcClient.bottom - rcClient.top, SWP_NOZORDER | SWP_FRAMECHANGED);
+  ::ShowWindow(g_host.host, SW_SHOW);
+
+  if (g_host.controller) g_host.controller->put_Bounds(rcClient);
+  // 宿主可能刚被藏过一阵，强制重画一次，避免回来时是一片旧像素。
+  ::RedrawWindow(g_host.host, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE);
+  return true;
+}
+
+void UnborrowHost(HWND viewer) {
+  if (!g_host.host) return;
+
+  HistoryDrop(viewer);
+
+  if (g_host.borrower != viewer) {
+    // 已经被人抢走了，这里只把自己从历史里摘掉，不能动别人的宿主。
+    LogLine(L"WEBHOST: 归还忽略（%p 已不是借用方）", viewer);
+    return;
+  }
+
+  g_host.borrower = nullptr;
+  g_host.borrowed = false;
+  ::ShowWindow(g_host.host, SW_HIDE);
+  ::SetParent(g_host.host, nullptr);
+  SetChildStyle(false);
+  ::SetWindowPos(g_host.host, nullptr, 0, 0, 1, 1, SWP_NOZORDER | SWP_FRAMECHANGED);
+
+  HWND next = HistoryFirstLive(viewer);
+  LogLine(L"WEBHOST: 归还宿主（controller 保留）%s%p", next ? L"，交回 " : L"", next);
+  if (next) ::PostMessageW(next, WM_MDV_RECLAIM, 0, 0);
+}
+
 LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   switch (uMsg) {
     case kCmdEnsure:
       EnsureEnvironment();
       return 0;
 
-    case kCmdBorrow: {
-      HWND viewer = reinterpret_cast<HWND>(wParam);
-      const RECT* rc = reinterpret_cast<const RECT*>(lParam);
-      if (!viewer || !rc || !g_host.host) return 0;
-
-      g_host.borrower = viewer;
-      SetChildStyle(true);
-      ::SetParent(g_host.host, viewer);
-      ::SetWindowPos(g_host.host, nullptr, 0, 0, rc->right - rc->left, rc->bottom - rc->top,
-                     SWP_NOZORDER | SWP_FRAMECHANGED);
-      ::ShowWindow(g_host.host, SW_SHOW);
-      g_host.borrowed = true;
-
-      if (g_host.controller) g_host.controller->put_Bounds(*rc);
-      LogLine(L"WEBHOST: 借用 → viewer=%p size=%ldx%ld", viewer, rc->right - rc->left,
-              rc->bottom - rc->top);
-      return 1;
-    }
+    case kCmdBorrow:
+      return BorrowHost(reinterpret_cast<HWND>(wParam),
+                        reinterpret_cast<const RECT*>(lParam))
+                 ? 1
+                 : 0;
 
     case kCmdUnborrow:
-      if (!g_host.host) return 0;
-      g_host.borrowed = false;
-      g_host.borrower = nullptr;
-      ::ShowWindow(g_host.host, SW_HIDE);
-      ::SetParent(g_host.host, nullptr);
-      SetChildStyle(false);
-      ::SetWindowPos(g_host.host, nullptr, 0, 0, 1, 1, SWP_NOZORDER | SWP_FRAMECHANGED);
-      LogLine(L"WEBHOST: 归还宿主（controller 保留）");
+      UnborrowHost(reinterpret_cast<HWND>(wParam));
       return 1;
 
     case kCmdBounds: {
       const RECT* rc = reinterpret_cast<const RECT*>(lParam);
       if (!rc || !g_host.host) return 0;
+      if (g_host.borrower != reinterpret_cast<HWND>(wParam)) return 0;
       ::SetWindowPos(g_host.host, nullptr, 0, 0, rc->right - rc->left, rc->bottom - rc->top,
                      SWP_NOZORDER | SWP_NOACTIVATE);
       if (g_host.controller) g_host.controller->put_Bounds(*rc);
@@ -345,6 +433,12 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     case kCmdPost: {
       const std::wstring* text = reinterpret_cast<const std::wstring*>(lParam);
       if (!text || !g_host.webview || !g_host.ready) return 0;
+      if (g_host.borrower != reinterpret_cast<HWND>(wParam)) {
+        // 宿主在别人手里：投递出去只会画进那个看不见的宿主窗口。
+        LogLine(L"WEBHOST: 拒绝投递（%p 不是借用方，当前 %p）",
+                reinterpret_cast<HWND>(wParam), g_host.borrower);
+        return 0;
+      }
 
       const HRESULT hr = g_host.webview->PostWebMessageAsString(text->c_str());
       if (FAILED(hr)) {
@@ -463,10 +557,11 @@ HWND EnsureHostThread() {
 }
 
 // 向宿主线程发命令。宿主线程没建起来或已消失时返回 false。
-bool SendCommand(UINT cmd, WPARAM wParam, LPARAM lParam) {
+bool SendCommand(UINT cmd, WPARAM wParam, LPARAM lParam, LRESULT* result = nullptr) {
   HWND host = EnsureHostThread();
   if (!host || !::IsWindow(host)) return false;
-  ::SendMessageW(host, cmd, wParam, lParam);
+  const LRESULT r = ::SendMessageW(host, cmd, wParam, lParam);
+  if (result) *result = r;
   return true;
 }
 
@@ -476,21 +571,38 @@ bool WebHostEnsure(void) { return SendCommand(kCmdEnsure, 0, 0); }
 
 bool WebHostIsReady(void) { return ::InterlockedCompareExchange(&g_readyFlag, 0, 0) != 0; }
 
-bool WebHostPost(const std::wstring& text) {
-  if (!WebHostIsReady()) return false;
-  return SendCommand(kCmdPost, 0, reinterpret_cast<LPARAM>(&text));
+bool WebHostPost(HWND hViewer, const std::wstring& text) {
+  if (!hViewer || !WebHostIsReady()) return false;
+  LRESULT result = 0;
+  if (!SendCommand(kCmdPost, reinterpret_cast<WPARAM>(hViewer),
+                   reinterpret_cast<LPARAM>(&text), &result)) {
+    return false;
+  }
+  return result != 0;
 }
 
-void WebHostBorrow(HWND hViewer, const RECT& client) {
-  if (!hViewer) return;
-  SendCommand(kCmdBorrow, reinterpret_cast<WPARAM>(hViewer),
-              reinterpret_cast<LPARAM>(&client));
+bool WebHostBorrow(HWND hViewer, const RECT& client) {
+  if (!hViewer) return false;
+  LRESULT result = 0;
+  if (!SendCommand(kCmdBorrow, reinterpret_cast<WPARAM>(hViewer),
+                   reinterpret_cast<LPARAM>(&client), &result)) {
+    return false;
+  }
+  return result != 0;
 }
 
-void WebHostUnborrow(void) { SendCommand(kCmdUnborrow, 0, 0); }
+void WebHostUnborrow(HWND hViewer) {
+  SendCommand(kCmdUnborrow, reinterpret_cast<WPARAM>(hViewer), 0);
+}
 
-void WebHostSetBounds(const RECT& client) {
-  SendCommand(kCmdBounds, 0, reinterpret_cast<LPARAM>(&client));
+bool WebHostSetBounds(HWND hViewer, const RECT& client) {
+  if (!hViewer) return false;
+  LRESULT result = 0;
+  if (!SendCommand(kCmdBounds, reinterpret_cast<WPARAM>(hViewer),
+                   reinterpret_cast<LPARAM>(&client), &result)) {
+    return false;
+  }
+  return result != 0;
 }
 
 bool WebHostSetDocFolder(const std::wstring& dir) {

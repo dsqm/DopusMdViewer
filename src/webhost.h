@@ -18,6 +18,11 @@
 // wParam = MDV_EVT_*，lParam = MDV_EVENT*（接收方负责 delete）。
 #define WM_MDV_EVENT (WM_APP + 0x40)
 
+// 宿主只有一个：被别的查看器借走时，原借用方收到 WM_MDV_HOST_LOST，
+// 归还时按借用历史把宿主交给上一个还活着的查看器，它会收到 WM_MDV_RECLAIM。
+#define WM_MDV_HOST_LOST (WM_APP + 0x41)
+#define WM_MDV_RECLAIM (WM_APP + 0x42)
+
 enum {
   MDV_EVT_READY = 1,    // 页面首帧就绪（text 为空）
   MDV_EVT_FAILED = 2,   // 建不起来（text = 原因）
@@ -35,17 +40,20 @@ bool WebHostEnsure(void);
 // 页面是否已发过 ready（未就绪时 Post 会失败，调用方要先缓存内容）。
 bool WebHostIsReady(void);
 
-// 发一条控制消息；页面未就绪或 controller 不在时返回 false。
-bool WebHostPost(const std::wstring& text);
+// 发一条控制消息。页面未就绪、controller 不在，或 hViewer 不是当前借用方时返回
+// false——**宿主只有一个**，非借用方投递出去的内容会画进看不见的宿主窗口。
+bool WebHostPost(HWND hViewer, const std::wstring& text);
 
-// 把宿主窗口挂到查看器窗口下并铺满 client 区域。事件之后都发给 hViewer。
-void WebHostBorrow(HWND hViewer, const RECT& client);
+// 把宿主窗口挂到查看器窗口下并铺满 client 区域。宿主被借走时原借用方会收到
+// WM_MDV_HOST_LOST。返回 false 表示宿主线程没起来。
+bool WebHostBorrow(HWND hViewer, const RECT& client);
 
-// 归还宿主（隐藏并脱离查看器）。controller 保留，下次借用不必重建。
-void WebHostUnborrow(void);
+// 归还宿主（隐藏并脱离查看器）。只有当前借用方调用才生效；之后宿主按借用历史
+// 交给上一个还活着的查看器（它收到 WM_MDV_RECLAIM）。controller 保留，不必重建。
+void WebHostUnborrow(HWND hViewer);
 
-// 查看器尺寸变化。
-void WebHostSetBounds(const RECT& client);
+// 查看器尺寸变化。非借用方调用会被忽略——否则会把别人的内容缩成自己的尺寸。
+bool WebHostSetBounds(HWND hViewer, const RECT& client);
 
 // 当前文档所在目录 → mddoc.local 虚拟主机；空串表示取消映射。
 bool WebHostSetDocFolder(const std::wstring& dir);

@@ -42,6 +42,7 @@ struct ViewerState {
   bool docPushed;
   bool chromePushed;
   bool webFailed;
+  bool hasHost;  // 宿主此刻是否在本窗口（单宿主，被别的窗口借走时没有画面）
   // DVPNMSTATUSTEXT 的指针在查看器销毁前一直有效，文本要活得比调用长。
   wchar_t szStatus[512];
 };
@@ -173,6 +174,7 @@ RECT ClientRectOf(HWND hwnd) {
 
 // 皮肤与字体永远成对推送：先皮肤，再 fx（fx 最后注入且写全量槽位，压住皮肤）。
 void PushChrome(ViewerState* st) {
+  if (!st->hasHost) return;
   const Config& cfg = ConfigLoad();
 
   std::wstring css;
@@ -184,8 +186,8 @@ void PushChrome(ViewerState* st) {
     }
   }
 
-  WebHostPost(msg::MakeSkin(skinId, css));
-  WebHostPost(msg::MakeFx(cfg.font));
+  WebHostPost(st->hwndSelf, msg::MakeSkin(skinId, css));
+  WebHostPost(st->hwndSelf, msg::MakeFx(cfg.font));
   st->chromePushed = true;
 
   LogLine(L"VIEWER: 已推送皮肤 \"%s\"（%zu 字符）与字体（%dpx / %.2f / %dem）", skinId.c_str(),
@@ -198,6 +200,12 @@ void PushDoc(ViewerState* st) {
     LogLine(L"VIEWER: 页面未就绪，正文先留着（%zu 字符）", st->docText.size());
     return;
   }
+  if (!st->hasHost) {
+    // 宿主在另一个查看器手里。投出去也只会画在那边的窗口上，等它归还再说。
+    LogLine(L"VIEWER: 宿主不在本窗口，正文先留着（%zu 字符）", st->docText.size());
+    st->docPushed = false;
+    return;
+  }
 
   if (!WebHostSetDocFolder(UtilParentDir(st->szFile))) {
     LogLine(L"VIEWER: mddoc.local 映射失败，相对图片不会加载");
@@ -208,7 +216,7 @@ void PushDoc(ViewerState* st) {
   ::QueryPerformanceCounter(&t0);
   LogMemory(L"推送前");
 
-  const bool ok = WebHostPost(msg::MakeDoc(kDocBase, st->docText));
+  const bool ok = WebHostPost(st->hwndSelf, msg::MakeDoc(kDocBase, st->docText));
 
   ::QueryPerformanceCounter(&t1);
   st->docPushed = ok;
@@ -320,8 +328,8 @@ void HandleClear(ViewerState* st) {
   st->docText.clear();
   st->docPushed = false;
 
-  if (WebHostIsReady()) {
-    WebHostPost(msg::MakeDoc(kDocBase, std::wstring()));
+  if (st->hasHost && WebHostIsReady()) {
+    WebHostPost(st->hwndSelf, msg::MakeDoc(kDocBase, std::wstring()));
   }
   ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
 }
@@ -337,12 +345,38 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
       // controller 挂在宿主窗口下；这里只是把宿主借进客户区。
       WebHostEnsure();
-      WebHostBorrow(hwnd, ClientRectOf(hwnd));
+      st->hasHost = WebHostBorrow(hwnd, ClientRectOf(hwnd));
       return 0;
     }
 
     case WM_SIZE:
-      WebHostSetBounds(ClientRectOf(hwnd));
+      if (st->hasHost) WebHostSetBounds(hwnd, ClientRectOf(hwnd));
+      return 0;
+
+    // 宿主被别的查看器借走了。画面跟着走了，这里只剩一块空白，等内容回来再补。
+    case WM_MDV_HOST_LOST:
+      LogLine(L"VIEWER: 宿主被借走，转为空白");
+      st->hasHost = false;
+      st->docPushed = false;
+      ::InvalidateRect(hwnd, nullptr, TRUE);
+      return 0;
+
+    // 宿主还回来了（原先借用它的窗口关了）。重新挂上并把正文再推一遍。
+    case WM_MDV_RECLAIM:
+      if (!WebHostBorrow(hwnd, ClientRectOf(hwnd))) {
+        LogLine(L"VIEWER: 收回宿主失败");
+        return 0;
+      }
+      LogLine(L"VIEWER: 收回宿主，重推正文");
+      st->hasHost = true;
+      st->docPushed = false;
+      PushChrome(st);
+      if (!st->docText.empty()) {
+        PushDoc(st);
+      } else {
+        WebHostPost(hwnd, msg::MakeDoc(kDocBase, std::wstring()));
+      }
+      ::InvalidateRect(hwnd, nullptr, TRUE);
       return 0;
 
     case WM_MDV_EVENT: {
@@ -358,7 +392,9 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       // 必须在这里归还宿主：DestroyWindow 会连子窗口一起销毁，而宿主此刻正是
       // 这个窗口的子窗口。等到 WM_NCDESTROY 就晚了——宿主已经没了，controller
       // 跟着失效（之后每次 postMessage 都是 0x8007139F）。
-      WebHostUnborrow();
+      // 归还后宿主会交给上一个还活着的查看器，所以这里不必自己再推内容。
+      WebHostUnborrow(hwnd);
+      st->hasHost = false;
       return 0;
 
     case WM_ERASEBKGND: {
@@ -372,13 +408,20 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC hdc = ::BeginPaint(hwnd, &ps);
+      RECT rc;
+      ::GetClientRect(hwnd, &rc);
       if (st->webFailed) {
-        RECT rc;
-        ::GetClientRect(hwnd, &rc);
         ::FillRect(hdc, &rc, ::GetSysColorBrush(COLOR_WINDOW));
         ::SetTextColor(hdc, ::GetSysColor(COLOR_WINDOWTEXT));
         ::SetBkMode(hdc, TRANSPARENT);
         ::DrawTextW(hdc, L"WebView2 不可用，无法预览 Markdown。详见日志。", -1, &rc,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      } else if (!st->hasHost) {
+        // 宿主在另一个查看器手里：给一行说明，别留一片白。
+        ::FillRect(hdc, &rc, ::GetSysColorBrush(COLOR_WINDOW));
+        ::SetTextColor(hdc, ::GetSysColor(COLOR_GRAYTEXT));
+        ::SetBkMode(hdc, TRANSPARENT);
+        ::DrawTextW(hdc, L"预览正显示在另一个查看器窗口中", -1, &rc,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       }
       ::EndPaint(hwnd, &ps);
@@ -399,10 +442,10 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       const int iHeight = static_cast<short>(HIWORD(lParam));
       if (iWidth <= 0 || iHeight <= 0) {
         RECT rc = ClientRectOf(hwnd);
-        WebHostSetBounds(rc);
+        WebHostSetBounds(hwnd, rc);
       } else {
         RECT rc = {0, 0, iWidth, iHeight};
-        WebHostSetBounds(rc);
+        WebHostSetBounds(hwnd, rc);
       }
       return 0;
     }
@@ -523,6 +566,7 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->docPushed = false;
   st->chromePushed = false;
   st->webFailed = false;
+  st->hasHost = false;
   st->szStatus[0] = L'\0';
 
   const int cx = rc.right - rc.left;
