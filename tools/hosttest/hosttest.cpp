@@ -23,6 +23,8 @@ const wchar_t kMainClass[] = L"DopusMdViewerHostTest";
 const UINT_PTR kQuitTimerId = 1;
 const UINT_PTR kShotTimerId = 2;
 const UINT_PTR kCycleTimerId = 3;
+const UINT_PTR kTwoTimerId = 4;
+const UINT kTwoAfterMs = 3000;
 const UINT kCycleAfterMs = 5000;
 const UINT kQuitAfterMs = 40000;
 const UINT kShotAfterDefaultMs = 5000;
@@ -31,8 +33,10 @@ wchar_t g_szFile[MAX_PATH * 2] = L"";
 wchar_t g_szShot[MAX_PATH * 2] = L"";
 UINT g_shotAfterMs = kShotAfterDefaultMs;
 bool g_cycle = false;  // 中途销毁查看器再建一个，复现"切走再切回"
+bool g_twoThreads = false;  // 第二个查看器开在另一个线程上，复现预览窗格 + 独立查看器
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
+HINSTANCE g_hInst = nullptr;
 
 // 建一个查看器并让它加载当前文件。cycle 模式用它做第二次。
 HWND CreateViewerOnce() {
@@ -46,6 +50,56 @@ HWND CreateViewerOnce() {
     ::PostMessageW(viewer, DVPLUGINMSG_LOADW, 0, reinterpret_cast<LPARAM>(g_szFile));
   }
   return viewer;
+}
+
+const wchar_t kThreadFrameClass[] = L"DopusMdViewerHostTestThread";
+
+struct ThreadCtx {
+  HWND frame;
+  HWND viewer;
+  DWORD tid;
+};
+
+HANDLE g_thread = nullptr;
+ThreadCtx* g_threadCtx = nullptr;
+
+LRESULT CALLBACK ThreadFrameProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  if (uMsg == WM_DESTROY) {
+    ::PostQuitMessage(0);
+    return 0;
+  }
+  return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+}
+
+// Opus 的独立查看器窗口跑在另一个 UI 线程上，WebView2 的对象是线程绑定的。
+// 这个线程照做一遍：自己的窗口、自己的消息泵、自己的查看器。
+DWORD WINAPI SecondThreadProc(LPVOID param) {
+  ThreadCtx* ctx = static_cast<ThreadCtx*>(param);
+  ctx->tid = ::GetCurrentThreadId();
+
+  WNDCLASSEXW wc = {};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = ThreadFrameProc;
+  wc.hInstance = g_hInst;
+  wc.lpszClassName = kThreadFrameClass;
+  ::RegisterClassExW(&wc);
+
+  ctx->frame = ::CreateWindowExW(0, kThreadFrameClass, L"thread2", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                                 320, 320, 620, 470, nullptr, nullptr, g_hInst, nullptr);
+
+  RECT rc;
+  ::GetClientRect(ctx->frame, &rc);
+  ctx->viewer = ViewerCreate(ctx->frame, &rc, 0);
+  if (ctx->viewer && g_szFile[0]) {
+    ::PostMessageW(ctx->viewer, DVPLUGINMSG_LOADW, 0, reinterpret_cast<LPARAM>(g_szFile));
+  }
+
+  MSG msg;
+  while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    ::TranslateMessage(&msg);
+    ::DispatchMessageW(&msg);
+  }
+  return 0;
 }
 
 // 从屏幕抓客户区，写成 BMP。WebView2 的内容由合成器直接上屏，PrintWindow 拿不到，
@@ -135,6 +189,10 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       } else if (wParam == kShotTimerId) {
         ::KillTimer(hwnd, kShotTimerId);
         SaveClientBmp(g_szShot);
+      } else if (wParam == kTwoTimerId) {
+        ::KillTimer(hwnd, kTwoTimerId);
+        g_threadCtx = new ThreadCtx();
+        g_thread = ::CreateThread(nullptr, 0, SecondThreadProc, g_threadCtx, 0, nullptr);
       } else if (wParam == kCycleTimerId) {
         // Opus 换文件时会销毁并重建查看器；这里照做一遍，验证宿主与 controller 能否撑住
         ::KillTimer(hwnd, kCycleTimerId);
@@ -185,7 +243,8 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   }
 
   while (*p == L' ' || *p == L'\t') ++p;
-  if (*p && (wcsstr(p, L"cycle") || wcsstr(p, L"-c"))) g_cycle = true;
+  if (*p && wcsstr(p, L"cycle")) g_cycle = true;
+  if (*p && wcsstr(p, L"two")) g_twoThreads = true;
 
   wchar_t szTemp[MAX_PATH];
   const DWORD n = ::GetTempPathW(MAX_PATH, szTemp);
@@ -205,6 +264,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     ::SetProcessDPIAware();
   }
 
+  g_hInst = hInstance;
   ExtractArgs(lpCmdLine);
 
   WNDCLASSEXW wc = {};
@@ -230,6 +290,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
   if (g_cycle) {
     ::SetTimer(g_hwndMain, kCycleTimerId, kCycleAfterMs, nullptr);
+  }
+  if (g_twoThreads) {
+    ::SetTimer(g_hwndMain, kTwoTimerId, kTwoAfterMs, nullptr);
   }
 
   if (g_szShot[0]) {

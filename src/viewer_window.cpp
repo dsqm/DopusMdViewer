@@ -49,9 +49,6 @@ struct ViewerState {
 LONG g_liveViewers = 0;
 HINSTANCE g_hInstance = nullptr;
 
-// 同一时刻只有一个查看器借用宿主（多 Lister 并发是雾区，M1 不做）。
-ViewerState* g_sinkOwner = nullptr;
-
 struct MsgEntry {
   UINT uMsg;
   const wchar_t* pszName;
@@ -337,7 +334,6 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       }
 
       // controller 挂在宿主窗口下；这里只是把宿主借进客户区。
-      g_sinkOwner = st;
       WebHostEnsure(MakeSink(st));
       WebHostBorrow(hwnd, ClientRectOf(hwnd));
       return 0;
@@ -447,11 +443,9 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
 
   if (uMsg == WM_NCDESTROY) {
     if (st) {
-      if (g_sinkOwner == st) {
-        g_sinkOwner = nullptr;
-        WebHostSink empty = {};
-        WebHostSetSink(empty);
-      }
+      // 回调里带着 st，窗口没了必须先摘掉，否则事件会落到已释放的状态上
+      WebHostSink empty = {};
+      WebHostSetSink(empty);
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
       LogLine(L"WND %p WM_NCDESTROY 释放状态（共 %u 条消息）", hwnd, st->uMsgSeq);
       delete st;
