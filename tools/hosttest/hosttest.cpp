@@ -1,0 +1,219 @@
+// hosttest.cpp - 把查看器与 WebView2 这条链路搬到 Opus 外面跑。
+//
+// 它不复制任何渲染逻辑：直接调用 src\viewer_window.cpp 的 ViewerCreate 与
+// DVPLUGINMSG_LOADW，所以跑通就等于「Opus 里那条路」跑通，只是省掉每次重启 Opus。
+// 用来验证：宿主窗口、controller、mdprev.local 映射、CSP 头、皮肤/字体/正文推送。
+//
+// 用法：hosttest.exe "C:\path\to\sample.md"
+
+#include <windows.h>
+
+#include <new>
+#include <stdlib.h>
+#include <objidl.h>
+#include <strsafe.h>
+
+#include <viewer plugins.h>  // 在 ..\SDK\Headers，走 INCLUDE
+
+#include "../../src/viewer_window.h"
+
+namespace {
+
+const wchar_t kMainClass[] = L"DopusMdViewerHostTest";
+const UINT_PTR kQuitTimerId = 1;
+const UINT_PTR kShotTimerId = 2;
+const UINT kQuitAfterMs = 40000;
+const UINT kShotAfterDefaultMs = 5000;
+
+wchar_t g_szFile[MAX_PATH * 2] = L"";
+wchar_t g_szShot[MAX_PATH * 2] = L"";
+UINT g_shotAfterMs = kShotAfterDefaultMs;
+HWND g_hwndMain = nullptr;
+
+// 从屏幕抓客户区，写成 BMP。WebView2 的内容由合成器直接上屏，PrintWindow 拿不到，
+// 只能从窗口实际占的屏幕区域取。
+bool SaveClientBmp(const wchar_t* path) {
+  if (!g_hwndMain || !path || !*path) return false;
+
+  RECT rc;
+  ::GetWindowRect(g_hwndMain, &rc);
+  const int cx = rc.right - rc.left;
+  const int cy = rc.bottom - rc.top;
+  if (cx <= 0 || cy <= 0) return false;
+
+  const POINT origin = {rc.left, rc.top};
+
+  HDC hScreen = ::GetDC(nullptr);
+  HDC hMem = ::CreateCompatibleDC(hScreen);
+  HBITMAP hbm = ::CreateCompatibleBitmap(hScreen, cx, cy);
+  HGDIOBJ oldObj = ::SelectObject(hMem, hbm);
+  ::BitBlt(hMem, 0, 0, cx, cy, hScreen, origin.x, origin.y, SRCCOPY);
+  ::SelectObject(hMem, oldObj);
+
+  BITMAPINFOHEADER bih = {};
+  bih.biSize = sizeof(bih);
+  bih.biWidth = cx;
+  bih.biHeight = cy;  // 正数 = 自下而上
+  bih.biPlanes = 1;
+  bih.biBitCount = 32;
+  bih.biCompression = BI_RGB;
+
+  const DWORD cbBits = static_cast<DWORD>(cx) * cy * 4;
+  BITMAPFILEHEADER bfh = {};
+  bfh.bfType = 0x4D42;  // 'BM'
+  bfh.bfOffBits = sizeof(bfh) + sizeof(bih);
+  bfh.bfSize = bfh.bfOffBits + cbBits;
+
+  bool ok = false;
+  HANDLE h = ::CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h != INVALID_HANDLE_VALUE) {
+    DWORD written = 0;
+    ok = ::WriteFile(h, &bfh, sizeof(bfh), &written, nullptr) && written == sizeof(bfh);
+    if (ok) ok = ::WriteFile(h, &bih, sizeof(bih), &written, nullptr) && written == sizeof(bih);
+
+    // GetDIBits 要一个自下而上的缓冲区
+    BYTE* bits = new (std::nothrow) BYTE[cbBits];
+    if (ok && bits) {
+      BITMAPINFO bi = {};
+      bi.bmiHeader = bih;
+      if (::GetDIBits(hMem, hbm, 0, cy, bits, &bi, DIB_RGB_COLORS) != 0) {
+        ok = ::WriteFile(h, bits, cbBits, &written, nullptr) && written == cbBits;
+      } else {
+        ok = false;
+      }
+    } else {
+      ok = false;
+    }
+    delete[] bits;
+    ::CloseHandle(h);
+  }
+
+  ::DeleteObject(hbm);
+  ::DeleteDC(hMem);
+  ::ReleaseDC(nullptr, hScreen);
+  return ok;
+}
+
+void LayoutChildren() {
+  RECT rc;
+  ::GetClientRect(g_hwndMain, &rc);
+  for (HWND child = ::GetWindow(g_hwndMain, GW_CHILD); child;
+       child = ::GetWindow(child, GW_HWNDNEXT)) {
+    ::MoveWindow(child, 0, 0, rc.right - rc.left, rc.bottom - rc.top, TRUE);
+  }
+}
+
+LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  switch (uMsg) {
+    case WM_SIZE:
+      LayoutChildren();
+      return 0;
+
+    case WM_TIMER:
+      if (wParam == kQuitTimerId) {
+        ::KillTimer(hwnd, kQuitTimerId);
+        ::PostQuitMessage(0);
+      } else if (wParam == kShotTimerId) {
+        ::KillTimer(hwnd, kShotTimerId);
+        SaveClientBmp(g_szShot);
+      }
+      return 0;
+
+    case WM_DESTROY:
+      ::PostQuitMessage(0);
+      return 0;
+
+    default:
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+  }
+}
+
+// 命令行里的路径可能带引号；第二个参数是可选截图延时（毫秒）
+void ExtractArgs(LPWSTR pszCmdLine) {
+  if (!pszCmdLine) return;
+  wchar_t* p = pszCmdLine;
+  while (*p == L' ' || *p == L'\t') ++p;
+
+  if (*p == L'"') {
+    ++p;
+    const wchar_t* pEnd = p;
+    while (*pEnd && *pEnd != L'"') ++pEnd;
+    ::StringCchCopyNW(g_szFile, ARRAYSIZE(g_szFile), p,
+                      static_cast<size_t>(pEnd - p));
+    p = const_cast<wchar_t*>(pEnd);
+    if (*p == L'"') ++p;
+  } else {
+    const wchar_t* pEnd = p;
+    while (*pEnd && *pEnd != L' ' && *pEnd != L'\t') ++pEnd;
+    ::StringCchCopyNW(g_szFile, ARRAYSIZE(g_szFile), p, static_cast<size_t>(pEnd - p));
+    p = const_cast<wchar_t*>(pEnd);
+  }
+
+  while (*p == L' ' || *p == L'\t') ++p;
+  if (*p) {
+    const int ms = _wtoi(p);
+    if (ms > 0) g_shotAfterMs = static_cast<UINT>(ms);
+  }
+
+  wchar_t szTemp[MAX_PATH];
+  const DWORD n = ::GetTempPathW(MAX_PATH, szTemp);
+  if (n > 0 && n < MAX_PATH) {
+    ::StringCchPrintfW(g_szShot, ARRAYSIZE(g_szShot), L"%shosttest-shot.bmp", szTemp);
+  }
+}
+
+}  // namespace
+
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int nCmdShow) {
+  (void)hPrev;
+  (void)nCmdShow;
+
+  // 不声明 DPI 感知的话，窗口坐标被系统虚拟化，BitBlt 会抓到错位的区域
+  if (!::SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+    ::SetProcessDPIAware();
+  }
+
+  ExtractArgs(lpCmdLine);
+
+  WNDCLASSEXW wc = {};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = MainProc;
+  wc.hInstance = hInstance;
+  wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+  wc.lpszClassName = kMainClass;
+  if (!::RegisterClassExW(&wc)) return 2;
+
+  g_hwndMain = ::CreateWindowExW(0, kMainClass, L"DopusMdViewer host test",
+                                 WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40, 1000, 780, nullptr,
+                                 nullptr, hInstance, nullptr);
+  if (!g_hwndMain) return 3;
+
+  if (!ViewerRegisterClass(hInstance)) return 4;
+
+  RECT rc;
+  ::GetClientRect(g_hwndMain, &rc);
+  HWND viewer = ViewerCreate(g_hwndMain, &rc, 0);
+  if (!viewer) return 5;
+
+  LayoutChildren();
+
+  if (g_szFile[0]) {
+    ::PostMessageW(viewer, DVPLUGINMSG_LOADW, 0, reinterpret_cast<LPARAM>(g_szFile));
+  }
+
+  if (g_szShot[0]) {
+    ::SetForegroundWindow(g_hwndMain);
+    ::SetTimer(g_hwndMain, kShotTimerId, g_shotAfterMs, nullptr);
+  }
+  ::SetTimer(g_hwndMain, kQuitTimerId, kQuitAfterMs, nullptr);
+
+  MSG msg;
+  while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+    ::TranslateMessage(&msg);
+    ::DispatchMessageW(&msg);
+  }
+
+  return 0;
+}

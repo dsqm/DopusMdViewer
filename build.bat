@@ -37,6 +37,7 @@ if not exist "%W2LIB%"     echo   缺少 WebView2LoaderStatic.lib %W2LIB% & goto :
 if not exist "%OPUSINC%\viewer plugins.h" echo   缺少 Opus 插件头文件 %OPUSINC% & goto :fail
 if not exist "%PROJ%web\app.js" echo   缺少 web\app.js，先在 webbuild 跑 node build.mjs & goto :fail
 
+rem 源文件是 UTF-8 无 BOM 且含中文注释：/utf-8 不可省，否则按 936 解读会报一堆假语法错误
 set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%SDKINC%\winrt;%OPUSINC%;%W2INC%;%PROJ%third_party"
 set "LIB=%MSVC%\lib\x64;%SDKLIB%\ucrt\x64;%SDKLIB%\um\x64"
 
@@ -46,7 +47,7 @@ if not exist "bin\obj" mkdir "bin\obj"
 echo.
 echo [2/5] 编译源文件...
 rem 通配符收集 src 下全部 .cpp，新增文件不用改脚本
-"%CL%" /nologo /c /MT /O2 /W4 /EHsc /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 "/Fo:bin\obj\\" "src\*.cpp"
+"%CL%" /nologo /c /MT /O2 /W4 /EHsc /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /utf-8 "/Fo:bin\obj\\" "src\*.cpp"
 if errorlevel 1 goto :fail
 
 echo.

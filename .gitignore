@@ -22,3 +22,7 @@ webbuild/node_modules/
 
 # —— 本机临时文件 ——
 *.log
+
+# —— 基线样本：脚本生成，不入库 ——
+samples/big-*.md
+

@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- CSP 只能写在这里：虚拟主机映射出来的响应由 WebView2 自己合成，加不了响应头，
+     而映射过的请求也不会走到 WebResourceRequested。唯一因此拿不到的是
+     frame-ancestors，但预览器本身就是顶层文档，用不上那条。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://mddoc.local data:; font-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
 <title>DopusMdViewer</title>
 
 <!-- 三层样式，顺序即层叠顺序：base（本文件）→ skin（C++ 注入）→ fx（字体，永远最后） -->

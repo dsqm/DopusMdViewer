@@ -1,9 +1,9 @@
 /* ============================================================
    开发用静态服务：只为在 Edge 里验收 web\，不随插件分发。
 
-   与线上一致的地方只有 CSP —— 真实环境由 webres.cpp 以响应头下发，
-   这里同样用响应头下发，保证在 Edge 里跑出来的违规数就是 WebView2 里会看到的。
-   唯一差异是 connect-src：开发模式要 fetch 文档与皮肤，线上是 'none'。
+   CSP 的来源只有一处 —— web\shell.html 里的 <meta http-equiv>。线上如此，
+   这里也如此；开发模式唯一放宽的是 connect-src（要 fetch 文档与皮肤），
+   由本服务在内存里改一个词，shell.html 本身保持与线上一致。
 
    用法：
      node dev-server.mjs               → http://127.0.0.1:8731/web/shell.html
@@ -18,19 +18,6 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..') // 工程根：web\ 与 samples\ 都在它下面
-
-const CSP = [
-  "default-src 'none'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' https://mddoc.local data:",
-  "font-src 'self' data:",
-  "connect-src 'self'",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-  "object-src 'none'",
-].join('; ')
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -62,10 +49,17 @@ const server = createServer(async (req, res) => {
   }
 
   try {
-    const body = await readFile(file)
+    let body = await readFile(file)
+
+    // 开发模式要 fetch 本地文档与皮肤，放开同源连接；其余指令原样保留
+    if (path.basename(file) === 'shell.html') {
+      body = Buffer.from(
+        body.toString('utf8').replace("connect-src 'none'", "connect-src 'self'"),
+        'utf8')
+    }
+
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
-      'Content-Security-Policy': CSP,
       'Cache-Control': 'no-store',
     })
     res.end(body)

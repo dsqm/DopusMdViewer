@@ -205,9 +205,12 @@ function applyFx(fx) {
   const mono = fx.mono || '"Cascadia Mono", "Consolas", "Courier New", monospace'
   const body = fx.body || ui // 正文未设时继承界面槽位，解析成字面值写出
 
-  const size = (fx.size || 15) + 'px'
-  const lh = String(fx.lh || 1.65)
-  const measure = fx.measure ? fx.measure + 'em' : '40em'
+  const sizePx = Number.isFinite(fx.size) && fx.size > 0 ? fx.size : 15
+  const lh = Number.isFinite(fx.lh) && fx.lh > 0 ? fx.lh : 1.65
+  // measure 为 0/缺失表示「不限宽」
+  const measure = Number.isFinite(fx.measure) && fx.measure > 0 ? fx.measure + 'em' : 'none'
+
+  const size = sizePx + 'px'
 
   const css = [
     ':root{',
@@ -368,6 +371,8 @@ async function renderMermaidBlocks(root) {
 /* ---------------- 渲染入口 ---------------- */
 
 function renderDocument(source, docBase) {
+  const t0 = performance.now()
+
   if (docBase) state.docBase = docBase
   state.source = source
 
@@ -375,11 +380,24 @@ function renderDocument(source, docBase) {
   const html = sanitize(md.render(body, { docBase: state.docBase }))
   docEl().innerHTML = html
 
+  // 解析 + 清洗 + 挂 DOM 的耗时；M4 的对照基线就取这个数
+  const ms = performance.now() - t0
+
   renderMermaidBlocks(docEl())
-  report('rendered', { bytes: source.length })
+
+  // 附上布局度量：排查"内容列偏心/超宽"这类问题只有数字说话
+  const box = docEl().getBoundingClientRect()
+  const metrics = 'vp=' + window.innerWidth + 'x' + window.innerHeight
+    + ' dpr=' + (window.devicePixelRatio || 1).toFixed(2)
+    + ' col=' + Math.round(box.width) + '@' + Math.round(box.left)
+
+  report('rendered', ms.toFixed(1) + '|' + source.length + '|' + metrics)
+  return ms
 }
 
-/* ---------------- 宿主通道 ---------------- */
+/* ---------------- 宿主通道 ----------------
+   帧格式（票 11 第 5 节）：<type>|<字段…>|<载荷>，载荷永远在最后一个字段，
+   所以正文与 CSS 里出现竖线不会打乱解析。C++ 侧因此不需要 JSON 库。 */
 
 const violations = []
 window.__mdvCspViolations = violations
@@ -387,11 +405,54 @@ window.__mdvCspViolations = violations
 document.addEventListener('securitypolicyviolation', (e) => {
   violations.push(e.violatedDirective + ' ' + (e.blockedURI || '-'))
   document.documentElement.dataset.cspViolations = String(violations.length)
+  // 线上没有开发者工具，违规只能靠日志看见
+  report('csp', e.violatedDirective + ' ' + (e.blockedURI || '-'))
 })
 
-function report(kind, detail) {
+function postRaw(text) {
   const host = window.chrome && window.chrome.webview
-  if (host) host.postMessage(Object.assign({ t: 'event', kind }, detail || {}))
+  if (host) host.postMessage(text)
+}
+
+function report(kind, detail) {
+  postRaw('event|' + kind + '|' + (detail == null ? '' : detail))
+}
+
+function splitFirst(text) {
+  const pos = text.indexOf('|')
+  if (pos < 0) return [text, '']
+  return [text.slice(0, pos), text.slice(pos + 1)]
+}
+
+function onHostMessage(event) {
+  const raw = event.data
+  if (typeof raw !== 'string') return
+
+  const [type, rest] = splitFirst(raw)
+
+  if (type === 'doc') {
+    const [base, text] = splitFirst(rest)
+    renderDocument(text, base || state.docBase)
+    return
+  }
+
+  if (type === 'skin') {
+    const [id, css] = splitFirst(rest)
+    applySkin(css, id || 'light')
+    return
+  }
+
+  if (type === 'fx') {
+    const f = rest.split('|') // ui|body|mono|size|lineHeight|measureEm
+    applyFx({
+      ui: f[0],
+      body: f[1],
+      mono: f[2],
+      size: parseFloat(f[3]),
+      lh: parseFloat(f[4]),
+      measure: parseInt(f[5], 10),
+    })
+  }
 }
 
 document.addEventListener('click', (e) => {
@@ -399,20 +460,12 @@ document.addEventListener('click', (e) => {
   if (!a) return
   e.preventDefault()
   const href = a.getAttribute('data-external') || a.getAttribute('href')
-  if (href && href.charAt(0) !== '#') report('open-external', { url: href })
+  if (href && href.charAt(0) !== '#') postRaw('open|' + href)
 }, true)
-
-function onHostMessage(event) {
-  const msg = event.data
-  if (!msg || typeof msg !== 'object') return
-  if (msg.t === 'skin') applySkin(msg.css, msg.id)
-  else if (msg.t === 'fx') applyFx(msg.fx || msg)
-  else if (msg.t === 'doc') renderDocument(msg.text || '', msg.base || state.docBase)
-}
 
 if (window.chrome && window.chrome.webview) {
   window.chrome.webview.addEventListener('message', onHostMessage)
-  window.chrome.webview.postMessage({ t: 'ready' })
+  postRaw('ready')
 }
 
 /* ---------------- 开发模式（只在 Edge 里用，线上走 postMessage） ---------------- */
