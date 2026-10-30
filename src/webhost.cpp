@@ -273,7 +273,17 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       return 0;
 
     case WM_NCDESTROY:
+      // 宿主真被销毁了（例如被父窗口带着一起走）。把状态清干净，下一次借用重建，
+      // 否则 g_host/g_controller 会成为悬空句柄，之后每次推送都失败。
+      ::KillTimer(hwnd, kIdleTimerId);
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+      ReleaseController();
+      g_host = nullptr;
+      g_env.Reset();
+      g_creating = false;
+      g_borrowed = false;
+      g_ready = false;
+      LogLine(L"WEBHOST: 宿主窗口被销毁，状态已重置");
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
 
     default:
@@ -333,7 +343,7 @@ bool WebHostEnsure(const WebHostSink& sink) {
 
 void WebHostSetSink(const WebHostSink& sink) { g_sink = sink; }
 
-bool WebHostIsReady(void) { return g_ready && g_webview; }
+bool WebHostIsReady(void) { return g_ready && g_webview && g_host && ::IsWindow(g_host); }
 
 bool WebHostPost(const std::wstring& text) {
   if (!g_webview || !g_ready) return false;
@@ -342,13 +352,26 @@ bool WebHostPost(const std::wstring& text) {
   if (FAILED(hr)) {
     LogLine(L"WEBHOST: PostWebMessageAsString 失败 hr=0x%08X（%zu 字符）",
             static_cast<unsigned>(hr), text.size());
+
+    // 0x8007139F = RO_E_CLOSED：controller 或它的父窗口已经没了。清掉，等下一次
+    // 借用重建，不要留着一个永远推不进去的实例。
+    if (static_cast<unsigned>(hr) == 0x8007139Fu) {
+      LogLine(L"WEBHOST: controller 已失效，重置后等下次借用重建");
+      ReleaseController();
+      if (g_host && !::IsWindow(g_host)) g_host = nullptr;
+    }
     return false;
   }
   return true;
 }
 
 void WebHostBorrow(HWND hViewer, const RECT& client) {
-  if (!g_host || !hViewer) return;
+  if (!hViewer) return;
+  if (!g_host || !::IsWindow(g_host)) {
+    // 宿主已经不在了（被销毁或从未建起来），重建一个
+    g_host = nullptr;
+    if (!EnsureHostWindow()) return;
+  }
 
   ::KillTimer(g_host, kIdleTimerId);
 
@@ -366,7 +389,10 @@ void WebHostBorrow(HWND hViewer, const RECT& client) {
 }
 
 void WebHostUnborrow(void) {
-  if (!g_host) return;
+  if (!g_host || !::IsWindow(g_host)) {
+    g_borrowed = false;
+    return;
+  }
 
   g_borrowed = false;
   ::ShowWindow(g_host, SW_HIDE);
@@ -380,7 +406,7 @@ void WebHostUnborrow(void) {
 }
 
 void WebHostSetBounds(const RECT& client) {
-  if (!g_host) return;
+  if (!g_host || !::IsWindow(g_host)) return;
   ::SetWindowPos(g_host, nullptr, 0, 0, client.right - client.left, client.bottom - client.top,
                  SWP_NOZORDER | SWP_NOACTIVATE);
   if (g_controller) g_controller->put_Bounds(client);

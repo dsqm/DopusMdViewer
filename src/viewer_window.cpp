@@ -110,6 +110,22 @@ const wchar_t* MsgName(UINT uMsg) {
   return psz ? psz : L"UNKNOWN";
 }
 
+// 鼠标移动与命中测试每秒能来上百条，而每条日志都要开一次文件。它们对排查没有
+// 价值，直接不记——鼠标掠过预览窗格时曾经一次会话刷出三千多行。
+bool IsNoisyMessage(UINT uMsg) {
+  switch (uMsg) {
+    case WM_MOUSEMOVE:
+    case WM_SETCURSOR:
+    case WM_NCHITTEST:
+    case WM_MOUSEACTIVATE:
+    case WM_GETDLGCODE:
+    case WM_PRINTCLIENT:
+      return true;
+    default:
+      return false;
+  }
+}
+
 double QpcMs(LONGLONG from, LONGLONG to) {
   static LONGLONG freq = 0;
   if (freq == 0) {
@@ -331,6 +347,13 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       WebHostSetBounds(ClientRectOf(hwnd));
       return 0;
 
+    case WM_DESTROY:
+      // 必须在这里归还宿主：DestroyWindow 会连子窗口一起销毁，而宿主此刻正是
+      // 这个窗口的子窗口。等到 WM_NCDESTROY 就晚了——宿主已经没了，controller
+      // 跟着失效（之后每次 postMessage 都是 0x8007139F）。
+      WebHostUnborrow();
+      return 0;
+
     case WM_ERASEBKGND: {
       RECT rc;
       ::GetClientRect(hwnd, &rc);
@@ -417,12 +440,13 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
 
   if (st) {
     ++st->uMsgSeq;
-    LogLine(L"WND %p MSG #%u %s (0x%04X)", hwnd, st->uMsgSeq, MsgName(uMsg), uMsg);
+    if (!IsNoisyMessage(uMsg)) {
+      LogLine(L"WND %p MSG #%u %s (0x%04X)", hwnd, st->uMsgSeq, MsgName(uMsg), uMsg);
+    }
   }
 
   if (uMsg == WM_NCDESTROY) {
     if (st) {
-      WebHostUnborrow();
       if (g_sinkOwner == st) {
         g_sinkOwner = nullptr;
         WebHostSink empty = {};

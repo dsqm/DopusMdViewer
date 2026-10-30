@@ -22,13 +22,31 @@ namespace {
 const wchar_t kMainClass[] = L"DopusMdViewerHostTest";
 const UINT_PTR kQuitTimerId = 1;
 const UINT_PTR kShotTimerId = 2;
+const UINT_PTR kCycleTimerId = 3;
+const UINT kCycleAfterMs = 5000;
 const UINT kQuitAfterMs = 40000;
 const UINT kShotAfterDefaultMs = 5000;
 
 wchar_t g_szFile[MAX_PATH * 2] = L"";
 wchar_t g_szShot[MAX_PATH * 2] = L"";
 UINT g_shotAfterMs = kShotAfterDefaultMs;
+bool g_cycle = false;  // 中途销毁查看器再建一个，复现"切走再切回"
 HWND g_hwndMain = nullptr;
+HWND g_viewer = nullptr;
+
+// 建一个查看器并让它加载当前文件。cycle 模式用它做第二次。
+HWND CreateViewerOnce() {
+  RECT rc;
+  ::GetClientRect(g_hwndMain, &rc);
+
+  HWND viewer = ViewerCreate(g_hwndMain, &rc, 0);
+  if (!viewer) return nullptr;
+
+  if (g_szFile[0]) {
+    ::PostMessageW(viewer, DVPLUGINMSG_LOADW, 0, reinterpret_cast<LPARAM>(g_szFile));
+  }
+  return viewer;
+}
 
 // 从屏幕抓客户区，写成 BMP。WebView2 的内容由合成器直接上屏，PrintWindow 拿不到，
 // 只能从窗口实际占的屏幕区域取。
@@ -117,6 +135,15 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       } else if (wParam == kShotTimerId) {
         ::KillTimer(hwnd, kShotTimerId);
         SaveClientBmp(g_szShot);
+      } else if (wParam == kCycleTimerId) {
+        // Opus 换文件时会销毁并重建查看器；这里照做一遍，验证宿主与 controller 能否撑住
+        ::KillTimer(hwnd, kCycleTimerId);
+        if (g_viewer) {
+          ::DestroyWindow(g_viewer);
+          g_viewer = nullptr;
+        }
+        g_viewer = CreateViewerOnce();
+        LayoutChildren();
       }
       return 0;
 
@@ -154,7 +181,11 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p) {
     const int ms = _wtoi(p);
     if (ms > 0) g_shotAfterMs = static_cast<UINT>(ms);
+    while (*p && *p != L' ' && *p != L'\t') ++p;
   }
+
+  while (*p == L' ' || *p == L'\t') ++p;
+  if (*p && (wcsstr(p, L"cycle") || wcsstr(p, L"-c"))) g_cycle = true;
 
   wchar_t szTemp[MAX_PATH];
   const DWORD n = ::GetTempPathW(MAX_PATH, szTemp);
@@ -192,15 +223,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
   if (!ViewerRegisterClass(hInstance)) return 4;
 
-  RECT rc;
-  ::GetClientRect(g_hwndMain, &rc);
-  HWND viewer = ViewerCreate(g_hwndMain, &rc, 0);
-  if (!viewer) return 5;
+  g_viewer = CreateViewerOnce();
+  if (!g_viewer) return 5;
 
   LayoutChildren();
 
-  if (g_szFile[0]) {
-    ::PostMessageW(viewer, DVPLUGINMSG_LOADW, 0, reinterpret_cast<LPARAM>(g_szFile));
+  if (g_cycle) {
+    ::SetTimer(g_hwndMain, kCycleTimerId, kCycleAfterMs, nullptr);
   }
 
   if (g_szShot[0]) {
