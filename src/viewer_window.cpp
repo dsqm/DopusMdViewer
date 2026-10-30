@@ -218,19 +218,17 @@ void PushDoc(ViewerState* st) {
   if (ok) LogMemory(L"推送后");
 }
 
-// ---- 页面回调（都在 Opus 的 UI 线程上） ----
+// ---- 宿主事件（由宿主线程 PostMessage 过来，运行在查看器自己的线程上） ----
 
-void OnWebReady(void* ctx) {
-  ViewerState* st = static_cast<ViewerState*>(ctx);
-  if (!st) return;
-
+void OnHostReady(ViewerState* st) {
   if (!st->chromePushed) PushChrome(st);
   if (!st->docText.empty() && !st->docPushed) PushDoc(st);
 }
 
-void OnWebEvent(void* ctx, const std::wstring& type, const std::wstring& rest) {
-  ViewerState* st = static_cast<ViewerState*>(ctx);
-  if (!st) return;
+void OnHostMessage(ViewerState* st, const std::wstring& frame) {
+  std::wstring type;
+  std::wstring rest;
+  if (!msg::SplitType(frame, &type, &rest)) return;
 
   if (type == L"event") {
     const std::wstring kind = msg::SecondField(rest);
@@ -253,22 +251,26 @@ void OnWebEvent(void* ctx, const std::wstring& type, const std::wstring& rest) {
   }
 }
 
-void OnWebFailed(void* ctx, const wchar_t* reason) {
-  ViewerState* st = static_cast<ViewerState*>(ctx);
-  if (st) {
-    st->webFailed = true;
-    SetStatus(st, L"预览不可用：%s", reason ? reason : L"WebView2 初始化失败");
-    ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
-  }
+void OnHostFailed(ViewerState* st, const wchar_t* reason) {
+  st->webFailed = true;
+  SetStatus(st, L"预览不可用：%s", reason ? reason : L"WebView2 初始化失败");
+  ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
 }
 
-WebHostSink MakeSink(ViewerState* st) {
-  WebHostSink sink = {};
-  sink.ctx = st;
-  sink.onReady = &OnWebReady;
-  sink.onEvent = &OnWebEvent;
-  sink.onFailed = &OnWebFailed;
-  return sink;
+void HandleHostEvent(ViewerState* st, int kind, const wchar_t* text) {
+  switch (kind) {
+    case MDV_EVT_READY:
+      OnHostReady(st);
+      return;
+    case MDV_EVT_FAILED:
+      OnHostFailed(st, text);
+      return;
+    case MDV_EVT_MESSAGE:
+      if (text) OnHostMessage(st, std::wstring(text));
+      return;
+    default:
+      return;
+  }
 }
 
 // ---- 消息处理 ----
@@ -334,7 +336,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       }
 
       // controller 挂在宿主窗口下；这里只是把宿主借进客户区。
-      WebHostEnsure(MakeSink(st));
+      WebHostEnsure();
       WebHostBorrow(hwnd, ClientRectOf(hwnd));
       return 0;
     }
@@ -342,6 +344,15 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_SIZE:
       WebHostSetBounds(ClientRectOf(hwnd));
       return 0;
+
+    case WM_MDV_EVENT: {
+      MDV_EVENT* evt = reinterpret_cast<MDV_EVENT*>(lParam);
+      if (!evt) return 0;
+      HandleHostEvent(st, evt->kind, evt->text);
+      delete[] evt->text;
+      delete evt;
+      return 0;
+    }
 
     case WM_DESTROY:
       // 必须在这里归还宿主：DestroyWindow 会连子窗口一起销毁，而宿主此刻正是
@@ -443,9 +454,6 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
 
   if (uMsg == WM_NCDESTROY) {
     if (st) {
-      // 回调里带着 st，窗口没了必须先摘掉，否则事件会落到已释放的状态上
-      WebHostSink empty = {};
-      WebHostSetSink(empty);
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
       LogLine(L"WND %p WM_NCDESTROY 释放状态（共 %u 条消息）", hwnd, st->uMsgSeq);
       delete st;

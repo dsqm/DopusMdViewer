@@ -238,7 +238,10 @@ function applyFx(fx) {
 /* ---------------- Mermaid（按需） ---------------- */
 
 function loadMermaid() {
-  if (state.mermaidState === 'ready') return Promise.resolve(window.mermaid)
+  // 打包成 IIFE 后 window.mermaid 是模块命名空间（{default: api}），
+  // 真正可用的对象只在 onload 里解包过一次，必须用缓存的那一个：
+  // 直接返回 window.mermaid 会让第二次渲染拿到没有 render 方法的命名空间对象。
+  if (state.mermaidState === 'ready' && state.mermaidApi) return Promise.resolve(state.mermaidApi)
   if (state.mermaidState === 'loading') return state.mermaidPromise
 
   state.mermaidState = 'loading'
@@ -268,6 +271,8 @@ function loadMermaid() {
 }
 
 let mermaidSeq = 0
+// 每次换文档 +1；异步渲染回来时对不上就丢弃（DOM 已经被整片替换）
+let renderGeneration = 0
 
 /* 图表的配色不跟 mermaid 自带的 light/dark 主题走，而是把皮肤变量映射成
    themeVariables —— 否则四套皮肤里只有两套能对上，solarized 一定错色。 */
@@ -326,7 +331,7 @@ function initMermaid(api) {
   })
 }
 
-async function renderMermaidBlocks(root) {
+async function renderMermaidBlocks(root, generation) {
   const pending = root.querySelectorAll('[data-mermaid="pending"]')
   if (!pending.length) return
 
@@ -341,6 +346,7 @@ async function renderMermaidBlocks(root) {
   }
 
   for (const el of pending) {
+    if (generation !== renderGeneration) return
     const srcEl = el.querySelector('code')
     const src = srcEl ? srcEl.textContent : ''
     const id = 'mdv-mermaid-' + (++mermaidSeq)
@@ -349,6 +355,7 @@ async function renderMermaidBlocks(root) {
         api.render(id, src),
         new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000)),
       ])
+      if (generation !== renderGeneration) return
       const svg = DOMPurify.sanitize(out.svg, {
         USE_PROFILES: { svg: true, svgFilters: true },
         // mermaid 把配色与字体写进 SVG 内联 <style>，剥掉就只剩框没有字
@@ -356,7 +363,9 @@ async function renderMermaidBlocks(root) {
       })
       el.innerHTML = svg
       el.setAttribute('data-mermaid', 'done')
-    } catch {
+    } catch (err) {
+      // 线上没有控制台，失败原因只能回流到日志
+      report('mermaid-error', (err && (err.name + ': ' + err.message)) || String(err))
       try {
         api.parseError && api.parseError(null)
       } catch { /* 忽略清理异常 */ }
@@ -372,6 +381,7 @@ async function renderMermaidBlocks(root) {
 
 function renderDocument(source, docBase) {
   const t0 = performance.now()
+  const generation = ++renderGeneration
 
   if (docBase) state.docBase = docBase
   state.source = source
@@ -383,7 +393,7 @@ function renderDocument(source, docBase) {
   // 解析 + 清洗 + 挂 DOM 的耗时；M4 的对照基线就取这个数
   const ms = performance.now() - t0
 
-  renderMermaidBlocks(docEl())
+  renderMermaidBlocks(docEl(), generation)
 
   // 附上布局度量：排查"内容列偏心/超宽"这类问题只有数字说话
   const box = docEl().getBoundingClientRect()
