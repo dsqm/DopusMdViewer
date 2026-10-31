@@ -214,17 +214,15 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"bubbles:true,cancelable:true}));"
             L"setTimeout(function(){var V=window.__mdv.V;"
             L"window.chrome.webview.postMessage('event|scrolltest|off='+Math.round(V.off)+"
-            L"' total='+Math.round(V.totalH)+' blocks='+V.blockCount+' win='+V.windowStart+'-'+V.windowEnd+"
-            L"' resident='+V.resident.size);},2500);"
+            L"' total='+Math.round(V.totalH)+' blocks='+V.blockCount"
+            L"+' win='+V.windowStart+'-'+V.windowEnd+' resident='+V.resident.size);},2500);"
             L"setTimeout(function(){var n=0,last=performance.now(),max=0,t0=last;"
             L"function step(t){window.dispatchEvent(new WheelEvent('wheel',{deltaY:-160,"
             L"deltaMode:0,cancelable:true}));var d=t-last;last=t;if(d>max)max=d;n++;"
             L"if(t-t0<1200)requestAnimationFrame(step);"
             L"else window.chrome.webview.postMessage('event|fps|frames='+n+\" max=\"+Math.round(max));}"
             L"requestAnimationFrame(step);},3000);";
-        if (g_viewer && !WebHostExecuteScript(g_viewer, script)) {
-          ::OutputDebugStringW(L"hosttest: scroll script failed");
-        }
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kCycleTimerId) {
         // Opus 换文件时会销毁并重建查看器；这里照做一遍，验证宿主与 controller 能否撑住
         ::KillTimer(hwnd, kCycleTimerId);

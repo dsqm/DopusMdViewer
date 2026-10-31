@@ -267,14 +267,17 @@ void CreateController() {
 
                       std::string body;
                       int status = 404;
-                      docsrc::Serve(uri, &body, &status);
+                      std::wstring contentType = L"application/octet-stream";
+                      if (!docsrc::ServeAsset(uri, &body, &status, &contentType)) {
+                        status = 404;
+                        if (!docsrc::Serve(uri, &body, &status)) return S_OK;
+                      }
                       if (status != 200) return S_OK;
 
-                      static int s_blockRequests = 0;
-                      if (s_blockRequests < 60) {
-                        ++s_blockRequests;
-                        LogLine(L"WEBHOST: 块请求 %s -> %zu B status=%d", uri.c_str(), body.size(),
-                              status);
+                      static int s_requests = 0;
+                      if (s_requests < 40) {
+                        ++s_requests;
+                        LogLine(L"WEBHOST: 资源请求 %s -> %zu B", uri.c_str(), body.size());
                       }
 
                       static const BYTE kEmpty = 0;
@@ -284,14 +287,15 @@ void CreateController() {
                       ComPtr<IStream> stream;
                       stream.Attach(::SHCreateMemStream(data, static_cast<UINT>(body.size())));
 
+                      const std::wstring headers =
+                          L"Content-Type: " + contentType + L"\r\n" +
+                          L"Cache-Control: no-store\r\n" +
+                          L"Access-Control-Allow-Origin: *\r\n";
+
                       ComPtr<ICoreWebView2WebResourceResponse> response;
                       if (g_host.env && stream) {
-                        g_host.env->CreateWebResourceResponse(
-                            stream.Get(), status, L"OK",
-                            L"Content-Type: application/octet-stream\r\n"
-                            L"Cache-Control: no-store\r\n"
-                            L"Access-Control-Allow-Origin: *\r\n",
-                            &response);
+                        g_host.env->CreateWebResourceResponse(stream.Get(), status, L"OK",
+                                                              headers.c_str(), &response);
                         args->put_Response(response.Get());
                       }
                       return S_OK;
@@ -520,6 +524,8 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         LogLine(L"WEBHOST: 取消 %s 映射", kDocHost);
         return 1;
       }
+      // 图片已改走 mdblocks.local/__asset：虚拟主机映射出来的跨源 <img> 会
+      // 直接 onerror，这台映射留给后续需要同源读取的场景，仍按 DENY_CORS 收口。
       const HRESULT hr = g_host.webview3->SetVirtualHostNameToFolderMapping(
           kDocHost, dir->c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
       LogLine(L"WEBHOST: 映射 %s → %s hr=0x%08X", kDocHost, dir->c_str(),

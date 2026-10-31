@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cwctype>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -25,9 +26,16 @@ constexpr uint8_t kFlagTruncated = 0x80;
 struct Snapshot {
   std::unique_ptr<doc::IndexBuilder> builder;
   std::wstring path;
+  std::wstring folder;
   uint64_t fileSize = 0;
   doc::EncodingInfo enc;
 };
+
+std::wstring ParentDirOf(const std::wstring& path) {
+  const size_t pos = path.find_last_of(L"/" + std::wstring(1, static_cast<wchar_t>(92)));
+  if (pos == std::wstring::npos) return std::wstring();
+  return path.substr(0, pos);
+}
 
 std::mutex g_mu;
 std::shared_ptr<const Snapshot> g_snap;
@@ -129,6 +137,7 @@ std::shared_ptr<const Snapshot> MakeSnapshot(std::unique_ptr<doc::IndexBuilder> 
   auto snap = std::make_shared<Snapshot>();
   snap->builder = std::move(builder);
   snap->path = path;
+  snap->folder = ParentDirOf(path);
   snap->fileSize = fileSize;
   snap->enc = snap->builder->encoding();
   return snap;
@@ -252,6 +261,142 @@ uint32_t PublishedBlockCount() {
   std::lock_guard<std::mutex> lock(g_mu);
   if (!g_snap) return 0;
   return g_snap->builder->index().BlockCount();
+}
+
+int HexVal(wchar_t c) {
+  if (c >= L'0' && c <= L'9') return static_cast<int>(c - L'0');
+  if (c >= L'a' && c <= L'f') return static_cast<int>(c - L'a') + 10;
+  if (c >= L'A' && c <= L'F') return static_cast<int>(c - L'A') + 10;
+  return -1;
+}
+
+// 把 URL 里的百分号编码还原成 UTF-8，再转成宽字符路径。
+bool PercentDecode(const std::wstring& in, std::wstring* out) {
+  std::string bytes;
+  bytes.reserve(in.size());
+  for (size_t i = 0; i < in.size(); ++i) {
+    const wchar_t c = in[i];
+    if (c == L'%' && i + 2 < in.size()) {
+      const int hi = HexVal(in[i + 1]);
+      const int lo = HexVal(in[i + 2]);
+      if (hi < 0 || lo < 0) return false;
+      bytes.push_back(static_cast<char>((hi << 4) | lo));
+      i += 2;
+      continue;
+    }
+    if (c < 0x80) {
+      bytes.push_back(static_cast<char>(c));
+      continue;
+    }
+    char buf[4];
+    const int n = ::WideCharToMultiByte(CP_UTF8, 0, &c, 1, buf, sizeof(buf), nullptr, nullptr);
+    if (n <= 0) return false;
+    bytes.append(buf, static_cast<size_t>(n));
+  }
+  if (bytes.empty()) return false;
+  const int wlen = ::MultiByteToWideChar(CP_UTF8, 0, bytes.data(),
+                                         static_cast<int>(bytes.size()), nullptr, 0);
+  if (wlen <= 0) return false;
+  out->resize(static_cast<size_t>(wlen));
+  ::MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(bytes.size()), &(*out)[0],
+                        wlen);
+  return true;
+}
+
+bool SafeRelativePath(const std::wstring& rel) {
+  if (rel.empty()) return false;
+  if (rel[0] == L'/' || rel[0] == L'\\') return false;
+  if (rel.find(L':') != std::wstring::npos) return false;
+  size_t start = 0;
+  while (start <= rel.size()) {
+    const size_t pos = rel.find_first_of(L"/\\", start);
+    const std::wstring part =
+        rel.substr(start, pos == std::wstring::npos ? std::wstring::npos : pos - start);
+    if (part == L"..") return false;
+    if (part.empty() && pos != std::wstring::npos) return false;
+    if (pos == std::wstring::npos) break;
+    start = pos + 1;
+  }
+  return true;
+}
+
+std::wstring ContentTypeFor(const std::wstring& path) {
+  const size_t dot = path.find_last_of(L'.');
+  if (dot == std::wstring::npos) return L"application/octet-stream";
+  std::wstring ext = path.substr(dot + 1);
+  for (wchar_t& c : ext) c = static_cast<wchar_t>(towlower(c));
+  if (ext == L"png") return L"image/png";
+  if (ext == L"jpg" || ext == L"jpeg") return L"image/jpeg";
+  if (ext == L"gif") return L"image/gif";
+  if (ext == L"webp") return L"image/webp";
+  if (ext == L"avif") return L"image/avif";
+  if (ext == L"bmp") return L"image/bmp";
+  if (ext == L"ico") return L"image/x-icon";
+  if (ext == L"svg") return L"image/svg+xml";
+  if (ext == L"tif" || ext == L"tiff") return L"image/tiff";
+  return L"application/octet-stream";
+}
+
+bool ReadAsset(const std::wstring& full, std::string* body) {
+  constexpr uint64_t kMaxAssetBytes = 64ull << 20;
+  HANDLE h = ::CreateFileW(full.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  LARGE_INTEGER size = {};
+  if (!::GetFileSizeEx(h, &size) || size.QuadPart <= 0 ||
+      static_cast<uint64_t>(size.QuadPart) > kMaxAssetBytes) {
+    ::CloseHandle(h);
+    return false;
+  }
+  body->resize(static_cast<size_t>(size.QuadPart));
+  DWORD got = 0;
+  const BOOL ok = ::ReadFile(h, &(*body)[0], static_cast<DWORD>(body->size()), &got, nullptr);
+  ::CloseHandle(h);
+  if (!ok || got != body->size()) {
+    body->clear();
+    return false;
+  }
+  return true;
+}
+
+bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
+                std::wstring* contentType) {
+  if (!body || !status || !contentType) return false;
+  body->clear();
+  *status = 404;
+
+  static const wchar_t kAssetBase[] = L"https://mdblocks.local/__asset";
+  const size_t baseLen = sizeof(kAssetBase) / sizeof(kAssetBase[0]) - 1;
+  if (uri.size() < baseLen || uri.compare(0, baseLen, kAssetBase) != 0) return false;
+
+  const size_t q = uri.find(L"?p=");
+  if (q == std::wstring::npos) return true;
+  std::wstring raw = uri.substr(q + 3);
+  const size_t amp = raw.find(L'&');
+  if (amp != std::wstring::npos) raw.resize(amp);
+
+  std::wstring rel;
+  if (!PercentDecode(raw, &rel) || !SafeRelativePath(rel)) return true;
+
+  std::shared_ptr<const Snapshot> snap;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    snap = g_snap;
+  }
+  if (!snap || snap->folder.empty()) return true;
+
+  std::wstring full = snap->folder;
+  if (full.back() != L'\\' && full.back() != L'/') full += L'\\';
+  for (wchar_t c : rel) full += (c == L'/') ? L'\\' : c;
+
+  const DWORD attr = ::GetFileAttributesW(full.c_str());
+  if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) return true;
+  if (!ReadAsset(full, body)) return true;
+
+  *contentType = ContentTypeFor(full);
+  *status = 200;
+  return true;
 }
 
 bool Serve(const std::wstring& uri, std::string* body, int* status) {

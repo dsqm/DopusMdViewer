@@ -35,6 +35,11 @@ void CloseIfOwner(HWND owner);
 // body 为二进制帧：u32 len | u32 blockIndex | u8 flags | UTF-8 字节。
 bool Serve(const std::wstring& uri, std::string* body, int* status);
 
+// 响应 https://mdblocks.local/__asset?p=<相对路径>：读当前文档目录下的图片等资源。
+// 只允许文档目录内的相对路径，任何绝对路径、盘符或 .. 段都拒绝。
+bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
+                std::wstring* contentType);
+
 uint32_t PublishedBlockCount();
 
 }  // namespace docsrc

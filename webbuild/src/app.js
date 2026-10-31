@@ -140,8 +140,9 @@ md.renderer.rules.fence = (tokens, idx) => {
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'IMG') {
     const src = node.getAttribute('src')
-    if (src) node.setAttribute('src', resolveDocUrl(src))
-    node.setAttribute('loading', 'lazy')
+    if (src) node.setAttribute('src', resolveImageUrl(src))
+    // 不设 loading=lazy：块级虚拟化已经只保留视口附近的块，原生懒加载在
+    // translate3d 的虚拟滚动里判定不准，会让图片一直不发起请求。
     return
   }
   if (node.tagName === 'A') {
@@ -152,6 +153,14 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     if (href.charAt(0) !== '#') node.setAttribute('data-external', resolveDocUrl(href))
   }
 })
+
+// 图片走 __asset：虚拟主机映射出来的跨源 <img> 在 WebView2 里不生效（onerror），
+// 而 mdblocks.local 的请求由 C++ 合成，可带正确的 Content-Type。
+function resolveImageUrl(raw) {
+  if (!raw) return raw
+  if (/^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i.test(raw)) return raw
+  return 'https://mdblocks.local/__asset?p=' + encodeURIComponent(raw)
+}
 
 function resolveDocUrl(raw) {
   if (!raw) return raw
