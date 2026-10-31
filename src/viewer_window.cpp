@@ -99,6 +99,7 @@ const MsgEntry kPluginMessages[] = {
     {DVPLUGINMSG_RESIZE, L"RESIZE"},
     {DVPLUGINMSG_SELECTALL, L"SELECTALL"},
     {DVPLUGINMSG_COPYSELECTION, L"COPYSELECTION"},
+    {DVPLUGINMSG_PRINT, L"PRINT"},
     {DVPLUGINMSG_REDRAW, L"REDRAW"},
     {DVPLUGINMSG_SETABORTEVENT, L"SETABORTEVENT"},
     {DVPLUGINMSG_CLEAR, L"CLEAR"},
@@ -369,6 +370,21 @@ void PushBigTable(ViewerState* st) {
   LogLine(L"VIEWER: 推送巨型块表 %zu 项 \"%hs\"", items, head.c_str());
 }
 
+// 打印：全文不在 DOM 里，先让页面把全文渲染进打印容器，就绪消息回来再弹对话框。
+void StartPrint(ViewerState* st) {
+  if (!st->docOpened) {
+    SetStatus(st, L"没有可打印的文档");
+    return;
+  }
+  if (!st->hasHost || st->webFailed || !WebHostIsReady()) {
+    SetStatus(st, L"预览未就绪，无法打印");
+    return;
+  }
+  LogLine(L"VIEWER: 打印请求，等页面准备全文");
+  SetStatus(st, L"正在准备打印…");
+  if (!WebHostPost(st->hwndSelf, L"print|")) SetStatus(st, L"打印准备失败：页面不可达");
+}
+
 void PushIndex(ViewerState* st) {
   if (!st->docOpened || !st->hasHost || st->webFailed || !WebHostIsReady()) return;
 
@@ -460,6 +476,18 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     } else {
       LogLine(L"VIEWER: 页面事件 \"%s\" %s", kind.c_str(), detail.c_str());
     }
+    return;
+  }
+
+  if (type == L"print-ready") {
+    const bool ok = WebHostShowPrintUI(st->hwndSelf);
+    LogLine(L"VIEWER: 打印内容就绪，ShowPrintUI %s", ok ? L"成功" : L"失败");
+    if (!ok) SetStatus(st, L"打印不可用：WebView2 运行时过旧");
+    return;
+  }
+
+  if (type == L"print-done") {
+    LogLine(L"VIEWER: 打印对话框已关闭");
     return;
   }
 
@@ -718,6 +746,10 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       HandleClear(st);
       return 0;
 
+    case DVPLUGINMSG_PRINT:
+      StartPrint(st);
+      return 0;
+
     case DVPLUGINMSG_SELECTALL:
       // Opus 菜单里的「全选」也走同一条全选→复制路径
       CopyAllText(st);
@@ -737,7 +769,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     }
 
     case DVPLUGINMSG_GETCAPABILITIES:
-      return VPCAPABILITY_WANTFOCUS | VPCAPABILITY_SELECTALL;
+      return VPCAPABILITY_WANTFOCUS | VPCAPABILITY_SELECTALL | VPCAPABILITY_PRINT;
 
     case DVPLUGINMSG_PREVENTAUTOSIZE:
       return TRUE;

@@ -56,6 +56,7 @@ const UINT kCmdDocFolder = kCmdBase + 6;
 const UINT kCmdRelease = kCmdBase + 7;
 const UINT kCmdScript = kCmdBase + 8;
 const UINT kCmdPrewarm = kCmdBase + 9;
+const UINT kCmdPrint = kCmdBase + 10;
 
 // 预热：InitEx 后等一会儿再开始，避开 Opus 自己的启动高峰。
 const UINT_PTR kTimerPrewarm = 1;
@@ -871,6 +872,19 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       ReleaseController();
       return 1;
 
+    case kCmdPrint: {
+      if (g_host.borrower != reinterpret_cast<HWND>(wParam)) return 0;
+      if (!g_host.webview) return 0;
+      ComPtr<ICoreWebView2_16> wv16;
+      if (FAILED(g_host.webview.As(&wv16)) || !wv16) {
+        LogLine(L"WEBHOST: 运行时没有 ICoreWebView2_16，打印不可用");
+        return 0;
+      }
+      const HRESULT hr = wv16->ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_BROWSER);
+      LogLine(L"WEBHOST: ShowPrintUI hr=0x%08X", static_cast<unsigned>(hr));
+      return SUCCEEDED(hr) ? 1 : 0;
+    }
+
     case kCmdScript: {
       const std::wstring* script = reinterpret_cast<const std::wstring*>(lParam);
       if (!script || !g_host.webview || !g_host.ready) return 0;
@@ -1028,6 +1042,13 @@ bool WebHostSetDocFolder(const std::wstring& dir) {
 }
 
 void WebHostReleaseController(void) { SendCommand(kCmdRelease, 0, 0); }
+
+bool WebHostShowPrintUI(HWND hViewer) {
+  if (!hViewer) return false;
+  LRESULT result = 0;
+  if (!SendCommand(kCmdPrint, reinterpret_cast<WPARAM>(hViewer), 0, &result)) return false;
+  return result != 0;
+}
 
 bool WebHostExecuteScript(HWND hViewer, const std::wstring& script) {
   if (!hViewer) return false;

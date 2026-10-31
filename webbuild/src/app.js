@@ -56,6 +56,10 @@ const PIN_MAX_BLOCKS = 3000
 const PIN_MAX_BYTES = 32 * 1024 * 1024
 const SEL_EDGE = 42           // 拖选到离视口边缘多少 px 开始自动滚动
 
+// 打印：全文要临时渲染进 DOM，文档越大越慢，超过上限直接拒绝。
+const PRINT_MAX_FILE = 2 * 1024 * 1024
+const PRINT_BATCH = 200
+
 // 巨型块（>2000 行）的块内行窗口：按 64 行 checkpoint 对齐，最少 128 行、
 // 最多 512 行。窗口放在视口上下各一屏之外，滚动时不至于看到空白带。
 const LINE_ALIGN = 64
@@ -412,6 +416,13 @@ const FIND = {
   timer: 0,
   pending: null,
   current: null,
+}
+
+const PRINT = {
+  busy: false,
+  root: null,
+  docId: 0,
+  timer: 0,
 }
 
 const OUT = {
@@ -1475,6 +1486,7 @@ function resetVirtual() {
   V.pinned.clear()
   V.pinsDirty = false
   onSelUp()
+  cleanupPrint()
   resetNetConsent()
 }
 
@@ -2589,6 +2601,109 @@ async function renderMermaidBlocks(root, generation) {
   }
 }
 
+/* ---------------- 打印 ----------------
+   虚拟滚动下 DOM 里只有视口块，打印前把全文按块渲染进 #print-root，
+   @media print 只显示它；对话框由宿主调 ShowPrintUI 打开。 */
+
+function cleanupPrint() {
+  if (PRINT.timer) {
+    clearTimeout(PRINT.timer)
+    PRINT.timer = 0
+  }
+  if (PRINT.root) {
+    PRINT.root.remove()
+    PRINT.root = null
+  }
+  PRINT.busy = false
+}
+
+// 已允许的远程图直接放行；不在这里发起新的网络图确认。
+function allowPrintImages(root) {
+  for (const img of root.querySelectorAll('img[data-mdv-src]')) {
+    let origin = ''
+    try { origin = new URL(img.dataset.mdvSrc).origin } catch { continue }
+    const allowed = NET.mode === 0 ||
+      (NET.mode === 1 && NET.allowed.has(origin)) ||
+      (NET.mode === 2 && NET.docDecided === true)
+    if (allowed) img.src = img.dataset.mdvSrc
+  }
+}
+
+function waitImages(root) {
+  const imgs = [...root.querySelectorAll('img')]
+  if (!imgs.length) return Promise.resolve()
+  const all = Promise.all(imgs.map((img) => (
+    img.decode ? img.decode().catch(() => {}) : Promise.resolve()
+  )))
+  return Promise.race([all, new Promise((resolve) => setTimeout(resolve, 4000))])
+}
+
+async function buildPrintView() {
+  const docId = V.docId
+  const total = V.blockCount
+  const parts = []
+  for (let from = 0; from < total; from += PRINT_BATCH) {
+    if (docId !== V.docId) throw new Error('文档已切换')
+    const count = Math.min(PRINT_BATCH, total - from)
+    const res = await fetch(BLOCKS_URL + '?from=' + from + '&count=' + count, { cache: 'no-store' })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const items = parseFrames(await res.arrayBuffer())
+    for (const it of items) {
+      if (it.flags & 0x20) continue
+      let html = renderBlockHtml(it.text, it.flags, it.i)
+      if (it.i === V.lastVisible && FOOT.html) html += FOOT.html
+      if (it.flags & 0x80) html += '<p>（块过大，打印时已截断）</p>'
+      parts.push('<div class="pblk">' + html + '</div>')
+    }
+  }
+  if (docId !== V.docId) throw new Error('文档已切换')
+
+  const root = document.createElement('div')
+  root.id = 'print-root'
+  root.innerHTML = parts.join('')
+  document.body.appendChild(root)
+  allowPrintImages(root)
+  // 图表只有渲染成 SVG 才能打印；源码块原样保留
+  await renderMermaidBlocks(root, state.generation)
+  await waitImages(root)
+  return root
+}
+
+async function startPrint() {
+  if (!V.active) {
+    postRaw('status|没有可打印的文档')
+    return
+  }
+  if (PRINT.busy) return
+  if (V.fileSize > PRINT_MAX_FILE) {
+    postRaw('status|文档超过 2 MB，暂不支持打印')
+    return
+  }
+  PRINT.busy = true
+  PRINT.docId = V.docId
+  postRaw('status|正在准备打印…')
+  const t0 = performance.now()
+  try {
+    const root = await buildPrintView()
+    if (PRINT.docId !== V.docId || !V.active) {
+      root.remove()
+      PRINT.busy = false
+      return
+    }
+    PRINT.root = root
+    const n = root.querySelectorAll('.pblk').length
+    report('print-ready', (performance.now() - t0).toFixed(0) + '|' + n)
+    postRaw('print-ready')
+    // 正常会收到 afterprint；收不到时 5 分钟后兜底清掉，别把全文 DOM 留在页面里
+    PRINT.timer = setTimeout(cleanupPrint, 5 * 60 * 1000)
+  } catch (err) {
+    cleanupPrint()
+    const msg = String((err && err.message) || err)
+    postRaw('status|打印准备失败：' + msg)
+    report('print-error', msg)
+  }
+}
+
 /* ---------------- 整篇渲染（只在 Edge 开发模式使用） ---------------- */
 
 function renderDocument(source, docBase) {
@@ -2664,6 +2779,11 @@ function onHostMessage(event) {
   if (type === 'index-full') {
     const f = rest.split('|')
     applyIndexFull(parseInt(f[0], 10) || 0, parseInt(f[1], 10) || 0)
+    return
+  }
+
+  if (type === 'print') {
+    startPrint()
     return
   }
 
@@ -2795,6 +2915,11 @@ function bindInput() {
 window.addEventListener('error', (e) => {
   report('js-error', (e.message || 'error') + ' @' + (e.filename || '') + ':' + (e.lineno || 0))
 })
+window.addEventListener('afterprint', () => {
+  cleanupPrint()
+  postRaw('print-done')
+})
+
 window.addEventListener('unhandledrejection', (e) => {
   report('js-reject', String(e.reason && e.reason.stack ? e.reason.stack : e.reason))
 })
@@ -2821,3 +2946,17 @@ if (window.chrome && window.chrome.webview) {
 }
 
 window.__mdv = { md, renderDocument, applySkin, applyFx, state, resolveDocUrl, DOC_HOST, V, SLUG }
+
+// 只给 hosttest 用：准备打印容器并回流规模，不弹对话框
+window.__mdv.printTest = () => buildPrintView().then((root) => {
+  const out = {
+    blocks: root.querySelectorAll('.pblk').length,
+    chars: root.textContent.length,
+    mermaid: root.querySelectorAll('[data-mermaid="done"]').length,
+    pending: root.querySelectorAll('[data-mermaid="pending"]').length,
+    imgs: root.querySelectorAll('img').length,
+  }
+  root.remove()
+  out.leftover = document.getElementById('print-root') !== null
+  return JSON.stringify(out)
+}).catch((e) => 'err=' + ((e && e.message) || e))

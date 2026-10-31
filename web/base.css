@@ -145,6 +145,31 @@ body.dev #doc {
   padding: 1.5em 1.5em 3em;
 }
 
+/* ---------------- 打印（票 05 / M5） ----------------
+   虚拟滚动只有视口块，打印前前端把全文渲染进 #print-root；
+   平时不显示，@media print 时只留它。 */
+#print-root { display: none; }
+#print-root .pblk {
+  max-width: var(--fx-measure);
+  margin: 0 auto var(--md-space-block);
+}
+
+@page { margin: 15mm; }
+
+@media print {
+  html, body { height: auto; overflow: visible; }
+  body.virtual { overflow: visible; }
+  #doc, #sb, #tools, #find, #outline, .net-consent { display: none !important; }
+  #print-root { display: block; }
+  #print-root, #print-root * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  #print-root img, #print-root svg { max-width: 100% !important; height: auto !important; }
+  #print-root pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #print-root .blk--big, #print-root .big-frame { position: static; height: auto; overflow: visible; }
+}
+
 ::selection { background: var(--md-selection); }
 
 ::-webkit-scrollbar { width: 12px; height: 12px; }

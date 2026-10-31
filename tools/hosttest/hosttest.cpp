@@ -49,6 +49,7 @@ const UINT_PTR kSelectAllTimerId = 22;
 const UINT_PTR kPinTimerId = 23;
 const UINT_PTR kCopyEarlyTimerId = 24;
 const UINT_PTR kCopyEarlyCheckTimerId = 25;
+const UINT_PTR kPrintTimerId = 26;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -85,6 +86,7 @@ bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，�
 bool g_copy = false;        // 5 秒后按 Ctrl+A，7 秒读剪贴板，9 秒再走 SELECTALL 消息
 bool g_pin = false;         // 5 秒后选区钉块 + 拖边滚动，滚到底验钉块没被换出
 bool g_copyEarly = false;   // 索引未完成时先复制前缀，全文索引到达后自动补全
+bool g_print = false;       // 5 秒后准备打印容器（不弹对话框），回流块数/图表/图片
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
 HWND g_hwndTimer = nullptr;  // release 模式：主窗口销毁后用它继续跑计时器
@@ -382,6 +384,14 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       } else if (wParam == kSelectAllTimerId) {
         ::KillTimer(hwnd, kSelectAllTimerId);
         LogClipboard(L"SELECTALL");
+      } else if (wParam == kPrintTimerId) {
+        ::KillTimer(hwnd, kPrintTimerId);
+        const wchar_t* script =
+            L"window.__mdv.printTest().then(function(r){"
+            L"window.chrome.webview.postMessage('event|print|'+r);})"
+            L".catch(function(e){window.chrome.webview.postMessage('event|print|err='"
+            L"+(e&&e.message||e));});";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kCopyEarlyTimerId) {
         ::KillTimer(hwnd, kCopyEarlyTimerId);
         if (g_viewer) ::PostMessageW(g_viewer, DVPLUGINMSG_SELECTALL, 0, 0);
@@ -549,6 +559,7 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"copyearly")) g_copyEarly = true;
   else if (*p && wcsstr(p, L"copy")) g_copy = true;
   if (*p && wcsstr(p, L"pin")) g_pin = true;
+  if (*p && wcsstr(p, L"print")) g_print = true;
   if (*p && wcsstr(p, L"prewarm")) g_prewarm = true;
   if (*p && wcsstr(p, L"release")) g_release = true;
   if (*p && wcsstr(p, L"idle")) g_idle = true;
@@ -670,6 +681,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   if (g_copyEarly) {
     ::SetTimer(g_hwndMain, kCopyEarlyTimerId, 300, nullptr);
     ::SetTimer(g_hwndMain, kCopyEarlyCheckTimerId, 3000, nullptr);
+  }
+  if (g_print) {
+    ::SetTimer(g_hwndMain, kPrintTimerId, 5000, nullptr);
   }
 
   if (g_drop) {

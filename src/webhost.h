@@ -68,5 +68,9 @@ void WebHostReleaseController(void);
 // 只给 tools/hosttest 用：在页面里执行一段脚本（滚动验收）。
 bool WebHostExecuteScript(HWND hViewer, const std::wstring& script);
 
+// 打开 WebView2 的打印对话框（ICoreWebView2_16::ShowPrintUI）。页面要先把
+// 全文渲染进打印容器；运行时太老拿不到接口时返回 false。
+bool WebHostShowPrintUI(HWND hViewer);
+
 // 本机 WebView2 Runtime 版本；未安装或读不到返回空串。设置界面“关于”用。
 std::wstring WebHostRuntimeVersion(void);
