@@ -14,3 +14,10 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags);
 
 // 当前存活的查看器窗口数（create 递增、WM_NCDESTROY 递减），DVP_Uninit 会记一行。
 LONG ViewerLiveCount(void);
+
+// 设置保存后调用：给所有活着的查看器 PostMessage(WM_MDV_CONFIG_CHANGED)，
+// 让查看器线程重推皮肤/字体/网络图档位。
+void ViewerNotifyConfigChanged(void);
+
+// 设置已更新（无载荷）。
+#define WM_MDV_CONFIG_CHANGED (WM_APP + 0x311)

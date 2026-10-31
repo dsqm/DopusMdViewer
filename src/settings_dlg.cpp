@@ -9,6 +9,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "viewer_window.h"
 
 namespace {
 
@@ -16,6 +17,7 @@ const wchar_t kClass[] = L"DopusMdViewerSettings";
 const int kIdDoc = 1001;
 const int kIdHost = 1002;
 const int kIdOff = 1003;
+const int kIdOutside = 1004;
 
 HWND g_hwnd = nullptr;
 
@@ -46,6 +48,8 @@ void CheckForMode(HWND hwnd) {
   const int mode = ConfigNetImageMode();
   const int id = (mode == 0) ? kIdOff : (mode == 2 ? kIdDoc : kIdHost);
   ::CheckRadioButton(hwnd, kIdDoc, kIdOff, id);
+  ::CheckDlgButton(hwnd, kIdOutside,
+                   ConfigAllowOutsideImages() ? BST_CHECKED : BST_UNCHECKED);
 }
 
 bool SaveFromControls(HWND hwnd) {
@@ -55,7 +59,11 @@ bool SaveFromControls(HWND hwnd) {
   } else if (::IsDlgButtonChecked(hwnd, kIdOff) == BST_CHECKED) {
     mode = 0;
   }
-  if (ConfigSetNetImageMode(mode)) return true;
+  const bool outside = ::IsDlgButtonChecked(hwnd, kIdOutside) == BST_CHECKED;
+  if (ConfigSaveSettings(mode, outside)) {
+    ViewerNotifyConfigChanged();
+    return true;
+  }
   ::MessageBoxW(hwnd, L"写入 config.json 失败，详见日志。", L"DopusMdViewer",
                 MB_OK | MB_ICONERROR);
   return false;
@@ -89,14 +97,17 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
       AddControl(hwnd, L"BUTTON", L"不询问，直接加载", BS_AUTORADIOBUTTON | WS_TABSTOP,
                  Scale(32, d), Scale(96, d), Scale(300, d), Scale(22, d), kIdOff, state->font);
       AddControl(hwnd, L"STATIC",
-                 L"网络图片使用 https。询问时预览会等待你的选择；\n"
-                 L"文档内的其他远程资源仍会被 CSP 挡住。",
-                 SS_LEFT, Scale(20, d), Scale(126, d), Scale(330, d), Scale(38, d), 0,
+                 L"网络图片使用 https，确认面板显示在预览页内。\n"
+                 L"图片默认只允许文档目录内的相对路径。",
+                 SS_LEFT, Scale(20, d), Scale(126, d), Scale(340, d), Scale(38, d), 0,
                  state->font);
+      AddControl(hwnd, L"BUTTON", L"允许图片引用文档目录外的路径（../ 与绝对路径）",
+                 BS_AUTOCHECKBOX | WS_TABSTOP, Scale(20, d), Scale(170, d), Scale(340, d),
+                 Scale(22, d), kIdOutside, state->font);
       AddControl(hwnd, L"BUTTON", L"确定", BS_DEFPUSHBUTTON | WS_TABSTOP | WS_GROUP,
-                 Scale(200, d), Scale(170, d), Scale(70, d), Scale(26, d), IDOK, state->font);
+                 Scale(200, d), Scale(206, d), Scale(70, d), Scale(26, d), IDOK, state->font);
       AddControl(hwnd, L"BUTTON", L"取消", BS_PUSHBUTTON | WS_TABSTOP, Scale(278, d),
-                 Scale(170, d), Scale(70, d), Scale(26, d), IDCANCEL, state->font);
+                 Scale(206, d), Scale(70, d), Scale(26, d), IDCANCEL, state->font);
       CheckForMode(hwnd);
       return 0;
     }
@@ -184,7 +195,7 @@ HWND SettingsShow(HWND parent) {
 
   const UINT dpi = parent ? ::GetDpiForWindow(parent) : 96;
   const int d = dpi ? static_cast<int>(dpi) : 96;
-  RECT rc = {0, 0, Scale(380, d), Scale(214, d)};
+  RECT rc = {0, 0, Scale(380, d), Scale(250, d)};
   const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
   ::AdjustWindowRectEx(&rc, style, FALSE, 0);
   const int w = rc.right - rc.left;

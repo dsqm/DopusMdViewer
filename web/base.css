@@ -425,3 +425,60 @@ pre.mermaid-src {
   background: var(--md-outline-bg);
   color: var(--md-outline-fg);
 }
+
+/* ---------------- 网络图片确认（预览页内） ----------------
+   底边居中的浮层：不挪动正文、不抢焦点；一次只问一个来源。 */
+
+.net-consent {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: min(92vw, 460px);
+  padding: 10px 12px;
+  background: var(--md-outline-bg);
+  color: var(--md-outline-fg);
+  border: 1px solid var(--md-border);
+  border-radius: var(--md-radius);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+}
+
+.net-consent[hidden] { display: none; }
+
+.net-consent-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.net-consent-note {
+  color: var(--md-fg-muted);
+  font-size: 11px;
+}
+
+.net-consent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.net-consent-actions button {
+  font: inherit;
+  padding: 4px 14px;
+  border: 1px solid var(--md-border);
+  border-radius: calc(var(--md-radius) * 0.7);
+  background: var(--md-block-bg);
+  color: var(--md-outline-fg);
+  cursor: pointer;
+}
+
+.net-consent-actions button:hover { border-color: var(--md-fg-muted); }
+
+.net-consent-actions button[data-act="allow"] {
+  border-color: var(--md-link);
+  color: var(--md-link);
+  background: transparent;
+}

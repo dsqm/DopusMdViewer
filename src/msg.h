@@ -33,8 +33,9 @@ std::wstring MakeIndexFull(uint32_t blockCount, uint32_t lastVisible);
 // big|<i>:<lines>,<i>:<lines>…：巨型块行数表（只有 > 2000 行的块）。
 std::wstring MakeBig(const std::string& table);
 
-// netimg-allow|<origin> / netimg-deny|<origin>
-std::wstring MakeNetImageReply(const std::wstring& origin, bool allow);
+// net|<mode>：网络图片确认粒度（0 不询问 / 1 每主机每文档 / 2 每文档）。
+// 确认面板在页面内渲染，这里只推配置。
+std::wstring MakeNetMode(int mode);
 
 // clear|
 std::wstring MakeClear();

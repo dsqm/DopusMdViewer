@@ -178,15 +178,40 @@ md.renderer.rules.fence = (tokens, idx) => {
 
 const TRANSPARENT_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
-// 网络图片的确认状态（每文档重置）。origin -> Promise / 已允许 / 已拒绝。
-const netAllowed = new Set()
-const netDenied = new Set()
-const netPending = new Map()
-const netResolvers = new Map()
+// 网络图片的确认状态（每文档重置）。确认面板画在预览页里，不再弹原生窗。
+const NET = {
+  mode: 1,             // 0 不询问 / 1 每主机每文档 / 2 每文档
+  allowed: new Set(),
+  denied: new Set(),
+  docDecided: null,
+  queue: [],
+  current: null,
+  panel: null,
+  title: null,
+  note: null,
+}
 
 function isRemoteUrl(raw) {
   return /^(?:https?:)?\/\//i.test(raw || '')
 }
+
+// DOMPurify 会把 `C:` 当成未知协议、把 src 整个删掉；在它做 URI 检查之前先换成
+// __asset 的 https 地址，绝对路径与 file:/// 才到得了 afterSanitizeAttributes。
+DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+  if (data.attrName !== 'src' || !data.attrValue) return
+  if (node.tagName !== 'IMG' && node.tagName !== 'INPUT') return
+  const v = data.attrValue
+  const file = /^file:\/\/(.*)$/i.exec(v)
+  if (file) {
+    let p = file[1]
+    try { p = decodeURIComponent(p) } catch { /* 保留原文 */ }
+    if (/^\/[a-zA-Z]:/.test(p)) p = p.slice(1)        // file:///C:/x
+    else if (!p.startsWith('/')) p = '\\\\' + p       // file://server/share
+    data.attrValue = assetUrl(p)
+    return
+  }
+  if (/^[a-zA-Z]:[\\/%]/.test(v)) data.attrValue = assetUrl(decodePath(v))
+})
 
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   // 远程背景图 / 视频封面 / SVG 引用会绕过 <img> 的确认，直接去掉。
@@ -214,6 +239,8 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'IMG') {
     const src = node.getAttribute('src')
     if (!src) return
+    // 绝对路径/../ 已被上面的 hook 换成本地 __asset，不要再走网络图确认
+    if (/^https:\/\/mdblocks\.local\//i.test(src)) return
     if (isRemoteUrl(src)) {
       let absolute = null
       try { absolute = new URL(src, location.href) } catch { absolute = null }
@@ -242,10 +269,31 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 
 // 图片走 __asset：虚拟主机映射出来的跨源 <img> 在 WebView2 里不生效（onerror），
 // 而 mdblocks.local 的请求由 C++ 合成，可带正确的 Content-Type。
+// 绝对路径与 ../ 也统一走 __asset，宿主按设置决定放不放行。
+function assetUrl(path) {
+  return 'https://mdblocks.local/__asset?p=' + encodeURIComponent(path)
+}
+
+function decodePath(raw) {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
 function resolveImageUrl(raw) {
   if (!raw) return raw
-  if (/^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i.test(raw)) return raw
-  return 'https://mdblocks.local/__asset?p=' + encodeURIComponent(raw)
+  if (/^(?:data|blob):/i.test(raw)) return raw
+  if (/^\/\//.test(raw)) return raw  // 协议相对 URL（https: 由清洗钩子接管）
+  // Windows 盘符绝对路径；markdown-it 会把反斜杠编码成 %5C，先解回来
+  if (/^[a-zA-Z]:[\\/%]/.test(raw)) return assetUrl(decodePath(raw))
+  const decoded = decodePath(raw)
+  if (/^[a-zA-Z]:[\\/]/.test(decoded)) return assetUrl(decoded)
+  if (/^\\\\/.test(decoded)) return assetUrl(decoded)  // UNC
+  // 其它协议（mailto 等）原样交给浏览器
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return raw
+  return assetUrl(raw)  // 文档目录内（含 ../，宿主决定是否放行）
 }
 
 function resolveDocUrl(raw) {
@@ -602,36 +650,124 @@ function acquireEl() {
   return fresh
 }
 
-function ensureNetConsent(origin) {
-  if (netAllowed.has(origin)) return Promise.resolve(true)
-  if (netDenied.has(origin)) return Promise.resolve(false)
-  if (netPending.has(origin)) return netPending.get(origin)
-  const host = window.chrome && window.chrome.webview
-  if (!host) return Promise.resolve(true)  // 开发模式没有宿主，交给 CSP
-  const p = new Promise((resolve) => {
-    netResolvers.set(origin, resolve)
-    postRaw('netimg|' + origin)
-  })
-  netPending.set(origin, p)
-  return p
+function ensureConsentPanel() {
+  if (NET.panel) return NET.panel
+  const panel = document.createElement('div')
+  panel.className = 'net-consent ui'
+  panel.hidden = true
+  panel.innerHTML =
+    '<div class="net-consent-title"></div>' +
+    '<div class="net-consent-note"></div>' +
+    '<div class="net-consent-actions">' +
+    '<button type="button" data-act="deny">拒绝</button>' +
+    '<button type="button" data-act="allow">允许</button>' +
+    '</div>'
+  panel.querySelector('[data-act="allow"]').addEventListener('click', () => decideNetConsent(true))
+  panel.querySelector('[data-act="deny"]').addEventListener('click', () => decideNetConsent(false))
+  document.body.appendChild(panel)
+  NET.panel = panel
+  NET.title = panel.querySelector('.net-consent-title')
+  NET.note = panel.querySelector('.net-consent-note')
+  return panel
 }
 
-function resolveNetConsent(origin, allow) {
-  const resolve = netResolvers.get(origin)
-  if (!resolve) return
-  netResolvers.delete(origin)
-  netPending.delete(origin)
-  if (allow) netAllowed.add(origin)
-  else netDenied.add(origin)
-  resolve(allow)
+function showNetPrompt(origin) {
+  const panel = ensureConsentPanel()
+  let host = origin
+  try { host = new URL(origin).host } catch { /* 保留原文 */ }
+  NET.title.textContent = '允许加载来自 ' + host + ' 的网络图片吗？'
+  NET.note.textContent = NET.mode === 2
+    ? '本文件内不再询问 · 可在插件设置里调整'
+    : '只影响当前文档 · 可在插件设置里调整'
+  panel.hidden = false
+}
+
+function hideNetPrompt() {
+  if (NET.panel) NET.panel.hidden = true
+}
+
+function ensureNetConsent(origin) {
+  if (NET.mode === 0) return Promise.resolve(true)
+  if (NET.mode === 2) {
+    if (NET.docDecided !== null) return Promise.resolve(NET.docDecided)
+  } else {
+    if (NET.allowed.has(origin)) return Promise.resolve(true)
+    if (NET.denied.has(origin)) return Promise.resolve(false)
+  }
+  return new Promise((resolve) => {
+    NET.queue.push({ origin, resolve })
+    pumpNetConsent()
+  })
+}
+
+// 一次只问一个来源；拒绝/允许只作用于当前来源（每文档档位除外）
+function pumpNetConsent() {
+  if (NET.current) return
+  while (NET.queue.length) {
+    const item = NET.queue[0]
+    if (NET.mode === 0) {
+      NET.queue.shift()
+      item.resolve(true)
+      continue
+    }
+    if (NET.mode === 2 && NET.docDecided !== null) {
+      NET.queue.shift()
+      item.resolve(NET.docDecided)
+      continue
+    }
+    if (NET.mode === 1 && NET.allowed.has(item.origin)) {
+      NET.queue.shift()
+      item.resolve(true)
+      continue
+    }
+    if (NET.mode === 1 && NET.denied.has(item.origin)) {
+      NET.queue.shift()
+      item.resolve(false)
+      continue
+    }
+    NET.queue.shift()
+    NET.current = item
+    showNetPrompt(item.origin)
+    return
+  }
+}
+
+function decideNetConsent(allow) {
+  const item = NET.current
+  if (!item) return
+  NET.current = null
+  if (NET.mode === 2) {
+    NET.docDecided = allow
+  } else if (NET.mode === 1) {
+    if (allow) NET.allowed.add(item.origin)
+    else NET.denied.add(item.origin)
+  }
+  hideNetPrompt()
+  item.resolve(allow)
+  pumpNetConsent()
+}
+
+function setNetMode(mode) {
+  NET.mode = (mode === 0 || mode === 2) ? mode : 1
+  // 档位切到“不询问”：正在问的直接放行；其余排队项交给 pump 按新档位处理
+  if (NET.mode === 0 && NET.current) {
+    const item = NET.current
+    NET.current = null
+    hideNetPrompt()
+    item.resolve(true)
+  }
+  pumpNetConsent()
 }
 
 function resetNetConsent() {
-  for (const resolve of netResolvers.values()) resolve(false)
-  netResolvers.clear()
-  netPending.clear()
-  netAllowed.clear()
-  netDenied.clear()
+  for (const item of NET.queue) item.resolve(false)
+  if (NET.current) NET.current.resolve(false)
+  NET.queue = []
+  NET.current = null
+  NET.allowed.clear()
+  NET.denied.clear()
+  NET.docDecided = null
+  hideNetPrompt()
 }
 
 function processNetImages(root) {
@@ -1777,8 +1913,9 @@ function onHostMessage(event) {
     return
   }
 
-  if (type === 'netimg-allow' || type === 'netimg-deny') {
-    resolveNetConsent(rest, type === 'netimg-allow')
+  if (type === 'net') {
+    const mode = parseInt(rest, 10)
+    setNetMode(Number.isInteger(mode) ? mode : 1)
     return
   }
 
@@ -1878,6 +2015,8 @@ if (window.chrome && window.chrome.webview) {
   postRaw('ready')
   document.body.classList.add('virtual')
 } else {
+  // 开发模式没有宿主推档位，直接放行（远程资源仍受 CSP 约束）
+  NET.mode = 0
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', devBoot)
   } else {

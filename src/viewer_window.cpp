@@ -6,6 +6,7 @@
 #include "viewer_window.h"
 
 #include <cstdarg>
+#include <mutex>
 #include <new>
 #include <vector>
 #include <objidl.h>  // LPSTREAM，"viewer plugins.h" 需要（WIN32_LEAN_AND_MEAN 会藏掉）
@@ -43,10 +44,6 @@ struct ViewerState {
   LONGLONG qpcLoad;  // LOADW 起点，用于端到端耗时
   bool docOpened;    // doc_source 归本窗口
   bool indexFullPending;  // 全文索引已就绪但页面还没收到 index-full
-  bool netDocDecided;     // 每文档确认模式：本文件已经问过
-  bool netDocAllowed;     // 每文档确认模式：用户的选择
-  std::vector<std::wstring> netApproved;  // 每主机模式：已允许的来源
-  std::vector<std::wstring> netDenied;    // 每主机模式：已拒绝的来源
   bool chromePushed;
   bool webFailed;
   bool hasHost;  // 宿主此刻是否在本窗口（单宿主，被别的窗口借走时没有画面）
@@ -56,6 +53,25 @@ struct ViewerState {
 
 LONG g_liveViewers = 0;
 HINSTANCE g_hInstance = nullptr;
+
+// 设置保存后要通知所有查看器（它们可能跑在不同的 UI 线程上）。
+std::mutex g_viewerMutex;
+std::vector<HWND> g_viewers;
+
+void RegisterViewer(HWND hwnd) {
+  std::lock_guard<std::mutex> lock(g_viewerMutex);
+  g_viewers.push_back(hwnd);
+}
+
+void UnregisterViewer(HWND hwnd) {
+  std::lock_guard<std::mutex> lock(g_viewerMutex);
+  for (size_t i = 0; i < g_viewers.size(); ++i) {
+    if (g_viewers[i] == hwnd) {
+      g_viewers.erase(g_viewers.begin() + i);
+      return;
+    }
+  }
+}
 
 struct MsgEntry {
   UINT uMsg;
@@ -100,6 +116,7 @@ const MsgEntry kWindowMessages[] = {
     {WM_SETCURSOR, L"WM_SETCURSOR"},
     {WM_DPICHANGED, L"WM_DPICHANGED"},
     {WM_MDV_INDEX_FULL, L"WM_MDV_INDEX_FULL"},
+    {WM_MDV_CONFIG_CHANGED, L"WM_MDV_CONFIG_CHANGED"},
 };
 
 const wchar_t* LookupName(const MsgEntry* pTable, size_t cEntries, UINT uMsg) {
@@ -183,7 +200,7 @@ RECT ClientRectOf(HWND hwnd) {
 // 皮肤与字体永远成对推送：先皮肤，再 fx（fx 最后注入且写全量槽位，压住皮肤）。
 void PushChrome(ViewerState* st) {
   if (!st->hasHost || st->webFailed || !WebHostIsReady()) return;
-  const Config& cfg = ConfigLoad();
+  const Config cfg = ConfigSnapshot();
 
   std::wstring css;
   std::wstring skinId = cfg.skin;
@@ -195,11 +212,13 @@ void PushChrome(ViewerState* st) {
   }
 
   const bool ok = WebHostPost(st->hwndSelf, msg::MakeSkin(skinId, css)) &&
-                  WebHostPost(st->hwndSelf, msg::MakeFx(cfg.font));
+                  WebHostPost(st->hwndSelf, msg::MakeFx(cfg.font)) &&
+                  WebHostPost(st->hwndSelf, msg::MakeNetMode(cfg.netImageMode));
   st->chromePushed = ok;
 
-  LogLine(L"VIEWER: 已推送皮肤 \"%s\"（%zu 字符）与字体（%dpx / %.2f / %dem）", skinId.c_str(),
-          css.size(), cfg.font.sizePx, cfg.font.lineHeight, cfg.font.measureEm);
+  LogLine(L"VIEWER: 已推送皮肤 \"%s\"（%zu 字符）、字体（%dpx / %.2f / %dem）与网络图确认档位 %d",
+          skinId.c_str(), css.size(), cfg.font.sizePx, cfg.font.lineHeight, cfg.font.measureEm,
+          cfg.netImageMode);
 }
 
 void PushBigTable(ViewerState* st) {
@@ -285,79 +304,10 @@ void OnHostReady(ViewerState* st) {
   MaybePushIndexFull(st);
 }
 
-bool ListHas(const std::vector<std::wstring>& list, const std::wstring& value) {
-  for (const std::wstring& item : list) {
-    if (item == value) return true;
-  }
-  return false;
-}
-
-void ReplyNetImage(ViewerState* st, const std::wstring& origin, bool allow) {
-  if (!st->hasHost || !WebHostIsReady()) return;
-  WebHostPost(st->hwndSelf, msg::MakeNetImageReply(origin, allow));
-}
-
-// 网络图片的二次确认。确认框在查看器线程上模态弹出；页面收到答复后再设 src。
-void HandleNetImageConsent(ViewerState* st, const std::wstring& origin) {
-  if (origin.empty() || origin.size() > 512) {
-    ReplyNetImage(st, origin, false);
-    return;
-  }
-  const int mode = ConfigNetImageMode();
-  if (mode == 0) {
-    ReplyNetImage(st, origin, true);
-    return;
-  }
-
-  const HWND owner = ::GetAncestor(st->hwndSelf, GA_ROOT);
-  const int flags = MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2;
-
-  if (mode == 2) {
-    if (!st->netDocDecided) {
-      const std::wstring text =
-          L"此文档要加载来自 " + origin +
-          L" 的网络图片。\n\n允许本文档加载网络图片吗？\n\n可在插件设置里调整此行为。";
-      const int r = ::MessageBoxW(owner, text.c_str(), L"DopusMdViewer", flags);
-      st->netDocDecided = true;
-      st->netDocAllowed = (r == IDYES);
-      LogLine(L"VIEWER: 网络图片（每文档）%s -> %s", origin.c_str(),
-              st->netDocAllowed ? L"允许" : L"拒绝");
-    }
-    ReplyNetImage(st, origin, st->netDocAllowed);
-    return;
-  }
-
-  if (ListHas(st->netApproved, origin)) {
-    ReplyNetImage(st, origin, true);
-    return;
-  }
-  if (ListHas(st->netDenied, origin)) {
-    ReplyNetImage(st, origin, false);
-    return;
-  }
-
-  const std::wstring text = L"允许加载来自 " + origin +
-                            L" 的网络图片吗？\n\n只影响当前文档；可在插件设置里调整此行为。";
-  const int r = ::MessageBoxW(owner, text.c_str(), L"DopusMdViewer", flags);
-  const bool allow = (r == IDYES);
-  if (allow) {
-    st->netApproved.push_back(origin);
-  } else {
-    st->netDenied.push_back(origin);
-  }
-  LogLine(L"VIEWER: 网络图片（每主机）%s -> %s", origin.c_str(), allow ? L"允许" : L"拒绝");
-  ReplyNetImage(st, origin, allow);
-}
-
 void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   std::wstring type;
   std::wstring rest;
   if (!msg::SplitType(frame, &type, &rest)) return;
-
-  if (type == L"netimg") {
-    HandleNetImageConsent(st, rest);
-    return;
-  }
 
   if (type == L"event") {
     const std::wstring kind = msg::SecondField(rest);
@@ -430,10 +380,6 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
   st->qpcLoad = tLoad.QuadPart;
 
   st->docOpened = false;
-  st->netDocDecided = false;
-  st->netDocAllowed = false;
-  st->netApproved.clear();
-  st->netDenied.clear();
   docsrc::CloseIfOwner(st->hwndSelf);
 
   if (!st->hasHost) {
@@ -453,10 +399,6 @@ void HandleClear(ViewerState* st) {
   st->ullFileSize = 0;
   st->docOpened = false;
   st->indexFullPending = false;
-  st->netDocDecided = false;
-  st->netDocAllowed = false;
-  st->netApproved.clear();
-  st->netDenied.clear();
   docsrc::CloseIfOwner(st->hwndSelf);
 
   if (st->hasHost && WebHostIsReady()) {
@@ -477,6 +419,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       // controller 挂在宿主窗口下；这里只是把宿主借进客户区。
       WebHostEnsure();
       st->hasHost = WebHostBorrow(hwnd, ClientRectOf(hwnd));
+      RegisterViewer(hwnd);
       return 0;
     }
 
@@ -516,6 +459,11 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_MDV_INDEX_FULL:
       st->indexFullPending = true;
       MaybePushIndexFull(st);
+      return 0;
+
+    case WM_MDV_CONFIG_CHANGED:
+      LogLine(L"VIEWER: 设置已更新，重推皮肤/字体/网络图档位");
+      PushChrome(st);
       return 0;
 
     case WM_MDV_EVENT: {
@@ -636,6 +584,7 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
   }
 
   if (uMsg == WM_NCDESTROY) {
+    UnregisterViewer(hwnd);
     if (st) {
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
       LogLine(L"WND %p WM_NCDESTROY 释放状态（共 %u 条消息）", hwnd, st->uMsgSeq);
@@ -710,8 +659,6 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->qpcLoad = 0;
   st->docOpened = false;
   st->indexFullPending = false;
-  st->netDocDecided = false;
-  st->netDocAllowed = false;
   st->chromePushed = false;
   st->webFailed = false;
   st->hasHost = false;
@@ -735,3 +682,14 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
 }
 
 LONG ViewerLiveCount(void) { return ::InterlockedCompareExchange(&g_liveViewers, 0, 0); }
+
+void ViewerNotifyConfigChanged(void) {
+  std::vector<HWND> targets;
+  {
+    std::lock_guard<std::mutex> lock(g_viewerMutex);
+    targets = g_viewers;
+  }
+  for (HWND hwnd : targets) {
+    if (::IsWindow(hwnd)) ::PostMessageW(hwnd, WM_MDV_CONFIG_CHANGED, 0, 0);
+  }
+}

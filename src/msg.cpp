@@ -90,8 +90,8 @@ std::wstring MakeBig(const std::string& table) {
   return Join({L"big", wide});
 }
 
-std::wstring MakeNetImageReply(const std::wstring& origin, bool allow) {
-  return Join({allow ? L"netimg-allow" : L"netimg-deny", origin});
+std::wstring MakeNetMode(int mode) {
+  return Join({L"net", std::to_wstring(mode)});
 }
 
 std::wstring MakeClear(void) { return L"clear"; }

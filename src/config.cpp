@@ -38,6 +38,7 @@ void SetDefaults(Config* c) {
   c->font.lineHeight = 1.65;
   c->font.measureEm = 40;
   c->netImageMode = 1;  // 每主机每文档确认
+  c->allowOutsideImages = false;
 }
 
 int ClampInt(int v, int lo, int hi, int fallback) {
@@ -73,6 +74,10 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
     } else {
       c->netImageMode = 1;
     }
+  }
+
+  if (root.contains("allowOutsideImages") && root["allowOutsideImages"].is_boolean()) {
+    c->allowOutsideImages = root["allowOutsideImages"].get<bool>();
   }
 
   if (root.contains("skin") && root["skin"].is_string()) {
@@ -149,6 +154,7 @@ const wchar_t* ConfigPath(void) {
 }
 
 const Config& ConfigLoad(void) {
+  std::lock_guard<std::mutex> lock(g_modeMutex);
   SetDefaults(&g_config);
   g_loaded = true;
 
@@ -187,14 +193,26 @@ const Config& ConfigGet(void) {
   return g_config;
 }
 
+Config ConfigSnapshot(void) {
+  if (!g_loaded) ConfigLoad();
+  std::lock_guard<std::mutex> lock(g_modeMutex);
+  return g_config;
+}
+
 int ConfigNetImageMode(void) {
   if (!g_loaded) ConfigLoad();
   std::lock_guard<std::mutex> lock(g_modeMutex);
   return g_config.netImageMode;
 }
 
-bool ConfigSetNetImageMode(int mode) {
-  if (mode < 0 || mode > 2) return false;
+bool ConfigAllowOutsideImages(void) {
+  if (!g_loaded) ConfigLoad();
+  std::lock_guard<std::mutex> lock(g_modeMutex);
+  return g_config.allowOutsideImages;
+}
+
+bool ConfigSaveSettings(int netImageMode, bool allowOutsideImages) {
+  if (netImageMode < 0 || netImageMode > 2) return false;
   const wchar_t* path = ConfigPath();
   if (!path || !*path) {
     LogLine(L"CONFIG: 数据目录不可用，无法写盘");
@@ -204,7 +222,8 @@ bool ConfigSetNetImageMode(int mode) {
 
   {
     std::lock_guard<std::mutex> lock(g_modeMutex);
-    g_config.netImageMode = mode;
+    g_config.netImageMode = netImageMode;
+    g_config.allowOutsideImages = allowOutsideImages;
   }
 
   // 读旧文件并保留未知键，避免设置一次就把将来的配置项抹掉
@@ -219,23 +238,27 @@ bool ConfigSetNetImageMode(int mode) {
     }
   }
 
-  root["skin"] = WideToUtf8(g_config.skin);
+  const Config snap = ConfigSnapshot();
+  root["skin"] = WideToUtf8(snap.skin);
   nlohmann::json font;
-  font["ui"] = StackToJson(g_config.font.ui);
-  font["body"] = StackToJson(g_config.font.body);
-  font["mono"] = StackToJson(g_config.font.mono);
-  font["size"] = g_config.font.sizePx;
-  font["lineHeight"] = g_config.font.lineHeight;
-  font["measure"] = g_config.font.measureEm;
+  font["ui"] = StackToJson(snap.font.ui);
+  font["body"] = StackToJson(snap.font.body);
+  font["mono"] = StackToJson(snap.font.mono);
+  font["size"] = snap.font.sizePx;
+  font["lineHeight"] = snap.font.lineHeight;
+  font["measure"] = snap.font.measureEm;
   root["font"] = font;
-  root["netImageConfirm"] = mode == 0 ? "off" : (mode == 2 ? "doc" : "host");
+  root["netImageConfirm"] =
+      netImageMode == 0 ? "off" : (netImageMode == 2 ? "doc" : "host");
+  root["allowOutsideImages"] = allowOutsideImages;
 
   const std::string bytes = root.dump(2);
   if (!WriteConfigAtomically(path, bytes)) {
     LogLine(L"CONFIG: 写入失败 %s", path);
     return false;
   }
-  LogLine(L"CONFIG: 已写入 %s netImageConfirm=%hs", path,
-          mode == 0 ? "off" : (mode == 2 ? "doc" : "host"));
+  LogLine(L"CONFIG: 已写入 %s netImageConfirm=%hs allowOutsideImages=%d", path,
+          netImageMode == 0 ? "off" : (netImageMode == 2 ? "doc" : "host"),
+          allowOutsideImages ? 1 : 0);
   return true;
 }

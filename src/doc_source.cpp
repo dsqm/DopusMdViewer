@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "doc_index.h"
+#include "config.h"
 #include "log.h"
 
 namespace docsrc {
@@ -565,6 +566,49 @@ bool SafeRelativePath(const std::wstring& rel) {
   return true;
 }
 
+bool IsAbsolutePath(const std::wstring& p) {
+  if (p.size() >= 3 && ((p[0] >= L'A' && p[0] <= L'Z') || (p[0] >= L'a' && p[0] <= L'z')) &&
+      p[1] == L':' && (p[2] == L'\\' || p[2] == L'/')) {
+    return true;
+  }
+  if (p.size() >= 2 && p[0] == L'\\' && p[1] == L'\\') return true;  // UNC
+  if (!p.empty() && (p[0] == L'\\' || p[0] == L'/')) return true;    // 根相对
+  return false;
+}
+
+// 设置里允许文档目录外图片时：相对路径按文档目录解析（允许 ..），绝对路径直接用。
+// 统一走 GetFullPathNameW 归一化；超长路径加 \\?\ 前缀，否则 CreateFile 打不开。
+bool ResolveAssetPath(const std::wstring& folder, const std::wstring& rel,
+                      std::wstring* full) {
+  std::wstring candidate = rel;
+  for (wchar_t& c : candidate) {
+    if (c == L'/') c = L'\\';
+  }
+  if (!IsAbsolutePath(candidate)) {
+    candidate = folder;
+    if (!candidate.empty() && candidate.back() != L'\\') candidate += L'\\';
+    candidate += rel;
+    for (wchar_t& c : candidate) {
+      if (c == L'/') c = L'\\';
+    }
+  }
+
+  std::vector<wchar_t> buf(32768);
+  const DWORD n = ::GetFullPathNameW(candidate.c_str(), static_cast<DWORD>(buf.size()),
+                                     buf.data(), nullptr);
+  if (n == 0 || n >= buf.size()) return false;
+  *full = std::wstring(buf.data(), n);
+
+  if (full->size() >= MAX_PATH) {
+    if (full->size() >= 2 && (*full)[0] == L'\\' && (*full)[1] == L'\\') {
+      *full = L"\\\\?\\UNC\\" + full->substr(2);
+    } else {
+      *full = L"\\\\?\\" + *full;
+    }
+  }
+  return true;
+}
+
 std::wstring ContentTypeFor(const std::wstring& path) {
   const size_t dot = path.find_last_of(L'.');
   if (dot == std::wstring::npos) return L"application/octet-stream";
@@ -622,7 +666,7 @@ bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
   if (amp != std::wstring::npos) raw.resize(amp);
 
   std::wstring rel;
-  if (!PercentDecode(raw, &rel) || !SafeRelativePath(rel)) return true;
+  if (!PercentDecode(raw, &rel) || rel.empty()) return true;
 
   std::shared_ptr<const Snapshot> snap;
   {
@@ -631,9 +675,18 @@ bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
   }
   if (!snap || snap->folder.empty()) return true;
 
-  std::wstring full = snap->folder;
-  if (full.back() != L'\\' && full.back() != L'/') full += L'\\';
-  for (wchar_t c : rel) full += (c == L'/') ? L'\\' : c;
+  std::wstring full;
+  const bool allowOutside = ConfigAllowOutsideImages();
+  if (allowOutside) {
+    if (!ResolveAssetPath(snap->folder, rel, &full)) return true;
+    // 放行目录外路径时只认图片扩展名，别让页面借 __asset 读任意文件
+    if (ContentTypeFor(full) == L"application/octet-stream") return true;
+  } else {
+    if (!SafeRelativePath(rel)) return true;
+    full = snap->folder;
+    if (full.back() != L'\\' && full.back() != L'/') full += L'\\';
+    for (wchar_t c : rel) full += (c == L'/') ? L'\\' : c;
+  }
 
   const DWORD attr = ::GetFileAttributesW(full.c_str());
   if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) return true;
