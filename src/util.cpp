@@ -1,6 +1,9 @@
 #include "util.h"
 
 #include <strsafe.h>
+#include <winver.h>
+
+#include <vector>
 
 namespace {
 
@@ -163,4 +166,33 @@ const wchar_t* UtilLeafName(const wchar_t* path) {
     if (*p == L'\\' || *p == L'/') leaf = p + 1;
   }
   return leaf;
+}
+
+std::wstring UtilModuleVersion(void) {
+  HMODULE hmod = nullptr;
+  if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&UtilModuleVersion), &hmod)) {
+    return std::wstring();
+  }
+  wchar_t szPath[MAX_PATH * 2];
+  const DWORD n = ::GetModuleFileNameW(hmod, szPath, ARRAYSIZE(szPath));
+  if (n == 0 || n >= ARRAYSIZE(szPath)) return std::wstring();
+
+  DWORD dummy = 0;
+  const DWORD size = ::GetFileVersionInfoSizeW(szPath, &dummy);
+  if (size == 0) return std::wstring();
+  std::vector<unsigned char> buf(size);
+  if (!::GetFileVersionInfoW(szPath, 0, size, buf.data())) return std::wstring();
+
+  VS_FIXEDFILEINFO* info = nullptr;
+  UINT len = 0;
+  if (!::VerQueryValueW(buf.data(), L"\\", reinterpret_cast<void**>(&info), &len) || !info) {
+    return std::wstring();
+  }
+  wchar_t text[64];
+  ::StringCchPrintfW(text, ARRAYSIZE(text), L"%u.%u.%u",
+                     HIWORD(info->dwFileVersionMS), LOWORD(info->dwFileVersionMS),
+                     HIWORD(info->dwFileVersionLS));
+  return text;
 }

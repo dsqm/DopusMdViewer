@@ -265,6 +265,8 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"return (t.getAttribute('src')||'-').slice(0,72)+'|nw='+t.naturalWidth;});"
             L"out.push('imgs='+ims.join(' ; '));"
             L"out.push('panel='+(document.querySelector('.net-consent:not([hidden])')?1:0));"
+            L"out.push('mermaid='+document.querySelectorAll('[data-mermaid=\"done\"]').length"
+            L"+'/'+document.querySelectorAll('.mermaid-block').length);"
             L"var b5=document.querySelector('.blk[data-i=\"5\"]');"
             L"out.push('blk5='+String(b5&&b5.innerHTML).slice(0,240));"
             L"out.push('bigmap='+bl+' heights='+Array.from(V.heights.slice(0,4)).join(',')"

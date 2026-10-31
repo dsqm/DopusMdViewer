@@ -8,6 +8,16 @@
 #pragma once
 
 #include <string>
+#include <vector>
+
+struct SkinEntry {
+  std::wstring id;
+  std::wstring label;  // 显示名，项尾带 (内置) / (用户)
+  bool user = false;
+};
+
+// 枚举内置与用户皮肤；同名用户皮肤覆盖内置，只出现一条。按显示名排序。
+void SkinList(std::vector<SkinEntry>* out);
 
 // id 只允许 [a-z0-9-]，其余字符丢弃；非法或空 id 返回 false。
 bool SkinLoad(const std::wstring& id, std::wstring* cssOut);

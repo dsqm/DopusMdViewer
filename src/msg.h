@@ -37,6 +37,9 @@ std::wstring MakeBig(const std::string& table);
 // 确认面板在页面内渲染，这里只推配置。
 std::wstring MakeNetMode(int mode);
 
+// cfg|<mermaid>|<katex>|<highlight>|<inlineHtml>|<localImages>：渲染开关（1/0）。
+std::wstring MakeCfg(const Config& config);
+
 // clear|
 std::wstring MakeClear();
 

@@ -28,7 +28,16 @@ struct Config {
   int netImageMode;
   // 图片是否允许引用文档目录之外的路径（../ 与绝对路径）。默认关闭。
   bool allowOutsideImages;
+  // 渲染开关（票 09 的“渲染”页）。默认全开。
+  bool renderMermaid;
+  bool renderKatex;
+  bool renderHighlight;
+  bool renderInlineHtml;
+  bool renderLocalImages;
 };
+
+// 内置默认值（设置界面的“恢复默认”与外置 JSON 缺失时共用）。
+Config ConfigDefaults(void);
 
 // config.json 的绝对路径：<数据目录>\config.json
 const wchar_t* ConfigPath(void);
@@ -48,5 +57,5 @@ int ConfigNetImageMode(void);
 // 是否允许图片引用文档目录外的路径（../ 与绝对路径）。
 bool ConfigAllowOutsideImages(void);
 
-// 一次性写入设置并更新内存值；原子写（.tmp + MoveFileEx）。
-bool ConfigSaveSettings(int netImageMode, bool allowOutsideImages);
+// 写入整份设置并更新内存值；原子写（.tmp + MoveFileEx），保留未知键。
+bool ConfigSave(const Config& config);

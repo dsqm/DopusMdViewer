@@ -63,3 +63,6 @@ void WebHostReleaseController(void);
 
 // 只给 tools/hosttest 用：在页面里执行一段脚本（滚动验收）。
 bool WebHostExecuteScript(HWND hViewer, const std::wstring& script);
+
+// 本机 WebView2 Runtime 版本；未安装或读不到返回空串。设置界面“关于”用。
+std::wstring WebHostRuntimeVersion(void);

@@ -61,7 +61,7 @@ echo [4/5] Á´½Ó DLL...
   "/DEF:%PROJ%DopusMdViewer.def" "/OUT:%PROJ%bin\DopusMdViewer.dll" ^
   "bin\obj\*.obj" "bin\obj\resource.res" ^
   "%W2LIB%" kernel32.lib user32.lib gdi32.lib ole32.lib oleaut32.lib ^
-  shell32.lib shlwapi.lib advapi32.lib psapi.lib version.lib
+  shell32.lib shlwapi.lib advapi32.lib psapi.lib version.lib comctl32.lib
 if errorlevel 1 goto :fail
 
 echo.

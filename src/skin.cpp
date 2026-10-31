@@ -2,6 +2,9 @@
 
 #include <windows.h>
 
+#include <algorithm>
+#include <map>
+
 #include "log.h"
 #include "util.h"
 
@@ -19,6 +22,43 @@ std::wstring SanitizeId(const std::wstring& id) {
 }
 
 }  // namespace
+
+namespace {
+
+void CollectSkins(const std::wstring& dir, bool user, std::map<std::wstring, SkinEntry>* out) {
+  if (dir.empty() || !out) return;
+  WIN32_FIND_DATAW fd = {};
+  HANDLE h = ::FindFirstFileW((dir + L"\\*.css").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return;
+  do {
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+    std::wstring name = fd.cFileName;
+    const size_t dot = name.find_last_of(L'.');
+    if (dot == std::wstring::npos || dot == 0) continue;
+    const std::wstring id = name.substr(0, dot);
+    SkinEntry entry;
+    entry.id = id;
+    entry.user = user;
+    entry.label = id + (user ? L"（用户）" : L"（内置）");
+    (*out)[id] = entry;  // 用户目录同名覆盖内置
+  } while (::FindNextFileW(h, &fd));
+  ::FindClose(h);
+}
+
+}  // namespace
+
+void SkinList(std::vector<SkinEntry>* out) {
+  if (!out) return;
+  out->clear();
+  std::map<std::wstring, SkinEntry> found;
+  CollectSkins(SkinBuiltinDir(), false, &found);
+  CollectSkins(SkinUserDir(), true, &found);
+  for (const auto& item : found) out->push_back(item.second);
+  std::sort(out->begin(), out->end(), [](const SkinEntry& a, const SkinEntry& b) {
+    return ::CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE, a.label.c_str(), -1,
+                            b.label.c_str(), -1) == CSTR_LESS_THAN;
+  });
+}
 
 std::wstring SkinBuiltinDir(void) {
   const std::wstring webDir = UtilWebDir();

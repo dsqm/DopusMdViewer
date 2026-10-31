@@ -94,6 +94,14 @@ std::wstring MakeNetMode(int mode) {
   return Join({L"net", std::to_wstring(mode)});
 }
 
+std::wstring MakeCfg(const Config& config) {
+  return Join({L"cfg", config.renderMermaid ? L"1" : L"0",
+               config.renderKatex ? L"1" : L"0",
+               config.renderHighlight ? L"1" : L"0",
+               config.renderInlineHtml ? L"1" : L"0",
+               config.renderLocalImages ? L"1" : L"0"});
+}
+
 std::wstring MakeClear(void) { return L"clear"; }
 
 bool SplitType(const std::wstring& frame, std::wstring* type, std::wstring* rest) {

@@ -698,3 +698,12 @@ bool WebHostExecuteScript(HWND hViewer, const std::wstring& script) {
   }
   return result != 0;
 }
+
+std::wstring WebHostRuntimeVersion(void) {
+  LPWSTR version = nullptr;
+  const HRESULT hr = ::GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
+  if (FAILED(hr) || !version) return std::wstring();
+  std::wstring out(version);
+  ::CoTaskMemFree(version);
+  return out;
+}

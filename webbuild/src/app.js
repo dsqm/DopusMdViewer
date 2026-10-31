@@ -150,7 +150,7 @@ md.renderer.rules.fence = (tokens, idx) => {
   const lang = info.split(/\s+/)[0].toLowerCase()
   const code = token.content
 
-  if (lang === 'mermaid') {
+  if (lang === 'mermaid' && state.render.mermaid) {
     return '<div class="mermaid-block" data-mermaid="pending">'
       + '<pre class="mermaid-src"><code>' + escapeHtml(code) + '</code></pre>'
       + '</div>\n'
@@ -161,7 +161,7 @@ md.renderer.rules.fence = (tokens, idx) => {
   const tooHuge = lines > HIGHLIGHT_MAX_LINES || bytes > HIGHLIGHT_MAX_BYTES
 
   let body
-  if (lang && !tooHuge && hljs.getLanguage(lang)) {
+  if (lang && state.render.highlight && !tooHuge && hljs.getLanguage(lang)) {
     body = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
   } else {
     body = escapeHtml(code)
@@ -240,6 +240,12 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'IMG') {
     const src = node.getAttribute('src')
     if (!src) return
+    // 本地图片开关关闭：data/blob 属于文档自身，仍保留；网络图交给下面的确认流程
+    if (!state.render.localImages && !/^(?:data|blob):/i.test(src) && !isRemoteUrl(src)) {
+      node.removeAttribute('src')
+      node.setAttribute('title', '本地图片已关闭')
+      return
+    }
     // 绝对路径/../ 已被上面的 hook 换成本地 __asset，不要再走网络图确认
     if (/^https:\/\/mdblocks\.local\//i.test(src)) return
     if (isRemoteUrl(src)) {
@@ -325,7 +331,16 @@ const state = {
   mermaidState: 'idle',
   mermaidApi: null,
   generation: 0,
+  render: {
+    mermaid: true,
+    katex: true,
+    highlight: true,
+    inlineHtml: true,
+    localImages: true,
+  },
 }
+
+const MATH_RULES = ['math_inline', 'math_inline_double', 'math_block', 'math_block_eqno']
 
 const V = {
   active: false,
@@ -2105,6 +2120,31 @@ function refreshBigLayout() {
   schedulePlace()
 }
 
+/* ---------------- 渲染开关（设置里的“渲染”页） ---------------- */
+
+function applyRenderConfig(flags) {
+  const next = {
+    mermaid: !!flags.mermaid,
+    katex: !!flags.katex,
+    highlight: !!flags.highlight,
+    inlineHtml: !!flags.inlineHtml,
+    localImages: !!flags.localImages,
+  }
+  const changed = Object.keys(next).some((k) => state.render[k] !== next[k])
+  state.render = next
+
+  if (md.options.html !== next.inlineHtml) md.set({ html: next.inlineHtml })
+  for (const name of MATH_RULES) {
+    try {
+      if (next.katex) md.enable(name)
+      else md.disable(name)
+    } catch {
+      // 规则缺席（插件版本变化）时忽略
+    }
+  }
+  if (changed && V.active) rerenderResidents()
+}
+
 /* ---------------- 皮肤 ---------------- */
 
 function applySkin(css, skinId) {
@@ -2279,7 +2319,7 @@ async function renderMermaidBlocks(root, generation) {
   }
 
   for (const el of pending) {
-    if (generation !== renderGeneration) return
+    if (generation !== renderGeneration || !state.render.mermaid) return
     const srcEl = el.querySelector('code')
     const src = srcEl ? srcEl.textContent : ''
     const id = 'mdv-mermaid-' + (++mermaidSeq)
@@ -2298,7 +2338,7 @@ async function renderMermaidBlocks(root, generation) {
         api.render(id, src, host),
         new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000)),
       ])
-      if (generation !== renderGeneration) return
+      if (generation !== renderGeneration || !state.render.mermaid) return
       const svg = DOMPurify.sanitize(out.svg, {
         USE_PROFILES: { svg: true, svgFilters: true },
         // mermaid 把配色与字体写进 SVG 内联 <style>，剥掉就只剩框没有字
@@ -2413,6 +2453,18 @@ function onHostMessage(event) {
   if (type === 'net') {
     const mode = parseInt(rest, 10)
     setNetMode(Number.isInteger(mode) ? mode : 1)
+    return
+  }
+
+  if (type === 'cfg') {
+    const f = rest.split('|')
+    applyRenderConfig({
+      mermaid: f[0] === '1',
+      katex: f[1] === '1',
+      highlight: f[2] === '1',
+      inlineHtml: f[3] === '1',
+      localImages: f[4] === '1',
+    })
     return
   }
 

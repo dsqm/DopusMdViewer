@@ -39,6 +39,11 @@ void SetDefaults(Config* c) {
   c->font.measureEm = 40;
   c->netImageMode = 1;  // 每主机每文档确认
   c->allowOutsideImages = false;
+  c->renderMermaid = true;
+  c->renderKatex = true;
+  c->renderHighlight = true;
+  c->renderInlineHtml = true;
+  c->renderLocalImages = true;
 }
 
 int ClampInt(int v, int lo, int hi, int fallback) {
@@ -80,6 +85,18 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
     c->allowOutsideImages = root["allowOutsideImages"].get<bool>();
   }
 
+  if (root.contains("render") && root["render"].is_object()) {
+    const nlohmann::json& render = root["render"];
+    auto readBool = [&render](const char* key, bool* out) {
+      if (render.contains(key) && render[key].is_boolean()) *out = render[key].get<bool>();
+    };
+    readBool("mermaid", &c->renderMermaid);
+    readBool("katex", &c->renderKatex);
+    readBool("highlight", &c->renderHighlight);
+    readBool("inlineHtml", &c->renderInlineHtml);
+    readBool("localImages", &c->renderLocalImages);
+  }
+
   if (root.contains("skin") && root["skin"].is_string()) {
     const std::string id = root["skin"].get<std::string>();
     if (!id.empty()) c->skin.assign(id.begin(), id.end());
@@ -100,7 +117,7 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
   }
   if (font.contains("measure") && font["measure"].is_number_integer()) {
     const int m = font["measure"].get<int>();
-    c->font.measureEm = (m == 0) ? 0 : ClampInt(m, 20, 200, 40);
+    c->font.measureEm = (m == 0) ? 0 : ClampInt(m, 8, 80, 40);
   }
 }
 
@@ -211,19 +228,30 @@ bool ConfigAllowOutsideImages(void) {
   return g_config.allowOutsideImages;
 }
 
-bool ConfigSaveSettings(int netImageMode, bool allowOutsideImages) {
-  if (netImageMode < 0 || netImageMode > 2) return false;
+Config ConfigDefaults(void) {
+  Config c;
+  SetDefaults(&c);
+  return c;
+}
+
+bool ConfigSave(const Config& input) {
+  Config c = input;
+  if (c.netImageMode < 0 || c.netImageMode > 2) c.netImageMode = 1;
+  if (c.font.ui.empty()) c.font.ui = DefaultUi();
+  if (c.font.mono.empty()) c.font.mono = DefaultMono();
+  c.font.sizePx = ClampInt(c.font.sizePx, 8, 48, 15);
+  c.font.lineHeight = ClampDouble(c.font.lineHeight, 1.2, 2.2, 1.65);
+  if (c.font.measureEm != 0) c.font.measureEm = ClampInt(c.font.measureEm, 8, 80, 40);
+
   const wchar_t* path = ConfigPath();
   if (!path || !*path) {
     LogLine(L"CONFIG: 数据目录不可用，无法写盘");
     return false;
   }
   if (!g_loaded) ConfigLoad();
-
   {
     std::lock_guard<std::mutex> lock(g_modeMutex);
-    g_config.netImageMode = netImageMode;
-    g_config.allowOutsideImages = allowOutsideImages;
+    g_config = c;
   }
 
   // 读旧文件并保留未知键，避免设置一次就把将来的配置项抹掉
@@ -238,27 +266,39 @@ bool ConfigSaveSettings(int netImageMode, bool allowOutsideImages) {
     }
   }
 
-  const Config snap = ConfigSnapshot();
-  root["skin"] = WideToUtf8(snap.skin);
-  nlohmann::json font;
-  font["ui"] = StackToJson(snap.font.ui);
-  font["body"] = StackToJson(snap.font.body);
-  font["mono"] = StackToJson(snap.font.mono);
-  font["size"] = snap.font.sizePx;
-  font["lineHeight"] = snap.font.lineHeight;
-  font["measure"] = snap.font.measureEm;
+  root["version"] = 1;
+  root["skin"] = WideToUtf8(c.skin);
+  nlohmann::json font = root.contains("font") && root["font"].is_object()
+                            ? root["font"]
+                            : nlohmann::json::object();
+  font["ui"] = StackToJson(c.font.ui);
+  font["body"] = StackToJson(c.font.body);
+  font["mono"] = StackToJson(c.font.mono);
+  font["size"] = c.font.sizePx;
+  font["lineHeight"] = c.font.lineHeight;
+  font["measure"] = c.font.measureEm;
   root["font"] = font;
   root["netImageConfirm"] =
-      netImageMode == 0 ? "off" : (netImageMode == 2 ? "doc" : "host");
-  root["allowOutsideImages"] = allowOutsideImages;
+      c.netImageMode == 0 ? "off" : (c.netImageMode == 2 ? "doc" : "host");
+  root["allowOutsideImages"] = c.allowOutsideImages;
+  nlohmann::json render;
+  render["mermaid"] = c.renderMermaid;
+  render["katex"] = c.renderKatex;
+  render["highlight"] = c.renderHighlight;
+  render["inlineHtml"] = c.renderInlineHtml;
+  render["localImages"] = c.renderLocalImages;
+  root["render"] = render;
 
   const std::string bytes = root.dump(2);
   if (!WriteConfigAtomically(path, bytes)) {
     LogLine(L"CONFIG: 写入失败 %s", path);
     return false;
   }
-  LogLine(L"CONFIG: 已写入 %s netImageConfirm=%hs allowOutsideImages=%d", path,
-          netImageMode == 0 ? "off" : (netImageMode == 2 ? "doc" : "host"),
-          allowOutsideImages ? 1 : 0);
+  LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
+          L"net=%d outside=%d render=%d%d%d%d%d",
+          path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
+          c.netImageMode, c.allowOutsideImages ? 1 : 0, c.renderMermaid ? 1 : 0,
+          c.renderKatex ? 1 : 0, c.renderHighlight ? 1 : 0, c.renderInlineHtml ? 1 : 0,
+          c.renderLocalImages ? 1 : 0);
   return true;
 }

@@ -40,3 +40,6 @@ std::wstring UtilParentDir(const std::wstring& path);
 
 // 文件名部分。
 const wchar_t* UtilLeafName(const wchar_t* path);
+
+// 本 DLL 的版本资源（"1.2.3"）；读不到返回空串。
+std::wstring UtilModuleVersion(void);

@@ -213,12 +213,16 @@ void PushChrome(ViewerState* st) {
 
   const bool ok = WebHostPost(st->hwndSelf, msg::MakeSkin(skinId, css)) &&
                   WebHostPost(st->hwndSelf, msg::MakeFx(cfg.font)) &&
-                  WebHostPost(st->hwndSelf, msg::MakeNetMode(cfg.netImageMode));
+                  WebHostPost(st->hwndSelf, msg::MakeNetMode(cfg.netImageMode)) &&
+                  WebHostPost(st->hwndSelf, msg::MakeCfg(cfg));
   st->chromePushed = ok;
 
-  LogLine(L"VIEWER: 已推送皮肤 \"%s\"（%zu 字符）、字体（%dpx / %.2f / %dem）与网络图确认档位 %d",
+  LogLine(L"VIEWER: 已推送皮肤 \"%s\"（%zu 字符）、字体（%dpx / %.2f / %dem）、网络图档位 %d、"
+          L"渲染开关 %d%d%d%d%d",
           skinId.c_str(), css.size(), cfg.font.sizePx, cfg.font.lineHeight, cfg.font.measureEm,
-          cfg.netImageMode);
+          cfg.netImageMode, cfg.renderMermaid ? 1 : 0, cfg.renderKatex ? 1 : 0,
+          cfg.renderHighlight ? 1 : 0, cfg.renderInlineHtml ? 1 : 0,
+          cfg.renderLocalImages ? 1 : 0);
 }
 
 void PushBigTable(ViewerState* st) {
