@@ -163,6 +163,71 @@ body.dev #doc {
 .blk + .blk { margin-top: var(--md-space-block); }
 .blk--big { }
 
+/* 巨型块（>2000 行）：固定高度，内部只放视口附近的行窗口。
+   块顶留白仍是 .blk 的 1em；窗口容器定位在留白之下，窗口外的行被裁剪，
+   pre 由 JS 按行号平移，行位置始终与块内真实行号对齐。 */
+body.virtual .blk--big { overflow: hidden; }
+
+body.virtual .blk--big .big-frame {
+  position: absolute;
+  left: 1.5em;
+  right: 1.5em;
+  top: var(--md-space-block);
+  bottom: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.8em 1em;
+  background: var(--md-block-bg);
+  color: var(--md-block-fg);
+  border: 1px solid var(--md-block-border);
+  border-radius: var(--md-radius);
+  /* 段高几百万 px，横向滚动条会落在几千屏之外：藏起来，横向滚用 Shift+滚轮 */
+  scrollbar-width: none;
+}
+
+body.virtual .blk--big .big-frame::-webkit-scrollbar { display: none; }
+
+body.virtual .blk--big pre.big-pre {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 0;
+  overflow: visible;
+  line-height: inherit;
+  will-change: transform;
+}
+
+body.virtual .blk--big pre.big-pre > code {
+  display: block;
+  white-space: pre;
+}
+
+/* 分段：一个巨型块的相邻段拼成同一张框——首段不要下边框，中间段全无边框，
+   末段只留下边框；左/右边框与横向位置一致，接缝处看不出断点。 */
+body.virtual .blk--bighead .big-frame {
+  border-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+body.virtual .blk--bigseg { padding-top: 0; }
+
+body.virtual .blk--bigseg .big-frame {
+  top: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top: 0;
+  border-bottom: 0;
+  border-radius: 0;
+}
+
+body.virtual .blk--biglast .big-frame {
+  border-bottom: 1px solid var(--md-block-border);
+  border-bottom-left-radius: var(--md-radius);
+  border-bottom-right-radius: var(--md-radius);
+}
+
 /* ---------------- 标题 ---------------- */
 
 h1, h2, h3, h4, h5, h6 {

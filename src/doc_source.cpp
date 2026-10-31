@@ -1,10 +1,13 @@
 // doc_source.cpp - 当前文档索引的生命周期与块正文服务。
 
+#define NOMINMAX
 #include "doc_source.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cwctype>
+#include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -132,9 +135,212 @@ bool ParseBlocksUri(const std::wstring& uri, uint32_t* from, uint32_t* count) {
   return true;
 }
 
+// ---------------- 巨型块行窗口（票 05 第 4 节） ----------------
+
+constexpr uint32_t kLineCheckpoint = 64;
+constexpr size_t kLineCacheEntries = 8;
+constexpr uint64_t kMaxWindowBytes = 1ull << 20;
+constexpr size_t kBigTableMax = 4096;
+constexpr size_t kNoNewline = static_cast<size_t>(-1);
+
+struct LineCache {
+  uint32_t docId = 0;
+  uint64_t blockStart = 0;
+  uint64_t blockEnd = 0;
+  uint64_t lastUse = 0;
+  std::vector<uint64_t> cp;   // cp[k] = 第 k*64 行的起始字节
+  uint32_t scannedLines = 0;  // 已跨过的完整行数
+  uint64_t scanOff = 0;       // 第 scannedLines 行的起始字节（只在换行处前移）
+  uint32_t totalLines = 0;    // 0 = 还没扫到块尾
+};
+
+std::mutex g_lineMu;
+std::map<uint32_t, LineCache> g_lineCache;
+uint64_t g_lineClock = 0;
+
+// 下一个换行的字节偏移（相对 p）；UTF-16 按 2 字节单元比较，不能直接搜 0x0A。
+size_t NextNewline(const unsigned char* p, size_t n, bool wide, bool bigEndian) {
+  if (!wide) {
+    const void* q = std::memchr(p, '\n', n);
+    return q ? static_cast<size_t>(static_cast<const unsigned char*>(q) - p) : kNoNewline;
+  }
+  for (size_t i = 0; i + 1 < n; i += 2) {
+    const unsigned char lo = bigEndian ? p[i + 1] : p[i];
+    const unsigned char hi = bigEndian ? p[i] : p[i + 1];
+    if (lo == '\n' && hi == 0) return i;
+  }
+  return kNoNewline;
+}
+
+bool ReadAt(HANDLE h, uint64_t off, size_t want, std::vector<unsigned char>* buf, size_t* got) {
+  LARGE_INTEGER pos = {};
+  pos.QuadPart = static_cast<LONGLONG>(off);
+  if (!::SetFilePointerEx(h, pos, nullptr, FILE_BEGIN)) return false;
+  DWORD n = 0;
+  if (!::ReadFile(h, buf->data(), static_cast<DWORD>(want), &n, nullptr) || n == 0) return false;
+  *got = n;
+  return true;
+}
+
+size_t ChunkBytes(uint64_t remaining, size_t cap, bool wide) {
+  size_t want = static_cast<size_t>(std::min<uint64_t>(remaining, cap));
+  if (wide) want &= ~size_t(1);
+  return want;
+}
+
+// 扫到第 line 行之前，顺带把每 64 行一个 checkpoint 补上。
+bool ScanToLine(HANDLE h, LineCache* c, uint32_t line, bool wide, bool bigEndian) {
+  if (!c || c->scannedLines >= line) return true;
+  // 总行数已知也可能只是末尾那一小段读到过（cp 还没覆盖到 line），
+  // 不能因此跳过扫描；只有 line 超过总行数才是真的没有。
+  if (c->totalLines != 0 && line > c->totalLines) return true;
+  const size_t unit = wide ? 2 : 1;
+  std::vector<unsigned char> buf(1u << 20);
+
+  uint64_t pos = c->scanOff;  // 当前行的起点；块内的长行可能跨多次读
+  while (c->scannedLines < line && pos < c->blockEnd) {
+    const size_t want = ChunkBytes(c->blockEnd - pos, buf.size(), wide);
+    if (want == 0) break;
+    size_t got = 0;
+    if (!ReadAt(h, pos, want, &buf, &got)) return false;
+
+    size_t k = 0;
+    bool stop = false;
+    while (k + unit <= got) {
+      const size_t nl = NextNewline(buf.data() + k, got - k, wide, bigEndian);
+      if (nl == kNoNewline) {
+        k = got - (got - k) % unit;
+        break;
+      }
+      const size_t nlAt = k + nl;
+      const uint64_t next = pos + nlAt + unit;
+      ++c->scannedLines;
+      if (c->scannedLines % kLineCheckpoint == 0) c->cp.push_back(next);
+      c->scanOff = next;
+      k = nlAt + unit;
+      if (c->scannedLines >= line) {
+        stop = true;
+        break;
+      }
+    }
+    if (stop) break;
+    pos += k;  // 本块没有（更多）换行：沿长行继续往前读
+  }
+
+  if (pos >= c->blockEnd && c->totalLines == 0) {
+    // 块尾不是换行：最后一行还有字节时算一行
+    c->totalLines = c->scannedLines + (c->scanOff < c->blockEnd ? 1 : 0);
+  }
+  return true;
+}
+
+// 第 from 行的起始字节。from 必须已扫过（ScanToLine 保证）。
+bool SeekLine(HANDLE h, LineCache* c, uint32_t from, bool wide, bool bigEndian,
+              uint64_t* outOff) {
+  const uint32_t k = from / kLineCheckpoint;
+  if (k >= c->cp.size()) return false;
+  uint64_t pos = c->cp[k];
+  uint32_t line = k * kLineCheckpoint;
+  std::vector<unsigned char> buf(1u << 20);
+
+  while (line < from) {
+    if (pos >= c->blockEnd) return false;
+    const size_t want = ChunkBytes(c->blockEnd - pos, buf.size(), wide);
+    if (want == 0) return false;
+    size_t got = 0;
+    if (!ReadAt(h, pos, want, &buf, &got)) return false;
+
+    size_t i = 0;
+    bool reached = false;
+    while (i + (wide ? 2 : 1) <= got) {
+      const size_t nl = NextNewline(buf.data() + i, got - i, wide, bigEndian);
+      if (nl == kNoNewline) {
+        i = got - (got - i) % (wide ? 2 : 1);
+        break;
+      }
+      const size_t nlAt = i + nl;
+      ++line;
+      i = nlAt + (wide ? 2 : 1);
+      if (line == from) {
+        reached = true;
+        break;
+      }
+    }
+    pos += i;
+    if (reached) break;
+  }
+  if (line != from) return false;
+  *outOff = pos;
+  return true;
+}
+
+// 从 start（某行行首）读 count 行；got 含块尾没有换行的最后一行。
+bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide,
+               bool bigEndian, std::string* raw, uint32_t* gotLines) {
+  const size_t unit = wide ? 2 : 1;
+  std::vector<unsigned char> buf(1u << 20);
+  uint64_t pos = start;
+  uint32_t got = 0;
+
+  while (got < count && pos < c->blockEnd && raw->size() < kMaxWindowBytes) {
+    const size_t cap = static_cast<size_t>(
+        std::min<uint64_t>(buf.size(), kMaxWindowBytes - raw->size()));
+    const size_t want = ChunkBytes(c->blockEnd - pos, cap, wide);
+    if (want == 0) break;
+    size_t n = 0;
+    if (!ReadAt(h, pos, want, &buf, &n)) return false;
+
+    const uint64_t chunkStart = pos;
+    size_t i = 0;
+    bool stop = false;
+    while (i + unit <= n) {
+      const size_t nl = NextNewline(buf.data() + i, n - i, wide, bigEndian);
+      if (nl == kNoNewline) {
+        i = n - (n - i) % unit;
+        break;
+      }
+      const size_t nlAt = i + nl;
+      const size_t lineBytes = nlAt + unit - i;
+      if (raw->size() + lineBytes > kMaxWindowBytes) {
+        stop = true;  // 单行就放不下：停在完整行边界
+        break;
+      }
+      raw->append(reinterpret_cast<const char*>(buf.data() + i), lineBytes);
+      ++got;
+      i = nlAt + unit;
+      if (got >= count) {
+        stop = true;
+        break;
+      }
+    }
+    pos = chunkStart + i;
+    if (stop) break;
+
+    if (pos >= c->blockEnd) break;
+    // 本块余下没有换行；只有到达块尾才是「最后一行没有换行」
+    if (chunkStart + n >= c->blockEnd) {
+      const size_t tailLen = n - i;
+      if (tailLen > 0 && raw->size() + tailLen <= kMaxWindowBytes) {
+        raw->append(reinterpret_cast<const char*>(buf.data() + i), tailLen);
+        ++got;
+      }
+      pos = c->blockEnd;
+      break;
+    }
+  }
+  *gotLines = got;
+  return true;
+}
+
+uint32_t QueryU32(const std::wstring& query, const wchar_t* key, uint32_t def) {
+  const std::wstring k = std::wstring(key) + L"=";
+  const size_t p = query.find(k);
+  if (p == std::wstring::npos) return def;
+  return static_cast<uint32_t>(_wtoi(query.c_str() + p + k.size()));
+}
+
 std::shared_ptr<const Snapshot> MakeSnapshot(std::unique_ptr<doc::IndexBuilder> builder,
-                                             const std::wstring& path, uint64_t fileSize) {
-  auto snap = std::make_shared<Snapshot>();
+                                             const std::wstring& path, uint64_t fileSize) {  auto snap = std::make_shared<Snapshot>();
   snap->builder = std::move(builder);
   snap->path = path;
   snap->folder = ParentDirOf(path);
@@ -236,6 +442,10 @@ void Close() {
     g_owner = nullptr;
   }
   if (cancel) cancel->store(true);
+  {
+    std::lock_guard<std::mutex> lock(g_lineMu);
+    g_lineCache.clear();
+  }
 }
 
 bool IsOwner(HWND owner) {
@@ -397,6 +607,155 @@ bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
   *contentType = ContentTypeFor(full);
   *status = 200;
   return true;
+}
+
+// 响应 https://mdblocks.local/__lines：巨型块的行窗口。
+bool ServeLines(const std::wstring& uri, std::string* body, int* status) {
+  if (!body || !status) return false;
+  body->clear();
+  *status = 404;
+
+  static const wchar_t kBase[] = L"https://mdblocks.local/__lines";
+  const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
+  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
+
+  const size_t q = uri.find(L'?');
+  const std::wstring query =
+      q == std::wstring::npos ? std::wstring() : uri.substr(q + 1);
+  const uint32_t block = QueryU32(query, L"i", 0xFFFFFFFFu);
+  const uint32_t from = QueryU32(query, L"from", 0);
+  uint32_t count = QueryU32(query, L"count", 128);
+  if (count == 0) count = 128;
+  if (count > 512) count = 512;
+
+  std::shared_ptr<const Snapshot> snap;
+  uint32_t docId = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    snap = g_snap;
+    docId = g_docId;
+  }
+  *status = 200;
+  if (!snap) return true;
+
+  const doc::BlockIndex& ix = snap->builder->index();
+  if (block >= ix.BlockCount()) return true;
+  const uint64_t blockStart = ix.Start(block);
+  const uint64_t blockEnd = ix.End(block);
+  if (blockEnd <= blockStart) return true;
+
+  const bool wide = snap->enc.encoding == doc::Encoding::Utf16LE ||
+                    snap->enc.encoding == doc::Encoding::Utf16BE;
+  const bool bigEndian = snap->enc.encoding == doc::Encoding::Utf16BE;
+
+  HANDLE h = ::CreateFileW(snap->path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    LogLine(L"DOCSRC: __lines 打开失败 i=%u err=%lu", block, ::GetLastError());
+    *status = 404;
+    return true;
+  }
+  const ULONGLONG t0 = ::GetTickCount64();
+
+  std::lock_guard<std::mutex> guard(g_lineMu);
+  auto it = g_lineCache.find(block);
+  if (it == g_lineCache.end() || it->second.docId != docId ||
+      it->second.blockStart != blockStart || it->second.blockEnd != blockEnd) {
+    LineCache fresh;
+    fresh.docId = docId;
+    fresh.blockStart = blockStart;
+    fresh.blockEnd = blockEnd;
+    fresh.cp.push_back(blockStart);
+    fresh.scanOff = blockStart;
+    g_lineCache[block] = fresh;
+    it = g_lineCache.find(block);
+    if (g_lineCache.size() > kLineCacheEntries) {
+      auto victim = g_lineCache.begin();
+      for (auto cur = g_lineCache.begin(); cur != g_lineCache.end(); ++cur) {
+        if (cur->first != block && cur->second.lastUse < victim->second.lastUse) victim = cur;
+      }
+      if (victim->first != block) g_lineCache.erase(victim);
+    }
+  }
+  LineCache& c = it->second;
+  c.lastUse = ++g_lineClock;
+
+  bool ok = ScanToLine(h, &c, from, wide, bigEndian);
+  const uint32_t total = c.totalLines;
+  uint64_t startOff = blockStart;
+  const bool seekOk = !ok || from == 0 || SeekLine(h, &c, from, wide, bigEndian, &startOff);
+  ok = ok && seekOk;
+  std::string raw;
+  uint32_t got = 0;
+  bool readOk = true;
+  if (ok && (total == 0 || from < total)) {
+    const uint32_t want = total ? std::min<uint32_t>(count, total - from) : count;
+    readOk = ReadLines(h, &c, startOff, want, wide, bigEndian, &raw, &got);
+    if (readOk && got < want && c.totalLines == 0) {
+      // 读到块尾：行数到此为止
+      c.totalLines = from + got;
+    }
+  } else if (ok && total != 0 && from >= total) {
+    got = 0;
+  }
+  ::CloseHandle(h);
+  const ULONGLONG elapsed = ::GetTickCount64() - t0;
+  if (!ok || !readOk) {
+    LogLine(L"DOCSRC: __lines 失败 i=%u from=%u cnt=%u scan=%d seek=%d read=%d 扫描到第 %u 行",
+            block, from, count, ok ? 1 : 0, seekOk ? 1 : 0, readOk ? 1 : 0, c.scannedLines);
+    *status = 404;
+    return true;
+  }
+  if (elapsed > 200) {
+    LogLine(L"DOCSRC: __lines 慢请求 i=%u from=%u cnt=%u 用 %llu ms（扫到第 %u 行）", block,
+            from, count, static_cast<unsigned long long>(elapsed), c.scannedLines);
+  }
+
+  std::string utf8;
+  switch (snap->enc.encoding) {
+    case doc::Encoding::Utf8:
+      utf8 = std::move(raw);
+      break;
+    case doc::Encoding::Gb18030:
+      utf8 = DecodeMbcs(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), 54936);
+      break;
+    case doc::Encoding::Utf16LE:
+      utf8 = DecodeWide(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), false);
+      break;
+    case doc::Encoding::Utf16BE:
+      utf8 = DecodeWide(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), true);
+      break;
+  }
+
+  AppendU32(body, block);
+  AppendU32(body, from);
+  AppendU32(body, got);
+  AppendU32(body, c.totalLines);
+  AppendU32(body, static_cast<uint32_t>(utf8.size()));
+  body->append(utf8);
+  return true;
+}
+
+void BigTable(std::string* out) {
+  if (!out) return;
+  out->clear();
+  std::shared_ptr<const Snapshot> snap;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    snap = g_snap;
+  }
+  if (!snap) return;
+  const doc::BlockIndex& ix = snap->builder->index();
+  const std::vector<uint32_t>& blocks = ix.bigBlockIndex();
+  const std::vector<uint32_t>& lines = ix.bigBlockLines();
+  const size_t n = std::min(blocks.size(), kBigTableMax);
+  for (size_t k = 0; k < n; ++k) {
+    if (k) out->push_back(',');
+    out->append(std::to_string(blocks[k]));
+    out->push_back(':');
+    out->append(std::to_string(lines[k]));
+  }
 }
 
 bool Serve(const std::wstring& uri, std::string* body, int* status) {

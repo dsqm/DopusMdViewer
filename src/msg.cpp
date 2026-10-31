@@ -81,6 +81,13 @@ std::wstring MakeIndexFull(uint32_t blockCount) {
   return Join({L"index-full", std::to_wstring(blockCount)});
 }
 
+std::wstring MakeBig(const std::string& table) {
+  std::wstring wide;
+  wide.reserve(table.size());
+  for (char c : table) wide += static_cast<wchar_t>(static_cast<unsigned char>(c));
+  return Join({L"big", wide});
+}
+
 std::wstring MakeNetImageReply(const std::wstring& origin, bool allow) {
   return Join({allow ? L"netimg-allow" : L"netimg-deny", origin});
 }

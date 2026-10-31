@@ -29,11 +29,14 @@ const UINT_PTR kTwoTimerId = 4;
 const UINT_PTR kTwoCloseTimerId = 5;
 const UINT_PTR kScrollTimerId = 6;
 const UINT_PTR kSettingsTimerId = 7;
+const UINT_PTR kDumpTimerId = 8;
+const UINT_PTR kSeamTimerId = 9;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
 const UINT kScrollAfterMs = 5000;
 const UINT kSettingsAfterMs = 3000;
+const UINT kDumpAfterMs = 8000;
 const UINT kQuitAfterMs = 40000;
 const UINT kShotAfterDefaultMs = 5000;
 
@@ -44,6 +47,8 @@ bool g_cycle = false;  // 中途销毁查看器再建一个，复现"切走再�
 bool g_twoThreads = false;  // 第二个查看器开在另一个线程上，复现预览窗格 + 独立查看器
 bool g_scroll = false;      // 5 秒后滚动到底，验虚拟滚动与滚动条
 bool g_settings = false;    // 3 秒后打开设置窗口，验 DVP_Configure 与 config 写盘
+bool g_dump = false;        // 5 秒后把视口/常驻块/段几何回传到日志
+bool g_seam = false;        // 5 秒后滚到第 10 万行（第一段与第二段的接缝）
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
 HINSTANCE g_hInst = nullptr;
@@ -230,6 +235,34 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"else window.chrome.webview.postMessage('event|fps|frames='+n+\" max=\"+Math.round(max));}"
             L"requestAnimationFrame(step);},3000);";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kDumpTimerId) {
+        ::KillTimer(hwnd, kDumpTimerId);
+        const wchar_t* script =
+            L"(function(){var V=window.__mdv.V,out=[];"
+            L"out.push('off='+Math.round(V.off)+' sb='+Math.round(V.stageBase)+' total='+Math.round(V.totalH)"
+            L"+' win='+V.windowStart+'-'+V.windowEnd+' big='+V.big.size);"
+            L"for(const [i,rec] of V.resident){"
+            L" if(rec.big){for(const [k,seg] of rec.big.segs){"
+            L"  var r=seg.el.getBoundingClientRect(),q=seg.pre.getBoundingClientRect();"
+            L"  out.push('seg'+k+' top='+Math.round(parseFloat(seg.el.style.top))+' h='+Math.round(parseFloat(seg.el.style.height))"
+            L"+' rect='+Math.round(r.top)+','+Math.round(r.left)+','+Math.round(r.width)+'x'+Math.round(r.height)"
+            L"+' pre='+Math.round(q.top)+','+Math.round(q.left)+' tf='+seg.pre.style.transform+' txt='+seg.code.textContent.length);}}"
+            L" else if(rec.el){var r=rec.el.getBoundingClientRect();"
+            L"  out.push('blk'+i+' rect='+Math.round(r.top)+','+Math.round(r.left)+','+Math.round(r.width)+'x'+Math.round(r.height));}}"
+            L"var d=document.getElementById('doc'),dr=d.getBoundingClientRect();"
+            L"out.push('doc tf='+d.style.transform+' rect='+Math.round(dr.left)+','+Math.round(dr.width));"
+            L"window.chrome.webview.postMessage('event|dump|'+out.join(' ; '));})();";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kSeamTimerId) {
+        ::KillTimer(hwnd, kSeamTimerId);
+        // 段边界 10 万行：把视口对到接缝上，肉眼查边框是否连续
+        const wchar_t* script =
+            L"(function(){var V=window.__mdv.V;"
+            L"var y=40.1+100000*24.75;"
+            L"V.off=V.target=Math.max(0,y-120);"
+            L"window.dispatchEvent(new WheelEvent('wheel',{deltaY:0,deltaMode:0,"
+            L"bubbles:true,cancelable:true}));})();";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kCycleTimerId) {
         // Opus 换文件时会销毁并重建查看器；这里照做一遍，验证宿主与 controller 能否撑住
         ::KillTimer(hwnd, kCycleTimerId);
@@ -284,6 +317,8 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"two")) g_twoThreads = true;
   if (*p && wcsstr(p, L"scroll")) g_scroll = true;
   if (*p && wcsstr(p, L"settings")) g_settings = true;
+  if (*p && wcsstr(p, L"dump")) g_dump = true;
+  if (*p && wcsstr(p, L"seam")) g_seam = true;
 
   wchar_t szTemp[MAX_PATH];
   const DWORD n = ::GetTempPathW(MAX_PATH, szTemp);
@@ -339,6 +374,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_settings) {
     ::SetTimer(g_hwndMain, kSettingsTimerId, kSettingsAfterMs, nullptr);
+  }
+  if (g_dump) {
+    ::SetTimer(g_hwndMain, kDumpTimerId, kDumpAfterMs, nullptr);
+  }
+  if (g_seam) {
+    ::SetTimer(g_hwndMain, kSeamTimerId, kDumpAfterMs, nullptr);
   }
 
   if (g_szShot[0]) {

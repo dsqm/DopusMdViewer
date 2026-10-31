@@ -40,6 +40,9 @@ constexpr uint8_t kFlagLoose = 0x10;        // 仅列表项：项内含空行，
 constexpr uint8_t kFlagHidden = 0x20;       // 定义块 / front matter：渲染时产出空串
 constexpr uint8_t kFlagFootnoteDef = 0x40;  // hidden 的脚注定义（[^x]: …）
 
+// 票 05 第 4 节：超过这个行数的块走块内行窗口化。只记行数，不记字节。
+constexpr uint32_t kBigBlockLines = 2000;
+
 enum class Encoding : uint8_t { Utf8 = 0, Gb18030, Utf16LE, Utf16BE };
 
 struct EncodingInfo {
@@ -77,6 +80,12 @@ class BlockIndex {
     return (KindFlags(i) & kFlagFootnoteDef) != 0;
   }
 
+  // 巨型块（> kBigBlockLines 行）的行数；不是巨型块或未知时返回 0。
+  // 稀疏存放：只有极少数块会超过阈值，1 GB 文档里通常是个位数。
+  uint32_t BigLines(uint32_t i) const;
+  const std::vector<uint32_t>& bigBlockIndex() const { return bigBlockIndex_; }
+  const std::vector<uint32_t>& bigBlockLines() const { return bigBlockLines_; }
+
   // 偏移落在哪个块：先取该页第一个块与下一页第一个块之间的区间二分；
   // 页内没有块起点时返回该页之前最后一个块（超长块与空行区间的正确解）。
   uint32_t BlockAtOffset(uint64_t off) const;
@@ -88,7 +97,7 @@ class BlockIndex {
   // reserveBytes 是预计要扫的字节数（前缀扫描不必按全文预留块数组）。
   void Reserve(uint64_t fileSize, uint64_t reserveBytes);
   void Clear();
-  void PushBlock(uint64_t start, uint64_t len, uint8_t kindFlags);
+  void PushBlock(uint64_t start, uint64_t len, uint8_t kindFlags, uint32_t lines);
   void SealPages();
 
  private:
@@ -99,6 +108,8 @@ class BlockIndex {
   std::vector<uint32_t> bigLen_;
   std::vector<uint32_t> bigBlock_;
   std::vector<uint8_t> kindFlags_;
+  std::vector<uint32_t> bigBlockIndex_;  // 稀疏：巨型块的块号（递增）
+  std::vector<uint32_t> bigBlockLines_;  // 与 bigBlockIndex_ 一一对应
   uint64_t fileSize_ = 0;
   uint32_t pageCount_ = 0;
   bool sealed_ = false;

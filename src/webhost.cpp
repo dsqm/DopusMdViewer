@@ -268,16 +268,21 @@ void CreateController() {
                       std::string body;
                       int status = 404;
                       std::wstring contentType = L"application/octet-stream";
+                      // 404 也必须给响应：不响应会让渲染进程一直等到超时
+                      // （页面侧看到的是一句没头没尾的 "Failed to fetch"）。
                       if (!docsrc::ServeAsset(uri, &body, &status, &contentType)) {
                         status = 404;
-                        if (!docsrc::Serve(uri, &body, &status)) return S_OK;
+                        if (!docsrc::ServeLines(uri, &body, &status) &&
+                            !docsrc::Serve(uri, &body, &status)) {
+                          return S_OK;
+                        }
                       }
-                      if (status != 200) return S_OK;
 
                       static int s_requests = 0;
-                      if (s_requests < 40) {
+                      if (s_requests < 200) {
                         ++s_requests;
-                        LogLine(L"WEBHOST: 资源请求 %s -> %zu B", uri.c_str(), body.size());
+                        LogLine(L"WEBHOST: 资源请求 %s -> %d/%zu B", uri.c_str(), status,
+                                body.size());
                       }
 
                       static const BYTE kEmpty = 0;

@@ -29,6 +29,9 @@ std::wstring MakeIndex(const std::wstring& docBase, uint32_t prefixBlocks,
 // index-full|<blockCount>：后台全文索引完成。
 std::wstring MakeIndexFull(uint32_t blockCount);
 
+// big|<i>:<lines>,<i>:<lines>…：巨型块行数表（只有 > 2000 行的块）。
+std::wstring MakeBig(const std::string& table);
+
 // netimg-allow|<origin> / netimg-deny|<origin>
 std::wstring MakeNetImageReply(const std::wstring& origin, bool allow);
 

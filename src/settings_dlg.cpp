@@ -23,6 +23,8 @@ struct DialogState {
   HFONT font = nullptr;
 };
 
+HMODULE ModuleHandle(void);
+
 int Scale(int value, UINT dpi) {
   return ::MulDiv(value, static_cast<int>(dpi), 96);
 }

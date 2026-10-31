@@ -43,10 +43,18 @@ const HIGHLIGHT_MAX_BYTES = 256 * 1024
 const DOC_BASE_DEFAULT = 'https://mddoc.local/'
 const DOC_HOST = 'https://mddoc.local/'
 const BLOCKS_URL = 'https://mdblocks.local/__blocks'
+const LINES_URL = 'https://mdblocks.local/__lines'
 
 const OVERSCAN = 120          // 视口上下各留多少块
 const MAX_FETCH_BLOCKS = 100  // 单次请求块数（票 03：50–200）
 const MAX_INFLIGHT = 3
+
+// 巨型块（>2000 行）的块内行窗口：按 64 行 checkpoint 对齐，最少 128 行、
+// 最多 512 行。窗口放在视口上下各一屏之外，滚动时不至于看到空白带。
+const LINE_ALIGN = 64
+const LINE_MARGIN = 64
+const LINE_MIN = 128
+const LINE_MAX = 512
 
 const LANGUAGES = {
   javascript, typescript, python, c, cpp, csharp, java, go, rust,
@@ -265,6 +273,9 @@ const V = {
   topsDirty: true,
   resident: new Map(),
   pool: [],
+  bigPool: [],
+  big: new Map(),        // 块号 -> { lines }（>2000 行的块）
+  bigPending: null,      // 页面还没就绪时收到的巨型块表
   pending: new Set(),
   fetching: new Set(),
   queue: [],
@@ -301,7 +312,39 @@ function emPx(mult) {
 const topPad = () => emPx(1.5)
 const bottomPad = () => emPx(3)
 
+/* ---------------- 巨型块几何 ---------------- */
+
+// 块高 = 块顶留白 + 边框/内边距 + 行数 × 行高。行高从实际 CSS 取，
+// 不写死 24.75：字号/行高/皮肤一改，这里必须跟着变。
+const big = { ready: false, lineH: 0, overhead: 0 }
+
+function bigMetrics() {
+  if (big.ready) return big
+  const host = document.createElement('div')
+  host.className = 'blk blk--fence blk--big'
+  host.style.cssText =
+    'position:absolute;left:-100000px;top:0;width:600px;height:200px;visibility:hidden'
+  host.innerHTML = '<div class="big-frame"><pre class="big-pre"><code>x</code></pre></div>'
+  document.body.appendChild(host)
+
+  const frame = host.firstElementChild
+  const pre = frame.firstElementChild
+  const cs = getComputedStyle(frame)
+  const fs = parseFloat(getComputedStyle(document.body).fontSize) || 15
+  big.lineH = parseFloat(getComputedStyle(pre).lineHeight) || fs * 1.65
+  big.overhead =
+    (parseFloat(getComputedStyle(host).paddingTop) || 0) +
+    (parseFloat(cs.paddingTop) || 0) +
+    (parseFloat(cs.paddingBottom) || 0) +
+    (parseFloat(cs.borderTopWidth) || 0) +
+    (parseFloat(cs.borderBottomWidth) || 0)
+  document.body.removeChild(host)
+  big.ready = true
+  return big
+}
+
 function heightOf(i) {
+  if (V.big.has(i)) return bigHeight(i)
   return V.measured[i] ? V.heights[i] : V.defaultH
 }
 
@@ -425,6 +468,7 @@ function acquireEl() {
     el.className = 'blk'
     el.innerHTML = ''
     el.style.top = ''
+    el.style.height = ''
     return el
   }
   const fresh = document.createElement('div')
@@ -493,6 +537,10 @@ function renderItem(item) {
     return
   }
   if (V.hidden[i]) return
+  if (V.big.has(i)) {  // 巨型块不渲染正文，只建段容器
+    ensureBigResident(i)
+    return
+  }
   // 跳跃滚动时队列里可能攒着旧窗口的块，窗口已经走了就别建 DOM
   if (!V.initializing && (i < V.windowStart || i > V.windowEnd)) return
 
@@ -516,14 +564,268 @@ function renderItem(item) {
   queueMermaid(rec.el, V.docId)
 }
 
+/* ---------------- 巨型块：分段 + 块内行窗口 ----------------
+   单个元素的 CSS 高度被 Blink 按设备像素封顶（本机 175% 缩放下约 1917 万
+   CSS px，7350 万 px 的 200 MB 围栏会被截断），所以一个巨型块切成多个段
+   元素：每段 10 万行（约 250 万 px），段只负责定位与裁剪，行窗口照样按视口
+   取。块内不支持跨窗口选择。 */
+
+const BIG_SEG_LINES = 100000
+
+function segCount(i) {
+  const m = V.big.get(i)
+  return m ? Math.max(1, Math.ceil(m.lines / BIG_SEG_LINES)) : 0
+}
+
+// 第 k 段的顶/高。各段首尾相接，总和严格等于 bigHeight：
+//   bigHeight = overhead + 行数 × lineH
+// 首段带完整留白与顶部边框（多段时去掉下边框），中间段无边框无留白，
+// 末段只有下边框——视觉上仍是一整块。
+function segTop(i, k) {
+  const g = bigMetrics()
+  return k === 0 ? 0 : g.overhead - 1 + k * BIG_SEG_LINES * g.lineH
+}
+
+function segHeight(i, k) {
+  const g = bigMetrics()
+  const m = V.big.get(i)
+  const n = segCount(i)
+  const s = k * BIG_SEG_LINES
+  const e = Math.min(m.lines, s + BIG_SEG_LINES)
+  let extra = 0
+  if (k === 0) extra = n > 1 ? g.overhead - 1 : g.overhead
+  else if (k === n - 1) extra = 1
+  return extra + (e - s) * g.lineH
+}
+
+function bigHeight(i) {
+  const m = V.big.get(i)
+  if (!m) return 0
+  return bigMetrics().overhead + m.lines * bigMetrics().lineH
+}
+
+function makeSegDom() {
+  const el = document.createElement('div')
+  el.innerHTML = '<div class="big-frame"><pre class="big-pre"><code></code></pre></div>'
+  const frame = el.firstElementChild
+  return { el, pre: frame.firstElementChild, code: frame.firstElementChild.firstElementChild }
+}
+
+function ensureBigResident(i) {
+  let rec = V.resident.get(i)
+  if (rec) {
+    if (rec.big) return rec
+    // 普通块刚被认定为巨型块：拆掉旧的 DOM，换成段容器
+    if (resizeObserver) resizeObserver.unobserve(rec.el)
+    if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
+    rec.el.innerHTML = ''
+    V.pool.push(rec.el)
+    rec = { big: { segs: new Map() } }
+    V.resident.set(i, rec)
+    return rec
+  }
+  rec = { big: { segs: new Map() } }
+  V.resident.set(i, rec)
+  return rec
+}
+
+function releaseSeg(rec, k) {
+  const seg = rec.big.segs.get(k)
+  if (!seg) return
+  seg.code.textContent = ''
+  seg.pre.style.transform = ''
+  seg.el.style.top = ''
+  seg.el.style.height = ''
+  seg.el.className = 'blk'
+  if (seg.el.parentNode) seg.el.parentNode.removeChild(seg.el)
+  V.bigPool.push(seg)
+  rec.big.segs.delete(k)
+}
+
+function releaseBig(rec) {
+  for (const k of [...rec.big.segs.keys()]) releaseSeg(rec, k)
+}
+
+function ensureSeg(i, rec, k) {
+  let seg = rec.big.segs.get(k)
+  if (!seg) {
+    const item = V.bigPool.pop() || makeSegDom()
+    seg = {
+      el: item.el, pre: item.pre, code: item.code,
+      from: -1, got: 0, want: null, loading: false, shortAt: -1,
+    }
+    seg.el.dataset.i = String(i)
+    seg.el.dataset.seg = String(k)
+    docEl.appendChild(seg.el)
+    rec.big.segs.set(k, seg)
+  }
+  const n = segCount(i)
+  seg.el.className = 'blk blk--big'
+    + (n > 1 && k === 0 ? ' blk--bighead' : '')
+    + (k > 0 ? ' blk--bigseg' : '')
+    + (n > 1 && k === n - 1 ? ' blk--biglast' : '')
+  seg.el.style.top = (pos(i) + segTop(i, k) - V.stageBase) + 'px'
+  seg.el.style.height = segHeight(i, k) + 'px'
+  return seg
+}
+
+// 只保留视口上下各一屏范围内的段；段的边界是精确的，不需要估算
+function layoutBigSegments(i, rec) {
+  const m = V.big.get(i)
+  if (!m || !rec || !rec.big) return
+  const n = segCount(i)
+  const blockTop = pos(i)
+  const keep = new Set()
+  for (let k = 0; k < n; k++) {
+    const topDoc = blockTop + segTop(i, k)
+    const h = segHeight(i, k)
+    if (topDoc + h < V.off - V.vh || topDoc > V.off + V.vh * 2) continue
+    keep.add(k)
+    ensureSeg(i, rec, k)
+  }
+  for (const k of [...rec.big.segs.keys()]) {
+    if (!keep.has(k)) releaseSeg(rec, k)
+  }
+}
+
+function updateBigWindows() {
+  if (!V.big.size) return
+  // 长途跳跃中不取行：每一帧的窗口都是废的，落地后再取一次
+  if (Math.abs(V.target - V.off) > V.vh * 1.5) return
+  const g = bigMetrics()
+  for (const [i, rec] of V.resident) {
+    if (!rec.big) continue
+    const m = V.big.get(i)
+    if (!m) continue
+    const blockTop = pos(i)
+    for (const [k, seg] of rec.big.segs) {
+      const sLine = k * BIG_SEG_LINES
+      const eLine = Math.min(m.lines, sLine + BIG_SEG_LINES)
+      const topDoc = blockTop + segTop(i, k)
+      const visTop = V.off - topDoc
+
+      // 段内行号：首段内容比段顶多出「段顶留白 + 上内边距」
+      const base = sLine + (k === 0 ? -g.overhead / g.lineH : 0)
+      let from = Math.floor((visTop / g.lineH) + base) - LINE_MARGIN
+      from = Math.max(sLine, Math.floor(from / LINE_ALIGN) * LINE_ALIGN)
+      let to = Math.ceil(((visTop + V.vh) / g.lineH) + base) + LINE_MARGIN
+      to = Math.min(eLine, Math.ceil(to / LINE_ALIGN) * LINE_ALIGN)
+      let count = Math.min(LINE_MAX, Math.max(LINE_MIN, to - from))
+      count = Math.min(count, eLine - from)
+      if (count <= 0) continue
+
+      if (seg.from === from && (seg.got >= count || seg.shortAt === from)) continue
+      if (seg.loading) {
+        seg.want = { from, count }
+        continue
+      }
+      requestBigLines(i, k, from, count)
+    }
+  }
+}
+
+function requestBigLines(i, k, from, count) {
+  const rec = V.resident.get(i)
+  if (!rec || !rec.big) return
+  const seg = rec.big.segs.get(k)
+  if (!seg) return
+  seg.loading = true
+  const docId = V.docId
+  fetch(LINES_URL + '?i=' + i + '&from=' + from + '&count=' + count, { cache: 'no-store' })
+    .then((res) => {
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      return res.arrayBuffer()
+    })
+    .then((buf) => {
+      if (docId !== V.docId || buf.byteLength < 20) return
+      const dv = new DataView(buf)
+      const idx = dv.getUint32(0, true)
+      const lineFrom = dv.getUint32(4, true)
+      const got = dv.getUint32(8, true)
+      const total = dv.getUint32(12, true)
+      const len = dv.getUint32(16, true)
+      if (idx !== i || lineFrom !== from || 20 + len > buf.byteLength) return
+      const cur = V.resident.get(i)
+      const curSeg = cur && cur.big && cur.big.segs.get(k)
+      if (!curSeg) return
+      const g = bigMetrics()
+      curSeg.code.textContent = decoder.decode(new Uint8Array(buf, 20, len))
+      curSeg.pre.style.transform =
+        'translateY(' + ((from - k * BIG_SEG_LINES) * g.lineH).toFixed(1) + 'px)'
+      curSeg.from = from
+      curSeg.got = got
+      curSeg.want = null
+      if (got < count) curSeg.shortAt = from
+      if (total > 0) updateBigLines(i, total)
+    })
+    .catch((err) => {
+      if (docId === V.docId) report('lines-error', String(err))
+    })
+    .finally(() => {
+      const cur = V.resident.get(i)
+      const curSeg = cur && cur.big && cur.big.segs.get(k)
+      if (!curSeg) return
+      curSeg.loading = false
+      const want = curSeg.want
+      curSeg.want = null
+      if (want && docId === V.docId) requestBigLines(i, k, want.from, want.count)
+    })
+}
+
+// 行数先按前缀估算摆位，全文索引到达后再校正；段的几何全部重建
+function updateBigLines(i, lines) {
+  const m = V.big.get(i)
+  if (!m || m.lines === lines) return
+  V.big.set(i, { lines })
+  const rec = V.resident.get(i)
+  if (rec && rec.big) releaseBig(rec)
+  rebuildFenwick()
+  schedulePlace()
+}
+
+function applyBigTable(text) {
+  const map = new Map()
+  if (text) {
+    for (const part of text.split(',')) {
+      const cut = part.indexOf(':')
+      if (cut <= 0) continue
+      const i = parseInt(part.slice(0, cut), 10)
+      const lines = parseInt(part.slice(cut + 1), 10)
+      if (Number.isInteger(i) && i >= 0 && Number.isInteger(lines) && lines > 0) {
+        map.set(i, { lines })
+      }
+    }
+  }
+  V.bigPending = map
+  if (!V.active) return
+  V.bigPending = null
+  V.big = map
+  bigMetrics()
+
+  for (const [i, rec] of [...V.resident]) {
+    if (map.has(i)) {
+      ensureBigResident(i)
+    } else if (rec.big) {
+      releaseBig(rec)
+      V.resident.delete(i)
+    }
+  }
+  rebuildFenwick()
+  schedulePlace()
+}
+
 function recycleOutside(a, b) {
   for (const [i, rec] of V.resident) {
     if (i >= a && i <= b) continue
-    if (resizeObserver) resizeObserver.unobserve(rec.el)
-    rec.el.innerHTML = ''
-    rec.el.style.top = ''
-    if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
-    V.pool.push(rec.el)
+    if (rec.big) {
+      releaseBig(rec)
+    } else {
+      if (resizeObserver) resizeObserver.unobserve(rec.el)
+      rec.el.innerHTML = ''
+      rec.el.style.top = ''
+      if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
+      V.pool.push(rec.el)
+    }
     V.resident.delete(i)
   }
 }
@@ -600,7 +902,7 @@ function ensureRange(a, b) {
   const runs = []
   let start = -1
   for (let i = a; i <= b; i++) {
-    const need = !V.resident.has(i) && !V.pending.has(i) && !V.hidden[i]
+    const need = !V.resident.has(i) && !V.pending.has(i) && !V.hidden[i] && !V.big.has(i)
     if (need && start < 0) start = i
     if (!need && start >= 0) {
       runs.push([start, i - 1])
@@ -661,26 +963,41 @@ function place() {
   const a = Math.max(0, first - OVERSCAN)
   const b = Math.min(V.blockCount - 1, last + OVERSCAN)
 
+  // 舞台基点到视口的距离要有界：巨型块内部滚动时块顶可能离视口几千万 px，
+  // 而元素的 top 也会被 Blink 的布局上限截断，所以让 stageBase 跟着视口走，
+  // 只在跨过 4 屏时才重定一次基（重定会刷新所有常驻块的 top）。
+  const anchor = Math.max(pos(a), V.off - V.vh * 2)
   if (a !== V.windowStart || b !== V.windowEnd) {
     V.windowStart = a
     V.windowEnd = b
-    V.stageBase = pos(a)
+    V.stageBase = anchor
     recycleOutside(a, b)
     // 跳跃滚动时队列里会攒下大量已经过时的窗口块，别让它们挡住当前窗口
     if (V.queue.length) {
       V.queue = V.queue.filter((it) => it.i >= a && it.i <= b)
     }
     V.topsDirty = true
+  } else if (Math.abs(anchor - V.stageBase) > V.vh * 4) {
+    V.stageBase = anchor
+    V.topsDirty = true
   }
 
   docEl.style.transform = 'translate3d(0,' + (-(V.off - V.stageBase)).toFixed(2) + 'px,0)'
   ensureRange(a, b)
+  if (V.big.size) {
+    for (let i = a; i <= b; i++) {
+      if (!V.big.has(i)) continue
+      const rec = V.resident.get(i) || ensureBigResident(i)
+      layoutBigSegments(i, rec)
+    }
+  }
   if (V.topsDirty) {
     for (const [i, rec] of V.resident) {
-      rec.el.style.top = (pos(i) - V.stageBase) + 'px'
+      if (rec.el) rec.el.style.top = (pos(i) - V.stageBase) + 'px'
     }
     V.topsDirty = false
   }
+  updateBigWindows()
   updateScrollbar()
   V.anchorId = first
   V.anchorDy = V.off - pos(first)
@@ -738,6 +1055,7 @@ function finishInit() {
   const metrics = 'h=' + hs.join(',') + ' d=' + Math.round(V.defaultH)
     + ' hm=' + nMeasured + '/' + nHidden + ' total=' + Math.round(V.totalH) + ' vh=' + V.vh
     + ' sb=' + (sbEl && !sbEl.hidden ? 1 : 0)
+    + (V.big.size ? ' bh=' + big.lineH.toFixed(2) + '/' + big.overhead.toFixed(1) : '')
     + ' vp=' + window.innerWidth + 'x' + window.innerHeight
     + ' dpr=' + (window.devicePixelRatio || 1).toFixed(2)
   report('rendered', ms.toFixed(1) + '|' + V.prefixCount + '|' + V.blockCount + '|' + metrics)
@@ -764,10 +1082,15 @@ function resetVirtual() {
   V.fetching.clear()
   if (resizeObserver) resizeObserver.disconnect()
   for (const rec of V.resident.values()) {
-    if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
+    if (rec.big) {
+      releaseBig(rec)
+    } else if (rec.el.parentNode) {
+      rec.el.parentNode.removeChild(rec.el)
+    }
   }
   V.resident.clear()
   V.pool = []
+  V.bigPool = []
   if (docEl) {
     docEl.textContent = ''
     docEl.style.transform = ''
@@ -775,6 +1098,8 @@ function resetVirtual() {
   if (sbEl) sbEl.hidden = true
   V.initializing = false
   V.anchorSet = false
+  V.big = new Map()
+  V.bigPending = null
   resetNetConsent()
 }
 
@@ -806,6 +1131,11 @@ function applyIndex(base, prefix, est, fileSize, enc) {
   V.indexAt = performance.now()
   V.initializing = true
   V.pendingFullCount = 0
+  if (V.bigPending) {
+    V.big = V.bigPending
+    V.bigPending = null
+    bigMetrics()
+  }
 
   requestBlocks(0, Math.min(30, Math.max(1, prefix || 1)), 'init')
 }
@@ -856,6 +1186,7 @@ function refetchTruncatedPrefix() {
   const last = V.prefixCount - 1
   if (last < 0 || !V.resident.has(last)) return
   const rec = V.resident.get(last)
+  if (!rec.el) return
   if (resizeObserver) resizeObserver.unobserve(rec.el)
   if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
   V.pool.push(rec.el)
@@ -984,7 +1315,21 @@ function onThumbUp(e) {
 
 function remeasureAll() {
   if (!V.active) return
-  for (const [i, rec] of V.resident) setHeight(i, rec.el.offsetHeight)
+  for (const [i, rec] of V.resident) {
+    if (rec.el) setHeight(i, rec.el.offsetHeight)
+  }
+  schedulePlace()
+}
+
+// 字号 / 行高 / 皮肤变了：巨型块的行高与段几何都要重算，行窗口重新取
+function refreshBigLayout() {
+  if (!V.active || !V.big.size) return
+  big.ready = false
+  bigMetrics()
+  for (const rec of V.resident.values()) {
+    if (rec.big) releaseBig(rec)
+  }
+  rebuildFenwick()
   schedulePlace()
 }
 
@@ -1003,6 +1348,7 @@ function applySkin(css, skinId) {
   state.skinId = skinId
   // 皮肤换了，后续图表要按新配色重画（已画好的等 M6 换皮肤重渲染时再处理）
   if (state.mermaidState === 'ready' && state.mermaidApi) initMermaid(state.mermaidApi)
+  if (V.active) refreshBigLayout()
   return true
 }
 
@@ -1044,7 +1390,9 @@ function applyFx(fx) {
 
   // 字号/行高变化会改块高，下一帧重新测量常驻窗口
   requestAnimationFrame(() => {
-    if (V.active) remeasureAll()
+    if (!V.active) return
+    remeasureAll()
+    refreshBigLayout()
   })
 }
 
@@ -1263,6 +1611,11 @@ function onHostMessage(event) {
 
   if (type === 'index-full') {
     applyIndexFull(parseInt(rest, 10) || 0)
+    return
+  }
+
+  if (type === 'big') {
+    applyBigTable(rest)
     return
   }
 

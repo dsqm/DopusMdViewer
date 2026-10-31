@@ -194,7 +194,7 @@ template <class Char>
 class BlockScanner {
  public:
   struct Sink {
-    virtual void Push(uint64_t start, uint64_t end, uint8_t flags) = 0;
+    virtual void Push(uint64_t start, uint64_t end, uint8_t flags, uint32_t lines) = 0;
     virtual void Heading(uint64_t lineStart, uint64_t lineEnd, uint64_t textStart,
                          uint64_t textLen, uint8_t level) = 0;
     virtual ~Sink() {}
@@ -354,7 +354,7 @@ class BlockScanner {
     if (ParseAtxHeading(l, &level, &textOff, &textLen)) {
       CloseBlock(0);
       sink_->Push(l.off, l.off + l.len,
-                  static_cast<uint8_t>(static_cast<uint8_t>(Kind::H1) + (level - 1)));
+                  static_cast<uint8_t>(static_cast<uint8_t>(Kind::H1) + (level - 1)), 1);
       sink_->Heading(l.off, l.off + l.len, l.off + textOff, textLen,
                      static_cast<uint8_t>(level));
       return;
@@ -362,7 +362,7 @@ class BlockScanner {
 
     if (IsHr(l)) {
       CloseBlock(0);
-      sink_->Push(l.off, l.off + l.len, static_cast<uint8_t>(Kind::Hr));
+      sink_->Push(l.off, l.off + l.len, static_cast<uint8_t>(Kind::Hr), 1);
       return;
     }
 
@@ -486,7 +486,8 @@ class BlockScanner {
   void CloseBlock(uint8_t extraFlags) {
     if (kind_ != Kind::None && end_ > start_) {
       const uint8_t kindBits = static_cast<uint8_t>(kind_) & kKindMask;
-      sink_->Push(start_, end_, static_cast<uint8_t>(kindBits | flags_ | extraFlags));
+      sink_->Push(start_, end_, static_cast<uint8_t>(kindBits | flags_ | extraFlags),
+                  lineCount_);
     }
     kind_ = Kind::None;
     flags_ = 0;
@@ -904,6 +905,8 @@ void BlockIndex::Clear() {
   bigLen_.clear();
   bigBlock_.clear();
   kindFlags_.clear();
+  bigBlockIndex_.clear();
+  bigBlockLines_.clear();
   fileSize_ = 0;
   pageCount_ = 0;
   sealed_ = false;
@@ -923,7 +926,7 @@ void BlockIndex::Reserve(uint64_t fileSize, uint64_t reserveBytes) {
   kindFlags_.reserve(est);
 }
 
-void BlockIndex::PushBlock(uint64_t start, uint64_t len, uint8_t kindFlags) {
+void BlockIndex::PushBlock(uint64_t start, uint64_t len, uint8_t kindFlags, uint32_t lines) {
   if (sealed_) return;
   const uint32_t page = static_cast<uint32_t>(start >> kPageShift);
   if (static_cast<size_t>(page) + 2 >= pageBase_.size()) return;
@@ -940,6 +943,10 @@ void BlockIndex::PushBlock(uint64_t start, uint64_t len, uint8_t kindFlags) {
     len16_.push_back(static_cast<uint16_t>(len32));
   }
   kindFlags_.push_back(kindFlags);
+  if (lines > kBigBlockLines) {
+    bigBlockIndex_.push_back(i);
+    bigBlockLines_.push_back(lines);
+  }
   ++pageBase_[static_cast<size_t>(page) + 1];
 }
 
@@ -986,6 +993,21 @@ uint32_t BlockIndex::Len(uint32_t i) const {
 
 uint8_t BlockIndex::KindFlags(uint32_t i) const { return kindFlags_[i]; }
 
+uint32_t BlockIndex::BigLines(uint32_t i) const {
+  size_t lo = 0;
+  size_t hi = bigBlockIndex_.size();
+  while (lo < hi) {
+    const size_t mid = (lo + hi) / 2;
+    if (bigBlockIndex_[mid] < i) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  if (lo < bigBlockIndex_.size() && bigBlockIndex_[lo] == i) return bigBlockLines_[lo];
+  return 0;
+}
+
 uint32_t BlockIndex::BlockAtOffset(uint64_t off) const {
   if (!sealed_ || offInPage_.empty()) return kInvalidBlock;
   const uint32_t page = static_cast<uint32_t>(off >> kPageShift);
@@ -1013,7 +1035,8 @@ uint32_t BlockIndex::BlockAtOffset(uint64_t off) const {
 size_t BlockIndex::MemoryBytes() const {
   return pageBase_.size() * sizeof(uint32_t) + offInPage_.size() * sizeof(uint16_t) +
          len16_.size() * sizeof(uint16_t) + bigLen_.size() * sizeof(uint32_t) +
-         bigBlock_.size() * sizeof(uint32_t) + kindFlags_.size() * sizeof(uint8_t);
+         bigBlock_.size() * sizeof(uint32_t) + kindFlags_.size() * sizeof(uint8_t) +
+         (bigBlockIndex_.size() + bigBlockLines_.size()) * sizeof(uint32_t);
 }
 
 // ---------------------------------------------------------------- IndexBuilder
@@ -1041,10 +1064,10 @@ struct IndexBuilder::Impl final : BlockScanner<char>::Sink,
   bool haveCarry = false;
   unsigned char carry = 0;
 
-  void Push(uint64_t start, uint64_t end, uint8_t flags) override {
+  void Push(uint64_t start, uint64_t end, uint8_t flags, uint32_t lines) override {
     const uint64_t s = baseBytes + start * unitBytes;
     const uint64_t e = baseBytes + end * unitBytes;
-    if (e > s) index.PushBlock(s, e - s, flags);
+    if (e > s) index.PushBlock(s, e - s, flags, lines);
   }
 
   void Heading(uint64_t lineStart, uint64_t lineEnd, uint64_t textStart, uint64_t textLen,

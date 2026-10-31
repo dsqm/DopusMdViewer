@@ -35,6 +35,15 @@ void CloseIfOwner(HWND owner);
 // body 为二进制帧：u32 len | u32 blockIndex | u8 flags | UTF-8 字节。
 bool Serve(const std::wstring& uri, std::string* body, int* status);
 
+// 响应 https://mdblocks.local/__lines?i=<块号>&from=<行>&count=<行数>。
+// 巨型块（> 2000 行）的块内行窗口，body 为：
+//   u32 blockIndex | u32 from | u32 got | u32 totalLines(0=未知) | u32 len | UTF-8 字节
+// 行按源文件顺序连续切分；每 64 行一个 checkpoint 缓存，跳读不必从头扫。
+bool ServeLines(const std::wstring& uri, std::string* body, int* status);
+
+// 巨型块表："块号:行数,块号:行数…"（只含 > 2000 行的块，最多 4096 项）。
+void BigTable(std::string* out);
+
 // 响应 https://mdblocks.local/__asset?p=<相对路径>：读当前文档目录下的图片等资源。
 // 只允许文档目录内的相对路径，任何绝对路径、盘符或 .. 段都拒绝。
 bool ServeAsset(const std::wstring& uri, std::string* body, int* status,

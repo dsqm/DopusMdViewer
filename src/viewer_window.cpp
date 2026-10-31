@@ -201,6 +201,19 @@ void PushChrome(ViewerState* st) {
           css.size(), cfg.font.sizePx, cfg.font.lineHeight, cfg.font.measureEm);
 }
 
+void PushBigTable(ViewerState* st) {
+  if (!st->docOpened || !st->hasHost || st->webFailed || !WebHostIsReady()) return;
+  std::string table;
+  docsrc::BigTable(&table);
+  WebHostPost(st->hwndSelf, msg::MakeBig(table));
+  size_t items = table.empty() ? 0 : 1;
+  for (char c : table) {
+    if (c == ',') ++items;
+  }
+  const std::string head = table.size() > 200 ? table.substr(0, 200) + "..." : table;
+  LogLine(L"VIEWER: 推送巨型块表 %zu 项 \"%hs\"", items, head.c_str());
+}
+
 void PushIndex(ViewerState* st) {
   if (!st->docOpened || !st->hasHost || st->webFailed || !WebHostIsReady()) return;
 
@@ -213,12 +226,15 @@ void PushIndex(ViewerState* st) {
       msg::MakeIndex(kDocBase, st->prefixBlocks, st->estBlocks, st->ullFileSize, st->encoding));
   LogLine(L"VIEWER: 推送索引 %u/%u 块 -> %s", st->prefixBlocks, st->estBlocks,
           ok ? L"成功" : L"失败");
+  // 索引先到（页面会重置状态），巨型块表随后到，按块号生效
+  PushBigTable(st);
 }
 
 void MaybePushIndexFull(ViewerState* st) {
   if (!st->indexFullPending || !st->docOpened || !st->hasHost || !WebHostIsReady()) return;
   const uint32_t count = docsrc::PublishedBlockCount();
   if (!WebHostPost(st->hwndSelf, msg::MakeIndexFull(count))) return;
+  PushBigTable(st);
   st->indexFullPending = false;
   LogLine(L"VIEWER: 已通知前端全文索引 %u 块", count);
 }
