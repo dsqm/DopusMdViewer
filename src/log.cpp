@@ -25,8 +25,18 @@ wchar_t g_logPath[MAX_PATH];
 bool g_pathReady = false;
 
 // Best effort; ERROR_ALREADY_EXISTS is the normal case and is not an error.
+// 必须逐级创建：全新机器上 User Data 下的目录树一层都不存在。
 void EnsureDir(const wchar_t* pszDir) {
-  ::CreateDirectoryW(pszDir, nullptr);
+  if (!pszDir || !*pszDir) return;
+  wchar_t path[MAX_PATH];
+  if (FAILED(::StringCchCopyW(path, ARRAYSIZE(path), pszDir))) return;
+  for (wchar_t* p = path + 1; *p; ++p) {
+    if (*p != L'\\') continue;
+    *p = L'\0';
+    ::CreateDirectoryW(path, nullptr);
+    *p = L'\\';
+  }
+  ::CreateDirectoryW(path, nullptr);
 }
 
 void FallBackToTemp(wchar_t* pszPath, size_t cchPath) {

@@ -31,17 +31,22 @@ import diff from 'highlight.js/lib/languages/diff'
 import powershell from 'highlight.js/lib/languages/powershell'
 
 /* ============================================================
-   约定（票 05 / 06 / 07 / 08 / 11）
-   - 文档正文只从 mdprev.local 同源取，相对资源走 mddoc.local。
+   约定（票 03 / 05 / 06 / 07 / 08 / 11）
+   - 全文不进 DOM：自绘滚动条 + 估算总高 + 常驻窗口（800 块量级）。
+   - 块正文走 https://mdblocks.local/__blocks 的二进制帧，批量取。
    - 颜色全在 #base / #skin，字体全在 #fx（#fx 永远最后）。
    - 单块高亮闸门：≤2000 行且 ≤256 KiB，超限只出纯文本。
-   - Mermaid 只在出现 ```mermaid 时按需拉 mermaid.js。
    ============================================================ */
 
 const HIGHLIGHT_MAX_LINES = 2000
 const HIGHLIGHT_MAX_BYTES = 256 * 1024
 const DOC_BASE_DEFAULT = 'https://mddoc.local/'
 const DOC_HOST = 'https://mddoc.local/'
+const BLOCKS_URL = 'https://mdblocks.local/__blocks'
+
+const OVERSCAN = 120          // 视口上下各留多少块
+const MAX_FETCH_BLOCKS = 100  // 单次请求块数（票 03：50–200）
+const MAX_INFLIGHT = 3
 
 const LANGUAGES = {
   javascript, typescript, python, c, cpp, csharp, java, go, rust,
@@ -79,8 +84,8 @@ md.use(footnote)
 
 const escapeHtml = md.utils.escapeHtml
 
-/* front matter（开头 --- 包的 YAML 段）不参与渲染。C++ 侧扫描块时也要按同一条
-   规则跳过，否则块号会整体偏移一段。 */
+/* front matter（开头 --- 包的 YAML 段）不参与渲染。C++ 侧扫描块时按同一条规则
+   把它标成隐藏块，两边块号才不会错位。 */
 const FRONT_MATTER = /^\uFEFF?---[ \t]*\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/
 
 function stripFrontMatter(source) {
@@ -173,12 +178,706 @@ function sanitize(html) {
 const state = {
   docBase: DOC_BASE_DEFAULT,
   skinId: 'light',
-  source: '',
   mermaidState: 'idle',
   mermaidApi: null,
+  generation: 0,
 }
 
-const docEl = () => document.getElementById('doc')
+const V = {
+  active: false,
+  docId: 0,
+  blockCount: 0,
+  prefixCount: 0,
+  estTotal: 0,
+  fileSize: 0,
+  enc: 0,
+  heights: null,
+  measured: null,
+  hidden: null,
+  fenwick: null,
+  totalH: 0,
+  defaultH: 120,
+  off: 0,
+  target: 0,
+  vh: 0,
+  anchorId: 0,
+  anchorDy: 0,
+  anchorSet: false,
+  windowStart: -1,
+  windowEnd: -1,
+  stageBase: 0,
+  topsDirty: true,
+  resident: new Map(),
+  pool: [],
+  pending: new Set(),
+  fetching: new Set(),
+  queue: [],
+  pumpRaf: 0,
+  placeRaf: 0,
+  raf: 0,
+  lastTick: 0,
+  lastWheelAt: 0,
+  initializing: false,
+  indexAt: 0,
+  drag: null,
+}
+
+const decoder = new TextDecoder('utf-8')
+const KIND_NAMES = ['none', 'para', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'fence', 'table', 'list', 'quote', 'html', 'hr', 'fm']
+
+let docEl = null
+let sbEl = null
+let thumbEl = null
+
+function bindDom() {
+  docEl = document.getElementById('doc')
+  sbEl = document.getElementById('sb')
+  thumbEl = document.getElementById('sb-thumb')
+}
+
+/* ---------------- 几何 ---------------- */
+
+function emPx(mult) {
+  const fs = parseFloat(getComputedStyle(document.body).fontSize) || 15
+  return fs * mult
+}
+const topPad = () => emPx(1.5)
+const bottomPad = () => emPx(3)
+
+function heightOf(i) {
+  return V.measured[i] ? V.heights[i] : V.defaultH
+}
+
+// Fenwick：heights[0..i-1] 的和；块 i 的文档位置 = topPad + fwSum(i)
+function fwSum(i) {
+  let s = 0
+  for (let k = i; k > 0; k -= k & -k) s += V.fenwick[k]
+  return s
+}
+
+function fwAdd(i, delta) {
+  const n = V.blockCount
+  for (let k = i + 1; k <= n; k += k & -k) V.fenwick[k] += delta
+}
+
+function pos(i) {
+  return topPad() + fwSum(i)
+}
+
+function rebuildFenwick() {
+  const n = V.blockCount
+  const fw = V.fenwick
+  fw.fill(0)
+  for (let i = 1; i <= n; i++) {
+    fw[i] += heightOf(i - 1)
+    const j = i + (i & -i)
+    if (j <= n) fw[j] += fw[i]
+  }
+  // fw[n] 只是树节点，不是前缀和；n 不是 2 的幂时会少算一大截。
+  V.totalH = topPad() + fwSum(n) + bottomPad()
+}
+
+function offsetToBlock(off) {
+  const n = V.blockCount
+  if (n <= 0) return 0
+  const x = Math.max(0, off - topPad())
+  let idx = 0
+  let acc = 0
+  let bit = 1
+  while (bit <= n) bit <<= 1
+  for (bit >>= 1; bit; bit >>= 1) {
+    const next = idx + bit
+    if (next <= n && acc + V.fenwick[next] <= x) {
+      idx = next
+      acc += V.fenwick[next]
+    }
+  }
+  return Math.min(idx, n - 1)
+}
+
+function setHeight(i, h) {
+  if (!V.active || i < 0 || i >= V.blockCount) return
+  if (!Number.isFinite(h)) h = 0
+  const old = heightOf(i)
+  if (V.measured[i] && Math.abs(old - h) < 0.5) return
+  V.measured[i] = 1
+  V.heights[i] = h
+  if (V.initializing) return
+  const delta = h - old
+  if (delta === 0) return
+  fwAdd(i, delta)
+  V.totalH += delta
+  V.topsDirty = true
+  if (V.anchorSet && i < V.anchorId) {
+    // 锚点之上变高/变矮：把滚动位置一起挪，屏幕内容不动
+    V.off = Math.max(0, V.off + delta)
+    V.target = Math.max(0, V.target + delta)
+  }
+  schedulePlace()
+}
+
+/* ---------------- 渲染 ---------------- */
+
+let mermaidChain = Promise.resolve()
+let resizeObserver = null
+
+function renderLoose(text) {
+  const env = {}
+  const tokens = md.parse(text, env)
+  for (const t of tokens) {
+    if (t.type === 'paragraph_open' || t.type === 'paragraph_close') t.hidden = false
+  }
+  return md.renderer.render(tokens, md.options, env)
+}
+
+function renderBlockHtml(text, flags) {
+  try {
+    const html = (flags & 0x10) ? renderLoose(text) : md.render(text, {})
+    return sanitize(html)
+  } catch (err) {
+    report('render-error', String(err))
+    return '<pre>' + escapeHtml(text) + '</pre>'
+  }
+}
+
+function queueMermaid(el, docId) {
+  if (!el.querySelector('[data-mermaid="pending"]')) return
+  const generation = state.generation
+  mermaidChain = mermaidChain
+    .then(() => (docId === V.docId ? renderMermaidBlocks(el, generation) : undefined))
+    .catch(() => {})
+}
+
+function ensureObserver() {
+  if (resizeObserver) return
+  resizeObserver = new ResizeObserver((entries) => {
+    if (!V.active) return
+    for (const entry of entries) {
+      const i = Number(entry.target.dataset.i)
+      if (!Number.isInteger(i)) continue
+      const rec = V.resident.get(i)
+      if (!rec || rec.el !== entry.target) continue
+      setHeight(i, entry.target.offsetHeight)
+    }
+  })
+}
+
+function acquireEl() {
+  const el = V.pool.pop()
+  if (el) {
+    el.className = 'blk'
+    el.innerHTML = ''
+    el.style.top = ''
+    return el
+  }
+  const fresh = document.createElement('div')
+  fresh.className = 'blk'
+  return fresh
+}
+
+function renderItem(item) {
+  const i = item.i
+  if (!V.active || i >= V.blockCount || item.docId !== V.docId) return
+
+  if (item.flags & 0x20) {  // hidden：front matter / 链接与脚注定义
+    V.hidden[i] = 1
+    setHeight(i, 0)
+    return
+  }
+  if (V.hidden[i]) return
+  // 跳跃滚动时队列里可能攒着旧窗口的块，窗口已经走了就别建 DOM
+  if (!V.initializing && (i < V.windowStart || i > V.windowEnd)) return
+
+  let rec = V.resident.get(i)
+  if (!rec) {
+    const el = acquireEl()
+    el.dataset.i = String(i)
+    docEl.appendChild(el)
+    rec = { el }
+    V.resident.set(i, rec)
+    ensureObserver()
+    resizeObserver.observe(el)
+  }
+  const kind = KIND_NAMES[item.flags & 0x0f] || 'none'
+  rec.el.className = 'blk blk--' + kind + (i === 0 ? ' blk--first' : '')
+  rec.el.style.top = (pos(i) - V.stageBase) + 'px'
+  V.topsDirty = true
+  rec.el.innerHTML = renderBlockHtml(item.text, item.flags)
+  setHeight(i, rec.el.offsetHeight)
+  queueMermaid(rec.el, V.docId)
+}
+
+function recycleOutside(a, b) {
+  for (const [i, rec] of V.resident) {
+    if (i >= a && i <= b) continue
+    if (resizeObserver) resizeObserver.unobserve(rec.el)
+    rec.el.innerHTML = ''
+    rec.el.style.top = ''
+    if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
+    V.pool.push(rec.el)
+    V.resident.delete(i)
+  }
+}
+
+/* ---------------- 块请求 ---------------- */
+
+function parseFrames(buf) {
+  const dv = new DataView(buf)
+  const out = []
+  let o = 0
+  while (o + 9 <= buf.byteLength) {
+    const len = dv.getUint32(o, true); o += 4
+    const i = dv.getUint32(o, true); o += 4
+    const flags = dv.getUint8(o); o += 1
+    if (o + len > buf.byteLength) break
+    out.push({ i, flags, text: decoder.decode(new Uint8Array(buf, o, len)) })
+    o += len
+  }
+  return out
+}
+
+function requestBlocks(from, count, mode) {
+  const key = from + ':' + count + ':' + mode
+  if (V.fetching.has(key)) return
+  V.fetching.add(key)
+  const docId = V.docId
+  for (let i = from; i < from + count; i++) V.pending.add(i)
+
+  fetch(BLOCKS_URL + '?from=' + from + '&count=' + count, { cache: 'no-store' })
+    .then((res) => {
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      return res.arrayBuffer()
+    })
+    .then((buf) => {
+      const items = parseFrames(buf)
+      if (docId !== V.docId) return
+      const got = new Set()
+      for (const it of items) {
+        it.docId = docId
+        got.add(it.i)
+      }
+      // 没返回的块（超出索引）解除等待；返回的块保留到真正渲染，避免重复请求
+      for (let i = from; i < from + count; i++) {
+        if (!got.has(i)) V.pending.delete(i)
+      }
+      if (mode === 'init') {
+        for (const it of items) {
+          renderItem(it)
+          V.pending.delete(it.i)
+        }
+        finishInit()
+        return
+      }
+      for (const it of items) {
+        if (it.i >= V.windowStart && it.i <= V.windowEnd) V.queue.push(it)
+      }
+      schedulePump()
+      schedulePlace()
+    })
+    .catch((err) => {
+      for (let i = from; i < from + count; i++) V.pending.delete(i)
+      if (docId === V.docId) report('blocks-error', String(err))
+    })
+    .finally(() => {
+      V.fetching.delete(key)
+      if (docId === V.docId) schedulePlace()
+    })
+}
+
+function ensureRange(a, b) {
+  if (!V.active || V.initializing) return
+  // 还在长途跳跃中：中间窗口不取块，等落点稳定再取，否则请求与队列全是废的
+  if (Math.abs(V.target - V.off) > V.vh * 1.5) return
+  const runs = []
+  let start = -1
+  for (let i = a; i <= b; i++) {
+    const need = !V.resident.has(i) && !V.pending.has(i) && !V.hidden[i]
+    if (need && start < 0) start = i
+    if (!need && start >= 0) {
+      runs.push([start, i - 1])
+      start = -1
+    }
+  }
+  if (start >= 0) runs.push([start, b])
+
+  for (const [s, e] of runs) {
+    let from = s
+    while (from <= e) {
+      if (V.fetching.size >= MAX_INFLIGHT) return
+      const count = Math.min(MAX_FETCH_BLOCKS, e - from + 1)
+      requestBlocks(from, count, 'normal')
+      from += count
+    }
+  }
+}
+
+function schedulePump() {
+  if (V.pumpRaf || !V.active) return
+  V.pumpRaf = requestAnimationFrame(pump)
+}
+
+function pump() {
+  V.pumpRaf = 0
+  if (!V.active) return
+  let n = 0
+  while (V.queue.length && n < 10) {
+    const item = V.queue.shift()
+    renderItem(item)
+    V.pending.delete(item.i)
+    n++
+  }
+  if (V.queue.length) schedulePump()
+  schedulePlace()
+}
+
+/* ---------------- 视口 ---------------- */
+
+function schedulePlace() {
+  if (V.placeRaf || !V.active) return
+  V.placeRaf = requestAnimationFrame(() => {
+    V.placeRaf = 0
+    if (V.active) place()
+  })
+}
+
+function place() {
+  if (!V.active || !docEl) return
+  V.vh = window.innerHeight
+  const scrollable = Math.max(0, V.totalH - V.vh)
+  V.off = Math.min(Math.max(V.off, 0), scrollable)
+  V.target = Math.min(Math.max(V.target, 0), scrollable)
+
+  const first = offsetToBlock(V.off)
+  const last = offsetToBlock(Math.min(Math.max(0, V.totalH - 1), V.off + V.vh))
+  const a = Math.max(0, first - OVERSCAN)
+  const b = Math.min(V.blockCount - 1, last + OVERSCAN)
+
+  if (a !== V.windowStart || b !== V.windowEnd) {
+    V.windowStart = a
+    V.windowEnd = b
+    V.stageBase = pos(a)
+    recycleOutside(a, b)
+    // 跳跃滚动时队列里会攒下大量已经过时的窗口块，别让它们挡住当前窗口
+    if (V.queue.length) {
+      V.queue = V.queue.filter((it) => it.i >= a && it.i <= b)
+    }
+    V.topsDirty = true
+  }
+
+  docEl.style.transform = 'translate3d(0,' + (-(V.off - V.stageBase)).toFixed(2) + 'px,0)'
+  ensureRange(a, b)
+  if (V.topsDirty) {
+    for (const [i, rec] of V.resident) {
+      rec.el.style.top = (pos(i) - V.stageBase) + 'px'
+    }
+    V.topsDirty = false
+  }
+  updateScrollbar()
+  V.anchorId = first
+  V.anchorDy = V.off - pos(first)
+  V.anchorSet = true
+}
+
+function updateScrollbar() {
+  if (!sbEl) return
+  const scrollable = V.totalH - V.vh
+  if (scrollable <= 0) {
+    sbEl.hidden = true
+    return
+  }
+  sbEl.hidden = false
+  const trackH = sbEl.clientHeight
+  if (trackH <= 0) return
+  const thumbH = Math.max(28, Math.min(trackH, (V.vh / V.totalH) * trackH))
+  const maxTop = Math.max(0, trackH - thumbH)
+  const top = scrollable > 0 ? (V.off / scrollable) * maxTop : 0
+  thumbEl.style.height = thumbH.toFixed(1) + 'px'
+  thumbEl.style.transform = 'translateY(' + top.toFixed(1) + 'px)'
+}
+
+/* ---------------- 首屏与索引 ---------------- */
+
+function finishInit() {
+  let sum = 0
+  let n = 0
+  for (const [i] of V.resident) {
+    if (!V.hidden[i] && V.measured[i] && V.heights[i] > 0) {
+      sum += V.heights[i]
+      n++
+    }
+  }
+  V.defaultH = n ? Math.max(24, sum / n) : 120
+  V.initializing = false
+  rebuildFenwick()
+  V.vh = window.innerHeight
+  V.windowStart = -1
+  V.windowEnd = -1
+  V.stageBase = 0
+  V.anchorSet = false
+  place()
+  V.anchorSet = true
+
+  const hs = []
+  let nHidden = 0
+  let nMeasured = 0
+  for (let k = 0; k < V.blockCount; k++) {
+    if (V.hidden[k]) nHidden++
+    if (V.measured[k]) nMeasured++
+    if (k < 8) hs.push(Math.round(V.heights[k]))
+  }
+  const ms = performance.now() - V.indexAt
+  const metrics = 'h=' + hs.join(',') + ' d=' + Math.round(V.defaultH)
+    + ' hm=' + nMeasured + '/' + nHidden + ' total=' + Math.round(V.totalH) + ' vh=' + V.vh
+    + ' sb=' + (sbEl && !sbEl.hidden ? 1 : 0)
+    + ' vp=' + window.innerWidth + 'x' + window.innerHeight
+    + ' dpr=' + (window.devicePixelRatio || 1).toFixed(2)
+  report('rendered', ms.toFixed(1) + '|' + V.prefixCount + '|' + V.blockCount + '|' + metrics)
+  schedulePlace()
+
+  if (V.pendingFullCount) {
+    const full = V.pendingFullCount
+    V.pendingFullCount = 0
+    applyIndexFull(full)
+  }
+}
+
+function resetVirtual() {
+  V.docId++
+  V.active = false
+  if (V.pumpRaf) cancelAnimationFrame(V.pumpRaf)
+  if (V.placeRaf) cancelAnimationFrame(V.placeRaf)
+  if (V.raf) cancelAnimationFrame(V.raf)
+  V.pumpRaf = 0
+  V.placeRaf = 0
+  V.raf = 0
+  V.queue.length = 0
+  V.pending.clear()
+  V.fetching.clear()
+  if (resizeObserver) resizeObserver.disconnect()
+  for (const rec of V.resident.values()) {
+    if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
+  }
+  V.resident.clear()
+  V.pool = []
+  if (docEl) {
+    docEl.textContent = ''
+    docEl.style.transform = ''
+  }
+  if (sbEl) sbEl.hidden = true
+  V.initializing = false
+  V.anchorSet = false
+}
+
+function applyIndex(base, prefix, est, fileSize, enc) {
+  resetVirtual()
+  bindDom()
+  document.body.classList.add('virtual')
+  document.body.classList.remove('dev')
+
+  state.docBase = base || state.docBase
+  state.generation = ++renderGeneration
+
+  V.active = true
+  V.docId++
+  V.prefixCount = prefix
+  V.estTotal = est
+  V.fileSize = fileSize
+  V.enc = enc
+  V.blockCount = Math.max(1, est || prefix || 1)
+  V.heights = new Float32Array(V.blockCount)
+  V.measured = new Uint8Array(V.blockCount)
+  V.hidden = new Uint8Array(V.blockCount)
+  V.fenwick = new Float64Array(V.blockCount + 1)
+  V.defaultH = 120
+  V.totalH = 0
+  V.off = 0
+  V.target = 0
+  V.anchorSet = false
+  V.indexAt = performance.now()
+  V.initializing = true
+  V.pendingFullCount = 0
+
+  requestBlocks(0, Math.min(30, Math.max(1, prefix || 1)), 'init')
+}
+
+function applyIndexFull(count) {
+  if (!V.active || !count) return
+  if (V.initializing) {
+    // 首屏还没收尾：等 finishInit 之后统一换数组，避免重入
+    V.pendingFullCount = count
+    return
+  }
+  const oldCount = V.blockCount
+  if (count === oldCount) return
+
+  if (count < oldCount) {
+    // 估算偏大（常见）：Fenwick 多出来的尾巴不影响前 count 块的前缀和，
+    // 只改计数与总高，避免 400 万项重建卡一帧。
+    V.blockCount = count
+    V.totalH = topPad() + fwSum(count) + bottomPad()
+    const scrollable = Math.max(0, V.totalH - V.vh)
+    V.off = Math.min(V.off, scrollable)
+    V.target = Math.min(V.target, scrollable)
+    refetchTruncatedPrefix()
+    schedulePlace()
+    return
+  }
+
+  const heights = new Float32Array(count)
+  const measured = new Uint8Array(count)
+  const hidden = new Uint8Array(count)
+  const copy = Math.min(oldCount, count)
+  heights.set(V.heights.subarray(0, copy))
+  measured.set(V.measured.subarray(0, copy))
+  hidden.set(V.hidden.subarray(0, copy))
+  V.heights = heights
+  V.measured = measured
+  V.hidden = hidden
+  V.blockCount = count
+  V.fenwick = new Float64Array(count + 1)
+  rebuildFenwick()
+
+  refetchTruncatedPrefix()
+  schedulePlace()
+}
+
+// 前缀扫描的最后一个块可能被 8MB 边界截断，常驻时重取
+function refetchTruncatedPrefix() {
+  const last = V.prefixCount - 1
+  if (last < 0 || !V.resident.has(last)) return
+  const rec = V.resident.get(last)
+  if (resizeObserver) resizeObserver.unobserve(rec.el)
+  if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
+  V.pool.push(rec.el)
+  V.resident.delete(last)
+}
+
+/* ---------------- 输入 ---------------- */
+
+function kick() {
+  if (V.raf) return
+  V.lastTick = 0
+  V.raf = requestAnimationFrame(tick)
+}
+
+function tick(t) {
+  V.raf = 0
+  if (!V.active) return
+  if (!V.lastTick) V.lastTick = t
+  const dt = Math.min(50, Math.max(1, t - V.lastTick))
+  V.lastTick = t
+  if (V.off !== V.target) {
+    const k = 1 - Math.exp(-dt / 80)
+    V.off += (V.target - V.off) * k
+    if (Math.abs(V.target - V.off) < 0.5) V.off = V.target
+  }
+  place()
+  if (V.off !== V.target) V.raf = requestAnimationFrame(tick)
+}
+
+function horizontalAncestor(target) {
+  for (let el = target; el && el !== document.body; el = el.parentElement) {
+    const cs = getComputedStyle(el)
+    if ((cs.overflowX === 'auto' || cs.overflowX === 'scroll') && el.scrollWidth > el.clientWidth) {
+      return el
+    }
+  }
+  return null
+}
+
+function onWheel(e) {
+  if (!V.active) return
+  if (e.shiftKey && horizontalAncestor(e.target)) return
+  e.preventDefault()
+  const unit = e.deltaMode === 1 ? emPx(1.65) : e.deltaMode === 2 ? V.vh : 1
+  const delta = e.deltaY * unit
+  const now = performance.now()
+  const trackpad = Math.abs(delta) < 40 && now - V.lastWheelAt < 60
+  V.lastWheelAt = now
+  const scrollable = Math.max(0, V.totalH - V.vh)
+  V.target = Math.min(Math.max(V.target + delta, 0), scrollable)
+  if (trackpad) {
+    V.off = V.target
+    place()
+    return
+  }
+  kick()
+}
+
+function onKeyDown(e) {
+  if (!V.active) return
+  if (e.ctrlKey || e.altKey || e.metaKey) return
+  const page = V.vh * 0.9
+  const scrollable = Math.max(0, V.totalH - V.vh)
+  let delta = 0
+  switch (e.key) {
+    case 'PageDown': delta = page; break
+    case 'PageUp': delta = -page; break
+    case 'ArrowDown': delta = 40; break
+    case 'ArrowUp': delta = -40; break
+    case ' ':
+      if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return
+      delta = e.shiftKey ? -page : page
+      break
+    case 'Home':
+      V.off = V.target = 0
+      place()
+      e.preventDefault()
+      return
+    case 'End':
+      V.off = V.target = scrollable
+      place()
+      e.preventDefault()
+      return
+    default:
+      return
+  }
+  e.preventDefault()
+  V.target = Math.min(Math.max(V.target + delta, 0), scrollable)
+  kick()
+}
+
+function onTrackDown(e) {
+  if (!V.active || e.target === thumbEl) return
+  const rect = sbEl.getBoundingClientRect()
+  const thumbH = thumbEl.offsetHeight
+  const maxTop = Math.max(1, rect.height - thumbH)
+  const ratio = Math.min(1, Math.max(0, (e.clientY - rect.top - thumbH / 2) / maxTop))
+  const scrollable = Math.max(0, V.totalH - V.vh)
+  V.off = V.target = ratio * scrollable
+  place()
+}
+
+function onThumbDown(e) {
+  if (!V.active) return
+  e.preventDefault()
+  try { thumbEl.setPointerCapture(e.pointerId) } catch { /* 忽略 */ }
+  V.drag = { y: e.clientY, off: V.off }
+}
+
+function onThumbMove(e) {
+  if (!V.drag) return
+  const trackH = sbEl.clientHeight
+  const thumbH = thumbEl.offsetHeight
+  const maxTop = Math.max(1, trackH - thumbH)
+  const scrollable = Math.max(0, V.totalH - V.vh)
+  const dy = e.clientY - V.drag.y
+  V.off = V.target = Math.min(Math.max(V.drag.off + (dy / maxTop) * scrollable, 0), scrollable)
+  place()
+}
+
+function onThumbUp(e) {
+  if (!V.drag) return
+  V.drag = null
+  try { thumbEl.releasePointerCapture(e.pointerId) } catch { /* 忽略 */ }
+}
+
+function remeasureAll() {
+  if (!V.active) return
+  for (const [i, rec] of V.resident) setHeight(i, rec.el.offsetHeight)
+  schedulePlace()
+}
 
 /* ---------------- 皮肤 ---------------- */
 
@@ -229,10 +928,15 @@ function applyFx(fx) {
     '}',
     'code,kbd,samp,pre{font-family:var(--fx-mono)!important;}',
     '.ui{font-family:var(--fx-ui)!important;}',
-    '.measure{max-width:' + measure + '!important;}',
+    '.measure,.blk{max-width:' + measure + '!important;}',
   ].join('')
 
   document.getElementById('fx').textContent = css
+
+  // 字号/行高变化会改块高，下一帧重新测量常驻窗口
+  requestAnimationFrame(() => {
+    if (V.active) remeasureAll()
+  })
 }
 
 /* ---------------- Mermaid（按需） ---------------- */
@@ -377,26 +1081,24 @@ async function renderMermaidBlocks(root, generation) {
   }
 }
 
-/* ---------------- 渲染入口 ---------------- */
+/* ---------------- 整篇渲染（只在 Edge 开发模式使用） ---------------- */
 
 function renderDocument(source, docBase) {
+  document.body.classList.add('dev')
+  document.body.classList.remove('virtual')
   const t0 = performance.now()
-  const generation = ++renderGeneration
+  state.generation = ++renderGeneration
 
   if (docBase) state.docBase = docBase
-  state.source = source
 
   const body = stripFrontMatter(source)
   const html = sanitize(md.render(body, { docBase: state.docBase }))
-  docEl().innerHTML = html
+  docEl.innerHTML = html
 
-  // 解析 + 清洗 + 挂 DOM 的耗时；M4 的对照基线就取这个数
   const ms = performance.now() - t0
+  renderMermaidBlocks(docEl, state.generation)
 
-  renderMermaidBlocks(docEl(), generation)
-
-  // 附上布局度量：排查"内容列偏心/超宽"这类问题只有数字说话
-  const box = docEl().getBoundingClientRect()
+  const box = docEl.getBoundingClientRect()
   const metrics = 'vp=' + window.innerWidth + 'x' + window.innerHeight
     + ' dpr=' + (window.devicePixelRatio || 1).toFixed(2)
     + ' col=' + Math.round(box.width) + '@' + Math.round(box.left)
@@ -406,8 +1108,7 @@ function renderDocument(source, docBase) {
 }
 
 /* ---------------- 宿主通道 ----------------
-   帧格式（票 11 第 5 节）：<type>|<字段…>|<载荷>，载荷永远在最后一个字段，
-   所以正文与 CSS 里出现竖线不会打乱解析。C++ 侧因此不需要 JSON 库。 */
+   控制帧格式：<type>|<字段…>，小载荷；块正文只走 mdblocks.local 的二进制帧。 */
 
 const violations = []
 window.__mdvCspViolations = violations
@@ -440,9 +1141,23 @@ function onHostMessage(event) {
 
   const [type, rest] = splitFirst(raw)
 
-  if (type === 'doc') {
-    const [base, text] = splitFirst(rest)
-    renderDocument(text, base || state.docBase)
+  if (type === 'index') {
+    const f = rest.split('|')
+    applyIndex(f[0],
+      parseInt(f[1], 10) || 0,
+      parseInt(f[2], 10) || 0,
+      parseInt(f[3], 10) || 0,
+      parseInt(f[4], 10) || 0)
+    return
+  }
+
+  if (type === 'index-full') {
+    applyIndexFull(parseInt(rest, 10) || 0)
+    return
+  }
+
+  if (type === 'clear') {
+    resetVirtual()
     return
   }
 
@@ -473,14 +1188,11 @@ document.addEventListener('click', (e) => {
   if (href && href.charAt(0) !== '#') postRaw('open|' + href)
 }, true)
 
-if (window.chrome && window.chrome.webview) {
-  window.chrome.webview.addEventListener('message', onHostMessage)
-  postRaw('ready')
-}
-
 /* ---------------- 开发模式（只在 Edge 里用，线上走 postMessage） ---------------- */
 
 async function devBoot() {
+  bindDom()
+  document.body.classList.add('dev')
   const params = new URLSearchParams(location.search)
   const skin = params.get('skin')
   if (skin) {
@@ -494,14 +1206,48 @@ async function devBoot() {
   if (!doc) return
   const res = await fetch(doc)
   if (!res.ok) {
-    docEl().textContent = 'cannot load ' + doc
+    docEl.textContent = 'cannot load ' + doc
     return
   }
   const text = await res.text()
   renderDocument(text, new URL('.', res.url).href)
 }
 
-if (!(window.chrome && window.chrome.webview)) {
+function bindInput() {
+  bindDom()
+  window.addEventListener('wheel', onWheel, { passive: false })
+  window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('resize', () => {
+    if (!V.active) return
+    V.vh = window.innerHeight
+    place()
+  })
+  thumbEl.addEventListener('pointerdown', onThumbDown)
+  thumbEl.addEventListener('pointermove', onThumbMove)
+  thumbEl.addEventListener('pointerup', onThumbUp)
+  thumbEl.addEventListener('pointercancel', onThumbUp)
+  sbEl.addEventListener('pointerdown', onTrackDown)
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => {
+      if (V.active) remeasureAll()
+    })
+  }
+}
+
+window.addEventListener('error', (e) => {
+  report('js-error', (e.message || 'error') + ' @' + (e.filename || '') + ':' + (e.lineno || 0))
+})
+window.addEventListener('unhandledrejection', (e) => {
+  report('js-reject', String(e.reason && e.reason.stack ? e.reason.stack : e.reason))
+})
+
+bindInput()
+
+if (window.chrome && window.chrome.webview) {
+  window.chrome.webview.addEventListener('message', onHostMessage)
+  postRaw('ready')
+  document.body.classList.add('virtual')
+} else {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', devBoot)
   } else {
@@ -509,4 +1255,4 @@ if (!(window.chrome && window.chrome.webview)) {
   }
 }
 
-window.__mdv = { md, renderDocument, applySkin, applyFx, state, resolveDocUrl, DOC_HOST }
+window.__mdv = { md, renderDocument, applySkin, applyFx, state, resolveDocUrl, DOC_HOST, V }

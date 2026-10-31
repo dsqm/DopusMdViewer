@@ -31,6 +31,7 @@
 
 #include <WebView2.h>
 
+#include "doc_source.h"
 #include "log.h"
 #include "util.h"
 
@@ -53,6 +54,7 @@ const UINT kCmdBounds = kCmdBase + 4;
 const UINT kCmdPost = kCmdBase + 5;
 const UINT kCmdDocFolder = kCmdBase + 6;
 const UINT kCmdRelease = kCmdBase + 7;
+const UINT kCmdScript = kCmdBase + 8;
 
 // 以下状态只在宿主线程上访问。
 struct Host {
@@ -243,6 +245,59 @@ void CreateController() {
               Fail(L"拿不到 ICoreWebView2_3，虚拟主机不可用");
               return S_OK;
             }
+
+            // 块正文走一个没有被映射的主机名：映射过的请求不会进 WebResourceRequested。
+            const HRESULT filterHr = g_host.webview->AddWebResourceRequestedFilter(
+                L"https://mdblocks.local/*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+            LogLine(L"WEBHOST: 块请求过滤器 hr=0x%08X", static_cast<unsigned>(filterHr));
+
+            EventRegistrationToken resToken = {};
+            g_host.webview->add_WebResourceRequested(
+                Callback<ICoreWebView2WebResourceRequestedEventHandler>(
+                    [](ICoreWebView2* sender,
+                       ICoreWebView2WebResourceRequestedEventArgs* args) -> HRESULT {
+                      (void)sender;
+                      ComPtr<ICoreWebView2WebResourceRequest> request;
+                      if (FAILED(args->get_Request(&request)) || !request) return S_OK;
+
+                      LPWSTR rawUri = nullptr;
+                      if (FAILED(request->get_Uri(&rawUri)) || !rawUri) return S_OK;
+                      const std::wstring uri(rawUri);
+                      ::CoTaskMemFree(rawUri);
+
+                      std::string body;
+                      int status = 404;
+                      docsrc::Serve(uri, &body, &status);
+                      if (status != 200) return S_OK;
+
+                      static int s_blockRequests = 0;
+                      if (s_blockRequests < 60) {
+                        ++s_blockRequests;
+                        LogLine(L"WEBHOST: 块请求 %s -> %zu B status=%d", uri.c_str(), body.size(),
+                              status);
+                      }
+
+                      static const BYTE kEmpty = 0;
+                      const BYTE* data =
+                          body.empty() ? &kEmpty
+                                       : reinterpret_cast<const BYTE*>(body.data());
+                      ComPtr<IStream> stream;
+                      stream.Attach(::SHCreateMemStream(data, static_cast<UINT>(body.size())));
+
+                      ComPtr<ICoreWebView2WebResourceResponse> response;
+                      if (g_host.env && stream) {
+                        g_host.env->CreateWebResourceResponse(
+                            stream.Get(), status, L"OK",
+                            L"Content-Type: application/octet-stream\r\n"
+                            L"Cache-Control: no-store\r\n"
+                            L"Access-Control-Allow-Origin: *\r\n",
+                            &response);
+                        args->put_Response(response.Get());
+                      }
+                      return S_OK;
+                    })
+                    .Get(),
+                &resToken);
 
             EventRegistrationToken msgToken = {};
             g_host.webview->add_WebMessageReceived(
@@ -476,6 +531,13 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       ReleaseController();
       return 1;
 
+    case kCmdScript: {
+      const std::wstring* script = reinterpret_cast<const std::wstring*>(lParam);
+      if (!script || !g_host.webview || !g_host.ready) return 0;
+      if (g_host.borrower != reinterpret_cast<HWND>(wParam)) return 0;
+      return SUCCEEDED(g_host.webview->ExecuteScript(script->c_str(), nullptr)) ? 1 : 0;
+    }
+
     case WM_NCDESTROY:
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
       ReleaseController();
@@ -612,3 +674,13 @@ bool WebHostSetDocFolder(const std::wstring& dir) {
 }
 
 void WebHostReleaseController(void) { SendCommand(kCmdRelease, 0, 0); }
+
+bool WebHostExecuteScript(HWND hViewer, const std::wstring& script) {
+  if (!hViewer) return false;
+  LRESULT result = 0;
+  if (!SendCommand(kCmdScript, reinterpret_cast<WPARAM>(hViewer),
+                   reinterpret_cast<LPARAM>(&script), &result)) {
+    return false;
+  }
+  return result != 0;
+}

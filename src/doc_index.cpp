@@ -909,14 +909,14 @@ void BlockIndex::Clear() {
   sealed_ = false;
 }
 
-void BlockIndex::Reserve(uint64_t fileSize) {
+void BlockIndex::Reserve(uint64_t fileSize, uint64_t reserveBytes) {
   Clear();
   fileSize_ = fileSize;
   pageCount_ = static_cast<uint32_t>(fileSize / kPageSize) + 1;
   pageBase_.assign(static_cast<size_t>(pageCount_) + 2, 0);
 
-  // 票 04：按 fileSize / 200 预留，避免 4 M 条记录反复搬家。
-  size_t est = static_cast<size_t>(fileSize / 200);
+  // 票 04：按字节数 / 200 预留，避免 4 M 条记录反复搬家。前缀扫描只预留前缀。
+  size_t est = static_cast<size_t>(reserveBytes / 200);
   if (est > 40000000u) est = 40000000u;
   offInPage_.reserve(est);
   len16_.reserve(est);
@@ -1076,7 +1076,7 @@ bool IndexBuilder::Begin(EncodingInfo enc, uint64_t fileSize, uint64_t limitByte
   s.unitBytes = (enc.encoding == Encoding::Utf16LE || enc.encoding == Encoding::Utf16BE)
                     ? 2u
                     : 1u;
-  s.index.Reserve(fileSize);
+  s.index.Reserve(fileSize, s.limit);
 
   if (s.unitBytes == 2) {
     s.wideScanner.reset(new BlockScanner<wchar_t>(&s, kMaxHtmlBytes / 2));
@@ -1173,7 +1173,8 @@ bool IndexBuilder::CanFeedMore() const {
 // ---------------------------------------------------------------- ScanFile
 
 bool ScanFile(const std::wstring& path, uint64_t limitBytes, IndexBuilder* out,
-              double* readMs, double* scanMs, std::wstring* error) {
+              double* readMs, double* scanMs, std::wstring* error,
+              const std::atomic<bool>* cancel) {
   if (error) error->clear();
   if (readMs) *readMs = 0;
   if (scanMs) *scanMs = 0;
@@ -1208,6 +1209,11 @@ bool ScanFile(const std::wstring& path, uint64_t limitBytes, IndexBuilder* out,
   LARGE_INTEGER t1;
 
   while (consumed < limit) {
+    if (cancel && cancel->load()) {
+      ::CloseHandle(h);
+      if (error) *error = L"已取消";
+      return false;
+    }
     size_t want = static_cast<size_t>(std::min<uint64_t>(kReadChunk, limit - consumed));
     DWORD got = 0;
     ::QueryPerformanceCounter(&t0);

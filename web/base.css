@@ -78,6 +78,73 @@ body.mdv-root {
   padding: 1.5em 1.5em 3em;
 }
 
+/* ---------------- 虚拟滚动（M4，票 03） ----------------
+   全文不进 DOM：块绝对定位在 #doc 里，整体用 translate3d 位移；
+   右侧是自绘滚动条，位置由前端的 Fenwick 前缀和算出。 */
+
+html, body { height: 100%; }
+
+body.virtual { overflow: hidden; }
+
+body.virtual #doc {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  will-change: transform;
+}
+
+body.virtual .blk {
+  position: absolute;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  max-width: var(--fx-measure);
+  padding: var(--md-space-block) 1.5em 0;
+}
+
+body.virtual .blk + .blk { margin-top: 0; }
+
+/* 块间距统一由 padding 提供，块内首尾元素的外边距归零，避免叠加 */
+body.virtual .blk > *:first-child { margin-top: 0; }
+body.virtual .blk > *:last-child { margin-bottom: 0; }
+body.virtual .blk--first { padding-top: 0; }
+body.virtual .blk--h1, body.virtual .blk--h2 { padding-top: 2.2em; }
+body.virtual .blk--h3, body.virtual .blk--h4,
+body.virtual .blk--h5, body.virtual .blk--h6 { padding-top: 1.8em; }
+body.virtual .blk--hr { padding-top: 1.8em; }
+
+#sb {
+  position: fixed;
+  top: 4px;
+  right: 2px;
+  bottom: 4px;
+  width: 10px;
+  z-index: 20;
+}
+
+#sb[hidden] { display: none; }
+
+#sb-thumb {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 0;
+  border-radius: 999px;
+  background: var(--md-scrollbar);
+}
+
+#sb-thumb:hover { background: var(--md-scrollbar-hover); }
+
+/* 开发模式（Edge 里整篇渲染），与原 .measure 布局一致 */
+body.dev { overflow: auto; }
+
+body.dev #doc {
+  max-width: var(--fx-measure);
+  margin: 0 auto;
+  padding: 1.5em 1.5em 3em;
+}
+
 ::selection { background: var(--md-selection); }
 
 ::-webkit-scrollbar { width: 12px; height: 12px; }

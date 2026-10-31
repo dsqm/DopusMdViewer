@@ -71,9 +71,17 @@ std::wstring MakeFx(const FontSettings& font) {
                std::to_wstring(font.measureEm)});
 }
 
-std::wstring MakeDoc(const std::wstring& docBase, const std::wstring& text) {
-  return Join({L"doc", docBase, text});
+std::wstring MakeIndex(const std::wstring& docBase, uint32_t prefixBlocks,
+                       uint32_t estTotal, uint64_t fileSize, int encoding) {
+  return Join({L"index", docBase, std::to_wstring(prefixBlocks), std::to_wstring(estTotal),
+               std::to_wstring(fileSize), std::to_wstring(encoding)});
 }
+
+std::wstring MakeIndexFull(uint32_t blockCount) {
+  return Join({L"index-full", std::to_wstring(blockCount)});
+}
+
+std::wstring MakeClear(void) { return L"clear"; }
 
 bool SplitType(const std::wstring& frame, std::wstring* type, std::wstring* rest) {
   const size_t pos = frame.find(kSep);

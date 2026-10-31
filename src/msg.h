@@ -2,10 +2,11 @@
 //
 // 不走 JSON：手写「类型 + 竖线分隔字段 + 载荷放最后」的定长头格式。
 // 载荷永远在最后一个字段，所以正文与 CSS 里出现竖线不会把解析打乱。
-// 块正文在 M4 改走二进制帧（webres.cpp），这里只承载小载荷与 M1 的整篇临时路径。
+// M4 起块正文走二进制帧（doc_source.cpp），这里只承载小的控制消息。
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 #include "config.h"
@@ -21,8 +22,15 @@ std::wstring MakeSkin(const std::wstring& id, const std::wstring& css);
 // fx|<ui>|<body>|<mono>|<size>|<lineHeight>|<measureEm>
 std::wstring MakeFx(const FontSettings& font);
 
-// doc|<docBase>|<text>
-std::wstring MakeDoc(const std::wstring& docBase, const std::wstring& text);
+// index|<docBase>|<prefixBlocks>|<estTotal>|<fileSize>|<encoding>
+std::wstring MakeIndex(const std::wstring& docBase, uint32_t prefixBlocks,
+                       uint32_t estTotal, uint64_t fileSize, int encoding);
+
+// index-full|<blockCount>：后台全文索引完成。
+std::wstring MakeIndexFull(uint32_t blockCount);
+
+// clear|
+std::wstring MakeClear();
 
 // 解析一条来自页面的消息：切出第一个竖线前的类型，其余原样给出。
 bool SplitType(const std::wstring& frame, std::wstring* type, std::wstring* rest);

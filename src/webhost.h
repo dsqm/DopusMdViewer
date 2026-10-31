@@ -60,3 +60,6 @@ bool WebHostSetDocFolder(const std::wstring& dir);
 
 // 关闭 controller（宿主线程保留）。当前只在需要强制重建时使用。
 void WebHostReleaseController(void);
+
+// 只给 tools/hosttest 用：在页面里执行一段脚本（滚动验收）。
+bool WebHostExecuteScript(HWND hViewer, const std::wstring& script);

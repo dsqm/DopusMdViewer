@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -84,7 +85,8 @@ class BlockIndex {
   size_t MemoryBytes() const;
 
   // 构建期接口（IndexBuilder 使用；SealPages 之前 Start/BlockAtOffset 不可用）。
-  void Reserve(uint64_t fileSize);
+  // reserveBytes 是预计要扫的字节数（前缀扫描不必按全文预留块数组）。
+  void Reserve(uint64_t fileSize, uint64_t reserveBytes);
   void Clear();
   void PushBlock(uint64_t start, uint64_t len, uint8_t kindFlags);
   void SealPages();
@@ -144,6 +146,7 @@ class IndexBuilder {
 // 便捷入口：打开文件、扫到 limitBytes（0 = 全文件）。
 // readMs / scanMs 分开计时，验收要区分 IO 与状态机。
 bool ScanFile(const std::wstring& path, uint64_t limitBytes, IndexBuilder* out,
-              double* readMs, double* scanMs, std::wstring* error);
+              double* readMs, double* scanMs, std::wstring* error,
+              const std::atomic<bool>* cancel = nullptr);
 
 }  // namespace doc

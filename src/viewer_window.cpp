@@ -1,7 +1,7 @@
 // viewer_window.cpp - 查看器窗口与消息分发。
 //
-// M1 的正文路径是「整篇读入 → 一次 md.render」，这是临时形态：M4 会换成二进制帧
-// 按块取。所以这里没有任何滚动/视口状态，那些都归 JS（票 11 第 4 节）。
+// M4 起正文不再整篇读入推送：打开时由 doc_source 建索引（同步前缀 + 后台全文），
+// 这里只推 index 控制消息，块正文由页面按区间向 mdblocks.local 取。
 
 #include "viewer_window.h"
 
@@ -13,6 +13,7 @@
 #include <strsafe.h>
 
 #include "config.h"
+#include "doc_source.h"
 #include "log.h"
 #include "msg.h"
 #include "skin.h"
@@ -24,10 +25,6 @@ namespace {
 
 const wchar_t kClassName[] = L"DopusMdViewerWindow";
 const wchar_t kTitle[] = L"DopusMdViewer";
-
-// M1 的临时整篇路径：超过这个大小就不整篇塞进 postMessage（M4 才是正式解法）。
-const size_t kMaxWholeDocBytes = 64u * 1024u * 1024u;
-
 const wchar_t kDocBase[] = L"https://mddoc.local/";
 
 struct ViewerState {
@@ -38,8 +35,12 @@ struct ViewerState {
   UINT uMsgSeq;
   wchar_t szFile[MAX_PATH * 2];
   ULONGLONG ullFileSize;
-  std::wstring docText;  // 已读入的正文；controller 未就绪时先缓存
-  bool docPushed;
+  uint32_t prefixBlocks;
+  uint32_t estBlocks;
+  int encoding;
+  LONGLONG qpcLoad;  // LOADW 起点，用于端到端耗时
+  bool docOpened;    // doc_source 归本窗口
+  bool indexFullPending;  // 全文索引已就绪但页面还没收到 index-full
   bool chromePushed;
   bool webFailed;
   bool hasHost;  // 宿主此刻是否在本窗口（单宿主，被别的窗口借走时没有画面）
@@ -92,6 +93,7 @@ const MsgEntry kWindowMessages[] = {
     {WM_CHAR, L"WM_CHAR"},
     {WM_SETCURSOR, L"WM_SETCURSOR"},
     {WM_DPICHANGED, L"WM_DPICHANGED"},
+    {WM_MDV_INDEX_FULL, L"WM_MDV_INDEX_FULL"},
 };
 
 const wchar_t* LookupName(const MsgEntry* pTable, size_t cEntries, UINT uMsg) {
@@ -174,7 +176,7 @@ RECT ClientRectOf(HWND hwnd) {
 
 // 皮肤与字体永远成对推送：先皮肤，再 fx（fx 最后注入且写全量槽位，压住皮肤）。
 void PushChrome(ViewerState* st) {
-  if (!st->hasHost) return;
+  if (!st->hasHost || st->webFailed || !WebHostIsReady()) return;
   const Config& cfg = ConfigLoad();
 
   std::wstring css;
@@ -186,51 +188,76 @@ void PushChrome(ViewerState* st) {
     }
   }
 
-  WebHostPost(st->hwndSelf, msg::MakeSkin(skinId, css));
-  WebHostPost(st->hwndSelf, msg::MakeFx(cfg.font));
-  st->chromePushed = true;
+  const bool ok = WebHostPost(st->hwndSelf, msg::MakeSkin(skinId, css)) &&
+                  WebHostPost(st->hwndSelf, msg::MakeFx(cfg.font));
+  st->chromePushed = ok;
 
   LogLine(L"VIEWER: 已推送皮肤 \"%s\"（%zu 字符）与字体（%dpx / %.2f / %dem）", skinId.c_str(),
           css.size(), cfg.font.sizePx, cfg.font.lineHeight, cfg.font.measureEm);
 }
 
-void PushDoc(ViewerState* st) {
-  if (st->webFailed) return;
-  if (!WebHostIsReady()) {
-    LogLine(L"VIEWER: 页面未就绪，正文先留着（%zu 字符）", st->docText.size());
-    return;
-  }
-  if (!st->hasHost) {
-    // 宿主在另一个查看器手里。投出去也只会画在那边的窗口上，等它归还再说。
-    LogLine(L"VIEWER: 宿主不在本窗口，正文先留着（%zu 字符）", st->docText.size());
-    st->docPushed = false;
-    return;
-  }
+void PushIndex(ViewerState* st) {
+  if (!st->docOpened || !st->hasHost || st->webFailed || !WebHostIsReady()) return;
 
   if (!WebHostSetDocFolder(UtilParentDir(st->szFile))) {
     LogLine(L"VIEWER: mddoc.local 映射失败，相对图片不会加载");
   }
 
+  const bool ok = WebHostPost(
+      st->hwndSelf,
+      msg::MakeIndex(kDocBase, st->prefixBlocks, st->estBlocks, st->ullFileSize, st->encoding));
+  LogLine(L"VIEWER: 推送索引 %u/%u 块 -> %s", st->prefixBlocks, st->estBlocks,
+          ok ? L"成功" : L"失败");
+}
+
+void MaybePushIndexFull(ViewerState* st) {
+  if (!st->indexFullPending || !st->docOpened || !st->hasHost || !WebHostIsReady()) return;
+  const uint32_t count = docsrc::PublishedBlockCount();
+  if (!WebHostPost(st->hwndSelf, msg::MakeIndexFull(count))) return;
+  st->indexFullPending = false;
+  LogLine(L"VIEWER: 已通知前端全文索引 %u 块", count);
+}
+
+void OpenDoc(ViewerState* st) {
+  if (!st->hasHost || st->webFailed) return;
+
   LARGE_INTEGER t0;
   LARGE_INTEGER t1;
   ::QueryPerformanceCounter(&t0);
-  LogMemory(L"推送前");
 
-  const bool ok = WebHostPost(st->hwndSelf, msg::MakeDoc(kDocBase, st->docText));
+  docsrc::DocumentInfo info;
+  std::wstring err;
+  if (!docsrc::Open(st->hwndSelf, st->szFile, &info, &err)) {
+    st->docOpened = false;
+    LogLine(L"VIEWER: 打开文档失败 \"%s\"：%s", st->szFile, err.c_str());
+    SetStatus(st, L"打开失败：%s", UtilLeafName(st->szFile));
+    return;
+  }
+
+  st->docOpened = true;
+  st->indexFullPending =
+      !info.complete && docsrc::PublishedBlockCount() > info.prefixBlocks;
+  st->prefixBlocks = info.prefixBlocks;
+  st->estBlocks = info.estimatedBlocks;
+  st->encoding = info.encoding;
+  st->ullFileSize = info.fileSize;
 
   ::QueryPerformanceCounter(&t1);
-  st->docPushed = ok;
-  LogLine(L"VIEWER: 推送正文 %zu 字符 -> %s，C++ 侧耗时 %.1fms", st->docText.size(),
-          ok ? L"成功" : L"失败",
-          QpcMs(t0.QuadPart, t1.QuadPart));
-  if (ok) LogMemory(L"推送后");
+  LogLine(L"VIEWER: 索引就绪 prefix=%u est=%u，同步扫描 %.1fms", info.prefixBlocks,
+          info.estimatedBlocks, QpcMs(t0.QuadPart, t1.QuadPart));
+
+  PushChrome(st);
+  PushIndex(st);
+  MaybePushIndexFull(st);
+  SetStatus(st, L"%s — %llu B", UtilLeafName(st->szFile), st->ullFileSize);
 }
 
 // ---- 宿主事件（由宿主线程 PostMessage 过来，运行在查看器自己的线程上） ----
 
 void OnHostReady(ViewerState* st) {
-  if (!st->chromePushed) PushChrome(st);
-  if (!st->docText.empty() && !st->docPushed) PushDoc(st);
+  PushChrome(st);
+  if (st->docOpened) PushIndex(st);
+  MaybePushIndexFull(st);
 }
 
 void OnHostMessage(ViewerState* st, const std::wstring& frame) {
@@ -243,8 +270,11 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     const std::wstring detail = rest.size() > kind.size() + 1 ? rest.substr(kind.size() + 1) : L"";
 
     if (kind == L"rendered") {
-      LogLine(L"VIEWER: JS 渲染完成 %s", detail.c_str());
-      LogMemory(L"渲染后");
+      LARGE_INTEGER t1;
+      ::QueryPerformanceCounter(&t1);
+      const double total = st->qpcLoad ? QpcMs(st->qpcLoad, t1.QuadPart) : 0.0;
+      LogLine(L"VIEWER: 首屏渲染完成 %s（LOADW 起 %.1fms）", detail.c_str(), total);
+      LogMemory(L"首屏后");
       SetStatus(st, L"%s — %llu B", UtilLeafName(st->szFile), st->ullFileSize);
     } else {
       LogLine(L"VIEWER: 页面事件 \"%s\" %s", kind.c_str(), detail.c_str());
@@ -285,7 +315,15 @@ void HandleHostEvent(ViewerState* st, int kind, const wchar_t* text) {
 
 void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
   if (!pszPath) pszPath = L"";
-  ::StringCchCopyW(st->szFile, ARRAYSIZE(st->szFile), pszPath);
+  // 相对路径会让 mddoc.local 映射失败（映射要求绝对路径），这里统一转绝对。
+  wchar_t szFull[MAX_PATH * 2];
+  const DWORD cchFull = ::GetFullPathNameW(pszPath, ARRAYSIZE(szFull), szFull, nullptr);
+  if (cchFull > 0 && cchFull < ARRAYSIZE(szFull)) {
+    ::StringCchCopyW(st->szFile, ARRAYSIZE(st->szFile), szFull);
+  } else {
+    ::StringCchCopyW(st->szFile, ARRAYSIZE(st->szFile), pszPath);
+  }
+  pszPath = st->szFile;
 
   WIN32_FILE_ATTRIBUTE_DATA fad;
   st->ullFileSize = 0;
@@ -293,43 +331,34 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
     st->ullFileSize = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
   }
 
-  st->docText.clear();
-  st->docPushed = false;
+  LARGE_INTEGER tLoad;
+  ::QueryPerformanceCounter(&tLoad);
+  st->qpcLoad = tLoad.QuadPart;
 
-  LARGE_INTEGER t0;
-  LARGE_INTEGER t1;
-  ::QueryPerformanceCounter(&t0);
+  st->docOpened = false;
+  docsrc::CloseIfOwner(st->hwndSelf);
 
-  std::string bytes;
-  if (!UtilReadFileBytes(pszPath, kMaxWholeDocBytes, &bytes)) {
-    LogLine(L"VIEWER: 读取失败或超过 %zu MB：%s", kMaxWholeDocBytes / 1048576, pszPath);
-    SetStatus(st, L"读取失败：%s", UtilLeafName(pszPath));
+  if (!st->hasHost) {
+    // 宿主在另一个查看器手里：先记住路径，收回宿主时再开索引。
+    LogLine(L"VIEWER: 宿主不在本窗口，先不建索引（%s）", pszPath);
+    SetStatus(st, L"%s — %llu B（预览正显示在另一个窗口）", UtilLeafName(pszPath),
+              st->ullFileSize);
     return;
   }
 
-  if (!UtilDecodeText(bytes, &st->docText)) {
-    LogLine(L"VIEWER: 编码无法识别（既非 UTF-8 也非 GB18030）：%s", pszPath);
-    SetStatus(st, L"编码无法识别：%s", UtilLeafName(pszPath));
-    return;
-  }
-
-  ::QueryPerformanceCounter(&t1);
-  LogLine(L"VIEWER: 读入 \"%s\" %llu 字节 → %zu 字符，耗时 %.1fms", pszPath, st->ullFileSize,
-          st->docText.size(), QpcMs(t0.QuadPart, t1.QuadPart));
-
-  PushDoc(st);
-  SetStatus(st, L"%s — %llu B", UtilLeafName(pszPath), st->ullFileSize);
+  OpenDoc(st);
 }
 
 void HandleClear(ViewerState* st) {
-  LogLine(L"VIEWER: CLEAR（丢弃 %zu 字符）", st->docText.size());
+  LogLine(L"VIEWER: CLEAR");
   st->szFile[0] = L'\0';
   st->ullFileSize = 0;
-  st->docText.clear();
-  st->docPushed = false;
+  st->docOpened = false;
+  st->indexFullPending = false;
+  docsrc::CloseIfOwner(st->hwndSelf);
 
   if (st->hasHost && WebHostIsReady()) {
-    WebHostPost(st->hwndSelf, msg::MakeDoc(kDocBase, std::wstring()));
+    WebHostPost(st->hwndSelf, msg::MakeClear());
   }
   ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
 }
@@ -357,26 +386,34 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_MDV_HOST_LOST:
       LogLine(L"VIEWER: 宿主被借走，转为空白");
       st->hasHost = false;
-      st->docPushed = false;
+      st->docOpened = false;
+      st->indexFullPending = false;
       ::InvalidateRect(hwnd, nullptr, TRUE);
       return 0;
 
-    // 宿主还回来了（原先借用它的窗口关了）。重新挂上并把正文再推一遍。
+    // 宿主还回来了（原先借用它的窗口关了）。重新挂上并重开本文档。
     case WM_MDV_RECLAIM:
       if (!WebHostBorrow(hwnd, ClientRectOf(hwnd))) {
         LogLine(L"VIEWER: 收回宿主失败");
         return 0;
       }
-      LogLine(L"VIEWER: 收回宿主，重推正文");
       st->hasHost = true;
-      st->docPushed = false;
-      PushChrome(st);
-      if (!st->docText.empty()) {
-        PushDoc(st);
+      LogLine(L"VIEWER: 收回宿主，重开文档");
+      LARGE_INTEGER tReclaim;
+      ::QueryPerformanceCounter(&tReclaim);
+      st->qpcLoad = tReclaim.QuadPart;
+      if (st->szFile[0]) {
+        OpenDoc(st);
       } else {
-        WebHostPost(hwnd, msg::MakeDoc(kDocBase, std::wstring()));
+        PushChrome(st);
+        if (WebHostIsReady()) WebHostPost(hwnd, msg::MakeClear());
       }
       ::InvalidateRect(hwnd, nullptr, TRUE);
+      return 0;
+
+    case WM_MDV_INDEX_FULL:
+      st->indexFullPending = true;
+      MaybePushIndexFull(st);
       return 0;
 
     case WM_MDV_EVENT: {
@@ -392,8 +429,9 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       // 必须在这里归还宿主：DestroyWindow 会连子窗口一起销毁，而宿主此刻正是
       // 这个窗口的子窗口。等到 WM_NCDESTROY 就晚了——宿主已经没了，controller
       // 跟着失效（之后每次 postMessage 都是 0x8007139F）。
-      // 归还后宿主会交给上一个还活着的查看器，所以这里不必自己再推内容。
       WebHostUnborrow(hwnd);
+      docsrc::CloseIfOwner(hwnd);
+      st->docOpened = false;
       st->hasHost = false;
       return 0;
 
@@ -461,8 +499,8 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       return 0;
 
     case DVPLUGINMSG_REINITIALIZE:
-      // 只是通知，不销毁窗口（viewer plugins.h:319）。配置变了就重推一遍皮肤与字体，
-      // 正文不动 —— 字号变化后的位置恢复由 JS 按 (anchorId, anchorDy) 处理。
+      // 只是通知，不销毁窗口（viewer plugins.h:319）。配置变了就重推皮肤与字体；
+      // 字号变化后的位置恢复由前端按锚点处理。
       LogLine(L"VIEWER: REINITIALIZE，重推皮肤与字体");
       if (WebHostIsReady()) PushChrome(st);
       return 0;
@@ -563,7 +601,12 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->uMsgSeq = 0;
   st->szFile[0] = L'\0';
   st->ullFileSize = 0;
-  st->docPushed = false;
+  st->prefixBlocks = 0;
+  st->estBlocks = 0;
+  st->encoding = 0;
+  st->qpcLoad = 0;
+  st->docOpened = false;
+  st->indexFullPending = false;
   st->chromePushed = false;
   st->webFailed = false;
   st->hasHost = false;
