@@ -427,41 +427,46 @@ pre.mermaid-src {
 }
 
 /* ---------------- 网络图片确认（预览页内） ----------------
-   底边居中的浮层：不挪动正文、不抢焦点；一次只问一个来源。 */
+   顶部整条横幅，按钮靠右；文字放不下时换行，最多两行。 */
 
 .net-consent {
   position: fixed;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 30;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-width: min(92vw, 460px);
-  padding: 10px 12px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
   background: var(--md-outline-bg);
   color: var(--md-outline-fg);
-  border: 1px solid var(--md-border);
-  border-radius: var(--md-radius);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+  border-bottom: 1px solid var(--md-border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .net-consent[hidden] { display: none; }
 
-.net-consent-title {
-  font-weight: 600;
-  overflow-wrap: anywhere;
+.net-consent-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
+.net-consent-title { font-weight: 600; }
+
 .net-consent-note {
+  margin-left: 8px;
   color: var(--md-fg-muted);
   font-size: 11px;
 }
 
 .net-consent-actions {
+  flex: 0 0 auto;
   display: flex;
-  justify-content: flex-end;
   gap: 8px;
 }
 

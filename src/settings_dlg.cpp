@@ -91,14 +91,14 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
                  state->font);
       AddControl(hwnd, L"BUTTON", L"每文档询问一次", BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP,
                  Scale(32, d), Scale(44, d), Scale(300, d), Scale(22, d), kIdDoc, state->font);
-      AddControl(hwnd, L"BUTTON", L"每主机每文档询问一次",
-                 BS_AUTORADIOBUTTON | WS_TABSTOP, Scale(32, d), Scale(70, d), Scale(300, d),
+      AddControl(hwnd, L"BUTTON", L"每主机询问一次（DO 运行期间记住）",
+                 BS_AUTORADIOBUTTON | WS_TABSTOP, Scale(32, d), Scale(70, d), Scale(320, d),
                  Scale(22, d), kIdHost, state->font);
       AddControl(hwnd, L"BUTTON", L"不询问，直接加载", BS_AUTORADIOBUTTON | WS_TABSTOP,
                  Scale(32, d), Scale(96, d), Scale(300, d), Scale(22, d), kIdOff, state->font);
       AddControl(hwnd, L"STATIC",
-                 L"网络图片使用 https，确认面板显示在预览页内。\n"
-                 L"图片默认只允许文档目录内的相对路径。",
+                 L"网络图片使用 https，确认面板显示在预览顶部；\n"
+                 L"允许/拒绝会记住到 DO 退出。图片默认只允许文档目录内的相对路径。",
                  SS_LEFT, Scale(20, d), Scale(126, d), Scale(340, d), Scale(38, d), 0,
                  state->font);
       AddControl(hwnd, L"BUTTON", L"允许图片引用文档目录外的路径（../ 与绝对路径）",

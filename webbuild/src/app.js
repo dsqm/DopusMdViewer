@@ -656,8 +656,10 @@ function ensureConsentPanel() {
   panel.className = 'net-consent ui'
   panel.hidden = true
   panel.innerHTML =
-    '<div class="net-consent-title"></div>' +
-    '<div class="net-consent-note"></div>' +
+    '<div class="net-consent-text">' +
+    '<span class="net-consent-title"></span>' +
+    '<span class="net-consent-note"></span>' +
+    '</div>' +
     '<div class="net-consent-actions">' +
     '<button type="button" data-act="deny">拒绝</button>' +
     '<button type="button" data-act="allow">允许</button>' +
@@ -678,7 +680,7 @@ function showNetPrompt(origin) {
   NET.title.textContent = '允许加载来自 ' + host + ' 的网络图片吗？'
   NET.note.textContent = NET.mode === 2
     ? '本文件内不再询问 · 可在插件设置里调整'
-    : '只影响当前文档 · 可在插件设置里调整'
+    : '记住到 Directory Opus 退出 · 可在插件设置里调整'
   panel.hidden = false
 }
 
@@ -760,12 +762,12 @@ function setNetMode(mode) {
 }
 
 function resetNetConsent() {
+  // 只清“正在等答复”的问答与每文档决定；允许/拒绝的来源记住到页面结束
+  // （页面随 DO 进程存活，关预览窗口、换文件都不清）。
   for (const item of NET.queue) item.resolve(false)
   if (NET.current) NET.current.resolve(false)
   NET.queue = []
   NET.current = null
-  NET.allowed.clear()
-  NET.denied.clear()
   NET.docDecided = null
   hideNetPrompt()
 }
