@@ -108,6 +108,8 @@ struct DialogState {
   HWND hNetHost = nullptr;
   HWND hNetOff = nullptr;
   HWND hOutside = nullptr;
+  HWND hApply = nullptr;
+  bool dirty = false;
 };
 
 HWND g_hwnd = nullptr;
@@ -294,6 +296,12 @@ void EnableMeasure(DialogState* st, bool enabled) {
   ::EnableWindow(st->hMeasureSpin, enabled);
 }
 
+// “应用”只在有未保存改动时可用；应用成功后立刻变灰。
+void SetDirty(DialogState* st, bool dirty) {
+  st->dirty = dirty;
+  if (st->hApply) ::EnableWindow(st->hApply, dirty ? TRUE : FALSE);
+}
+
 void LoadUiFromStaged(DialogState* st) {
   RefreshSkins(st);
 
@@ -374,6 +382,7 @@ bool ApplySettings(DialogState* st) {
     return false;
   }
   ViewerNotifyConfigChanged();
+  SetDirty(st, false);
   LogLine(L"SETTINGS: 已应用 skin=\"%s\" size=%d lh=%.2f measure=%d net=%d", st->staged.skin.c_str(),
           st->staged.font.sizePx, st->staged.font.lineHeight, st->staged.font.measureEm,
           st->staged.netImageMode);
@@ -586,7 +595,8 @@ void BuildUi(DialogState* st) {
   // 底部按钮
   AddControl(st, -1, L"BUTTON", L"恢复默认", BS_PUSHBUTTON | WS_TABSTOP, 16, 392, 100, 28,
              kIdRestore);
-  AddControl(st, -1, L"BUTTON", L"应用", BS_PUSHBUTTON | WS_TABSTOP, 322, 392, 70, 28, kIdApply);
+  st->hApply = AddControl(st, -1, L"BUTTON", L"应用",
+                          BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, 322, 392, 70, 28, kIdApply);
   AddControl(st, -1, L"BUTTON", L"确定", BS_DEFPUSHBUTTON | WS_TABSTOP, 400, 392, 70, 28, kIdOk);
   AddControl(st, -1, L"BUTTON", L"取消", BS_PUSHBUTTON | WS_TABSTOP, 478, 392, 70, 28, kIdCancel);
 
@@ -605,6 +615,7 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdRestore:
       st->staged = ConfigDefaults();
       LoadUiFromStaged(st);
+      SetDirty(st, true);
       return;
 
     case kIdApply:
@@ -625,11 +636,22 @@ void OnCommand(DialogState* st, int id, int code) {
         if (sel >= 0 && sel < static_cast<int>(st->skins.size())) {
           st->staged.skin = st->skins[sel].id;
         }
+        SetDirty(st, true);
       }
       return;
 
+    // 这三个编辑框也可能被上面三个上下微调改写（不一定发 EN_CHANGE）
+    case kIdSize:
+    case kIdLh:
+    case kIdMeasure:
+      if (code == EN_CHANGE) SetDirty(st, true);
+      return;
+
     case kIdUnlimited:
-      EnableMeasure(st, ::IsDlgButtonChecked(st->hwnd, kIdUnlimited) != BST_CHECKED);
+      if (code == BN_CLICKED) {
+        EnableMeasure(st, ::IsDlgButtonChecked(st->hwnd, kIdUnlimited) != BST_CHECKED);
+        SetDirty(st, true);
+      }
       return;
 
     case kIdSlotUi:
@@ -641,22 +663,39 @@ void OnCommand(DialogState* st, int id, int code) {
 
     case kIdFamilyAdd:
       AddFontToChain(st);
+      SetDirty(st, true);
       return;
 
     case kIdChainDel:
       RemoveFromChain(st);
+      SetDirty(st, true);
       return;
 
     case kIdChainUp:
       MoveInChain(st, -1);
+      SetDirty(st, true);
       return;
 
     case kIdChainDown:
       MoveInChain(st, 1);
+      SetDirty(st, true);
       return;
 
     case kIdRefreshFonts:
       LoadFamilies(st);
+      return;
+
+    // 渲染开关、网络图档位、目录外图片：点一下就算未保存改动
+    case kIdRenderMermaid:
+    case kIdRenderKatex:
+    case kIdRenderHighlight:
+    case kIdRenderHtml:
+    case kIdRenderLocal:
+    case kIdNetDoc:
+    case kIdNetHost:
+    case kIdNetOff:
+    case kIdOutside:
+      if (code == BN_CLICKED) SetDirty(st, true);
       return;
 
     case kIdOpenLog: {
@@ -696,6 +735,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
       BuildUi(st);
       LoadFamilies(st);
       LoadUiFromStaged(st);
+      SetDirty(st, false);
       return 0;
 
     case WM_COMMAND:
@@ -704,16 +744,22 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
     case WM_NOTIFY: {
       const NMHDR* hdr = reinterpret_cast<const NMHDR*>(lParam);
-      if (st && hdr && hdr->code == UDN_DELTAPOS && hdr->idFrom == kIdLhSpin) {
-        const NMUPDOWN* ud = reinterpret_cast<const NMUPDOWN*>(lParam);
-        const double cur = ReadLhText(st, st->staged.font.lineHeight);
-        int hundredths = static_cast<int>(cur * 100.0 + 0.5) + (ud->iDelta > 0 ? 5 : -5);
-        if (hundredths < 120) hundredths = 120;
-        if (hundredths > 220) hundredths = 220;
-        st->staged.font.lineHeight = hundredths / 100.0;
-        SetLhText(st, st->staged.font.lineHeight);
-        ::SendMessageW(st->hLhSpin, UDM_SETPOS32, 0, hundredths);
-        return 1;  // 位置已自己维护
+      if (st && hdr && hdr->code == UDN_DELTAPOS) {
+        if (hdr->idFrom == kIdLhSpin) {
+          const NMUPDOWN* ud = reinterpret_cast<const NMUPDOWN*>(lParam);
+          const double cur = ReadLhText(st, st->staged.font.lineHeight);
+          int hundredths = static_cast<int>(cur * 100.0 + 0.5) + (ud->iDelta > 0 ? 5 : -5);
+          if (hundredths < 120) hundredths = 120;
+          if (hundredths > 220) hundredths = 220;
+          st->staged.font.lineHeight = hundredths / 100.0;
+          SetLhText(st, st->staged.font.lineHeight);
+          ::SendMessageW(st->hLhSpin, UDM_SETPOS32, 0, hundredths);
+          SetDirty(st, true);
+          return 1;  // 位置已自己维护
+        }
+        if (hdr->idFrom == kIdSizeSpin || hdr->idFrom == kIdMeasureSpin) {
+          SetDirty(st, true);
+        }
       }
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
     }
@@ -721,12 +767,13 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     case WM_CTLCOLORSTATIC: {
       HDC hdc = reinterpret_cast<HDC>(wParam);
       HWND control = reinterpret_cast<HWND>(lParam);
+      // 静态文本一律透明：默认刷子会在每个标签后面画一块比窗口更深/更浅的
+      // 矩形，看起来像一堆灰色小底板。
+      ::SetBkMode(hdc, TRANSPARENT);
       if (st && control == st->hPreviewNote && st->previewMissing) {
         ::SetTextColor(hdc, RGB(192, 0, 0));
-        ::SetBkMode(hdc, TRANSPARENT);
-        return reinterpret_cast<LRESULT>(::GetSysColorBrush(COLOR_BTNFACE));
       }
-      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+      return reinterpret_cast<LRESULT>(::GetSysColorBrush(COLOR_BTNFACE));
     }
 
     case WM_CLOSE:
