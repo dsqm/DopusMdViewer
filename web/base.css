@@ -458,12 +458,6 @@ pre.mermaid-src {
 
 .net-consent-title { font-weight: 600; }
 
-.net-consent-note {
-  margin-left: 8px;
-  color: var(--md-fg-muted);
-  font-size: 11px;
-}
-
 .net-consent-actions {
   flex: 0 0 auto;
   display: flex;

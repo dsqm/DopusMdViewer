@@ -188,7 +188,6 @@ const NET = {
   current: null,
   panel: null,
   title: null,
-  note: null,
 }
 
 function isRemoteUrl(raw) {
@@ -658,7 +657,6 @@ function ensureConsentPanel() {
   panel.innerHTML =
     '<div class="net-consent-text">' +
     '<span class="net-consent-title"></span>' +
-    '<span class="net-consent-note"></span>' +
     '</div>' +
     '<div class="net-consent-actions">' +
     '<button type="button" data-act="deny">拒绝</button>' +
@@ -669,7 +667,6 @@ function ensureConsentPanel() {
   document.body.appendChild(panel)
   NET.panel = panel
   NET.title = panel.querySelector('.net-consent-title')
-  NET.note = panel.querySelector('.net-consent-note')
   return panel
 }
 
@@ -678,9 +675,6 @@ function showNetPrompt(origin) {
   let host = origin
   try { host = new URL(origin).host } catch { /* 保留原文 */ }
   NET.title.textContent = '允许加载来自 ' + host + ' 的网络图片吗？'
-  NET.note.textContent = NET.mode === 2
-    ? '本文件内不再询问 · 可在插件设置里调整'
-    : '记住到 Directory Opus 退出 · 可在插件设置里调整'
   panel.hidden = false
 }
 
