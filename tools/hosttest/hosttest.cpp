@@ -18,6 +18,7 @@
 #include "../../src/viewer_window.h"
 #include "../../src/settings_dlg.h"
 #include "../../src/webhost.h"
+#include "../../src/log.h"
 
 namespace {
 
@@ -35,6 +36,10 @@ const UINT_PTR kConsentTimerId = 10;
 const UINT_PTR kReloadTimerId = 11;
 const UINT_PTR kFindTimerId = 12;
 const UINT_PTR kOutlineTimerId = 13;
+const UINT_PTR kPrewarmTimerId = 14;
+const UINT_PTR kReleaseCloseTimerId = 15;
+const UINT_PTR kReleaseQuitTimerId = 16;
+const UINT_PTR kReleaseReopenTimerId = 17;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -43,6 +48,10 @@ const UINT kSettingsAfterMs = 3000;
 const UINT kDumpAfterMs = 8000;
 const UINT kQuitAfterMs = 40000;
 const UINT kShotAfterDefaultMs = 5000;
+const UINT kPrewarmAfterMs = 7000;      // 预热 3 秒开始、页面约 2.6 秒就绪，7 秒时借用
+const UINT kReleaseCloseAfterMs = 5000; // 销毁主窗口，模拟 DO 窗口关闭
+const UINT kReleaseReopenAfterMs = 10000; // 释放后重新开窗口，验 Environment 重建
+const UINT kReleaseQuitAfterMs = 19000;
 
 wchar_t g_szFile[MAX_PATH * 2] = L"";
 wchar_t g_szShot[MAX_PATH * 2] = L"";
@@ -56,10 +65,14 @@ bool g_seam = false;        // 5 秒后滚到第 10 万行（第一段与第二�
 bool g_consent = false;     // 5 秒后点页内网络图确认面板的“允许”，4 秒后回流图片状态
 bool g_reload = false;      // 6.5 秒后重新 LOADW 同一个文件，验进程内记忆跨文件保留
 bool g_find = false;        // 5 秒后打开搜索、查 g_findQuery、翻到下一个，回流计数与 mark
+bool g_prewarm = false;     // 先预热，7 秒后再建查看器，验首开耗时
+bool g_release = false;     // 5 秒后销毁主窗口，验 DO 窗口关闭后实例释放
+bool g_idle = false;        // 配合 prewarm：只预热、不建查看器，量常驻内存
 wchar_t g_findQuery[128] = L"中文";
 bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条目数与滚动位置
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
+HWND g_hwndTimer = nullptr;  // release 模式：主窗口销毁后用它继续跑计时器
 HINSTANCE g_hInst = nullptr;
 
 // 建一个查看器并让它加载当前文件。cycle 模式用它做第二次。
@@ -330,6 +343,32 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"window.dispatchEvent(new WheelEvent('wheel',{deltaY:0,deltaMode:0,"
             L"bubbles:true,cancelable:true}));})();";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kPrewarmTimerId) {
+        ::KillTimer(hwnd, kPrewarmTimerId);
+        LogLine(L"TEST: 预热完成，建查看器");
+        g_viewer = CreateViewerOnce();
+        if (g_viewer) LayoutChildren();
+      } else if (wParam == kReleaseCloseTimerId) {
+        ::KillTimer(hwnd, kReleaseCloseTimerId);
+        LogLine(L"TEST: 销毁主窗口（模拟 DO 窗口关闭）");
+        HWND main = g_hwndMain;
+        g_hwndMain = nullptr;
+        g_viewer = nullptr;
+        ::DestroyWindow(main);
+      } else if (wParam == kReleaseReopenTimerId) {
+        ::KillTimer(hwnd, kReleaseReopenTimerId);
+        LogLine(L"TEST: 重新打开窗口（实例应已释放，走冷路径重建）");
+        g_hwndMain = ::CreateWindowExW(0, kMainClass, L"DopusMdViewer host test",
+                                       WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40, 1000, 780,
+                                       nullptr, nullptr, g_hInst, nullptr);
+        if (g_hwndMain) {
+          g_viewer = CreateViewerOnce();
+          if (g_viewer) LayoutChildren();
+          ::SetForegroundWindow(g_hwndMain);
+        }
+      } else if (wParam == kReleaseQuitTimerId) {
+        ::KillTimer(hwnd, kReleaseQuitTimerId);
+        ::PostQuitMessage(0);
       } else if (wParam == kCycleTimerId) {
         // Opus 换文件时会销毁并重建查看器；这里照做一遍，验证宿主与 controller 能否撑住
         ::KillTimer(hwnd, kCycleTimerId);
@@ -343,7 +382,8 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       return 0;
 
     case WM_DESTROY:
-      ::PostQuitMessage(0);
+      // release 模式故意销毁主窗口但让进程继续跑，验证宿主自己回收实例。
+      if (!g_release) ::PostQuitMessage(0);
       return 0;
 
     default:
@@ -390,6 +430,9 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"reload")) g_reload = true;
   if (*p && wcsstr(p, L"find")) g_find = true;
   if (*p && wcsstr(p, L"outline")) g_outline = true;
+  if (*p && wcsstr(p, L"prewarm")) g_prewarm = true;
+  if (*p && wcsstr(p, L"release")) g_release = true;
+  if (*p && wcsstr(p, L"idle")) g_idle = true;
   if (*p) {
     const wchar_t* q = wcsstr(p, L"q=");
     if (q) {
@@ -422,6 +465,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   g_hInst = hInstance;
   ExtractArgs(lpCmdLine);
 
+  // 模拟 InitEx 之后的延迟预热（预热在宿主线程里再等 3 秒）。
+  if (g_prewarm) WebHostPrewarm(true);
+
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
   wc.lpfnWndProc = MainProc;
@@ -438,10 +484,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
   if (!ViewerRegisterClass(hInstance)) return 4;
 
-  g_viewer = CreateViewerOnce();
-  if (!g_viewer) return 5;
+  if (g_prewarm) {
+    if (!g_idle) ::SetTimer(g_hwndMain, kPrewarmTimerId, kPrewarmAfterMs, nullptr);
+  } else {
+    g_viewer = CreateViewerOnce();
+    if (!g_viewer) return 5;
+    LayoutChildren();
+  }
 
-  LayoutChildren();
+  if (g_release) {
+    // 主窗口马上会被销毁；用一个隐藏窗口把计时器撑到进程退出。
+    g_hwndTimer = ::CreateWindowExW(0, kMainClass, L"release-timer", WS_POPUP, 0, 0, 1, 1,
+                                    nullptr, nullptr, hInstance, nullptr);
+    if (g_hwndTimer) {
+      ::SetTimer(g_hwndTimer, kReleaseCloseTimerId, kReleaseCloseAfterMs, nullptr);
+      ::SetTimer(g_hwndTimer, kReleaseReopenTimerId, kReleaseReopenAfterMs, nullptr);
+      ::SetTimer(g_hwndTimer, kReleaseQuitTimerId, kReleaseQuitAfterMs, nullptr);
+    }
+  }
 
   if (g_cycle) {
     ::SetTimer(g_hwndMain, kCycleTimerId, kCycleAfterMs, nullptr);
@@ -475,11 +535,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     ::SetTimer(g_hwndMain, kOutlineTimerId, 5000, nullptr);
   }
 
-  if (g_szShot[0]) {
+  if (g_szShot[0] && !g_release) {
     ::SetForegroundWindow(g_hwndMain);
     ::SetTimer(g_hwndMain, kShotTimerId, g_shotAfterMs, nullptr);
   }
-  ::SetTimer(g_hwndMain, kQuitTimerId, kQuitAfterMs, nullptr);
+  if (!g_release) ::SetTimer(g_hwndMain, kQuitTimerId, kQuitAfterMs, nullptr);
 
   MSG msg;
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
