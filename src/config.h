@@ -36,6 +36,8 @@ struct Config {
   bool renderLocalImages;
   // 启动后在后台预热 WebView2（Opus 窗口关闭时释放）。默认关闭。
   bool prewarm;
+  // 预热关闭时，最后一次预览结束后空闲多少分钟释放 WebView2；0 = 不释放。
+  int idleReleaseMinutes;
 };
 
 // 内置默认值（设置界面的“恢复默认”与外置 JSON 缺失时共用）。
@@ -61,6 +63,9 @@ bool ConfigAllowOutsideImages(void);
 
 // 启动时是否预热 WebView2。
 bool ConfigPrewarm(void);
+
+// 预热关闭时的空闲释放分钟数；0 = 不释放。
+int ConfigIdleReleaseMinutes(void);
 
 // 写入整份设置并更新内存值；原子写（.tmp + MoveFileEx），保留未知键。
 bool ConfigSave(const Config& config);

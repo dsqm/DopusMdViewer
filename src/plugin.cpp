@@ -136,7 +136,7 @@ extern "C" BOOL DVP_InitEx(LPDVPINITEXDATA pInitExData) {
   LogModuleStamp();
 
   // 启动后台预热（可在设置里关掉）。失败只在日志里出现，不影响预览。
-  WebHostPrewarm(ConfigPrewarm());
+  WebHostPrewarm(ConfigPrewarm(), ConfigIdleReleaseMinutes());
   return TRUE;
 }
 

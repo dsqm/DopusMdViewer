@@ -40,6 +40,7 @@ const UINT_PTR kPrewarmTimerId = 14;
 const UINT_PTR kReleaseCloseTimerId = 15;
 const UINT_PTR kReleaseQuitTimerId = 16;
 const UINT_PTR kReleaseReopenTimerId = 17;
+const UINT_PTR kDropCloseTimerId = 19;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -52,6 +53,7 @@ const UINT kPrewarmAfterMs = 7000;      // 预热 3 秒开始、页面约 2.6 �
 const UINT kReleaseCloseAfterMs = 5000; // 销毁主窗口，模拟 DO 窗口关闭
 const UINT kReleaseReopenAfterMs = 10000; // 释放后重新开窗口，验 Environment 重建
 const UINT kReleaseQuitAfterMs = 19000;
+const UINT kDropQuitAfterMs = 80000;
 
 wchar_t g_szFile[MAX_PATH * 2] = L"";
 wchar_t g_szShot[MAX_PATH * 2] = L"";
@@ -68,6 +70,7 @@ bool g_find = false;        // 5 秒后打开搜索、查 g_findQuery、翻到�
 bool g_prewarm = false;     // 先预热，7 秒后再建查看器，验首开耗时
 bool g_release = false;     // 5 秒后销毁主窗口，验 DO 窗口关闭后实例释放
 bool g_idle = false;        // 配合 prewarm：只预热、不建查看器，量常驻内存
+bool g_drop = false;        // 关预热、设 1 分钟空闲释放；5 秒后只销毁查看器，验空闲回收
 wchar_t g_findQuery[128] = L"中文";
 bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条目数与滚动位置
 HWND g_hwndMain = nullptr;
@@ -355,6 +358,13 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         g_hwndMain = nullptr;
         g_viewer = nullptr;
         ::DestroyWindow(main);
+      } else if (wParam == kDropCloseTimerId) {
+        ::KillTimer(hwnd, kDropCloseTimerId);
+        LogLine(L"TEST: 销毁查看器，主窗口保留");
+        if (g_viewer) {
+          ::DestroyWindow(g_viewer);
+          g_viewer = nullptr;
+        }
       } else if (wParam == kReleaseReopenTimerId) {
         ::KillTimer(hwnd, kReleaseReopenTimerId);
         LogLine(L"TEST: 重新打开窗口（实例应已释放，走冷路径重建）");
@@ -433,6 +443,7 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"prewarm")) g_prewarm = true;
   if (*p && wcsstr(p, L"release")) g_release = true;
   if (*p && wcsstr(p, L"idle")) g_idle = true;
+  if (*p && wcsstr(p, L"drop")) g_drop = true;
   if (*p) {
     const wchar_t* q = wcsstr(p, L"q=");
     if (q) {
@@ -466,7 +477,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   ExtractArgs(lpCmdLine);
 
   // 模拟 InitEx 之后的延迟预热（预热在宿主线程里再等 3 秒）。
-  if (g_prewarm) WebHostPrewarm(true);
+  if (g_prewarm) WebHostPrewarm(true, 3);
+  // 预热关闭 + 空闲 1 分钟释放：此时宿主线程还没建，配置要能留到线程启动后生效。
+  if (g_drop) WebHostPrewarm(false, 1);
 
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
@@ -535,11 +548,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     ::SetTimer(g_hwndMain, kOutlineTimerId, 5000, nullptr);
   }
 
+  if (g_drop) {
+    ::SetTimer(g_hwndMain, kDropCloseTimerId, 5000, nullptr);
+  }
   if (g_szShot[0] && !g_release) {
     ::SetForegroundWindow(g_hwndMain);
     ::SetTimer(g_hwndMain, kShotTimerId, g_shotAfterMs, nullptr);
   }
-  if (!g_release) ::SetTimer(g_hwndMain, kQuitTimerId, kQuitAfterMs, nullptr);
+  if (!g_release) {
+    ::SetTimer(g_hwndMain, kQuitTimerId, g_drop ? kDropQuitAfterMs : kQuitAfterMs, nullptr);
+  }
 
   MSG msg;
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {

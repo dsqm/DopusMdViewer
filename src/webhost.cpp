@@ -60,6 +60,7 @@ const UINT kCmdPrewarm = kCmdBase + 9;
 // 预热：InitEx 后等一会儿再开始，避开 Opus 自己的启动高峰。
 const UINT_PTR kTimerPrewarm = 1;
 const UINT_PTR kTimerWatch = 2;
+const UINT_PTR kTimerIdle = 3;
 const UINT kPrewarmDelayMs = 3000;
 const UINT kWatchIntervalMs = 2000;
 const int kWatchEmptyLimit = 2;  // 连续两次看不见 DO 窗口才释放（约 4 秒）
@@ -81,6 +82,7 @@ struct Host {
   bool everSawViewer = false;  // 预热后是否真的被查看器借过
   bool sawDopusWindow = false;
   bool suspended = false;
+  int idleReleaseMinutes = 3;
   int watchEmpty = 0;
   LARGE_INTEGER tEnsure = {};
   LARGE_INTEGER tController = {};
@@ -103,6 +105,9 @@ int g_historyCount = 0;
 // 跨线程读取的标志与句柄。
 volatile LONG g_readyFlag = 0;
 volatile LONG g_hasThread = 0;
+// 预热配置在宿主线程还没建起来时也要记住（预热关闭时 InitEx 不会建线程）。
+volatile LONG g_cfgPrewarm = 0;
+volatile LONG g_cfgIdleMinutes = 3;
 DWORD g_threadId = 0;
 HWND g_threadHost = nullptr;
 
@@ -247,6 +252,17 @@ void ResumeIfSuspended() {
           QpcMs(t0.QuadPart, t1.QuadPart));
 }
 
+// 预热关闭时，从最后一次预览结束起算空闲释放；预热开着就保持到 DO 窗口关闭。
+void ArmIdleTimer() {
+  if (!g_host.host) return;
+  ::KillTimer(g_host.host, kTimerIdle);
+  if (g_host.prewarmEnabled || g_host.idleReleaseMinutes <= 0) return;
+  if (g_host.borrower) return;
+  if (!g_host.controller && !g_host.env) return;
+  ::SetTimer(g_host.host, kTimerIdle,
+             static_cast<UINT>(g_host.idleReleaseMinutes) * 60000u, nullptr);
+}
+
 void NoteRoot(HWND root) {
   if (!root) return;
   DWORD pid = 0;
@@ -342,6 +358,7 @@ void ReleaseInstance() {
   if (g_host.host) {
     ::KillTimer(g_host.host, kTimerWatch);
     ::KillTimer(g_host.host, kTimerPrewarm);
+    ::KillTimer(g_host.host, kTimerIdle);
   }
   ReleaseController();
   g_host.env.Reset();
@@ -517,6 +534,7 @@ void CreateController() {
                         } else {
                           SetMemoryLevel(true);
                           SuspendIdle();
+                          ArmIdleTimer();
                         }
                         PostEvent(MDV_EVT_READY, L"");
                       } else {
@@ -650,6 +668,7 @@ bool BorrowHost(HWND viewer, const RECT* rc) {
   g_host.everSawViewer = true;
   g_host.sawDopusWindow = true;
   NoteRoot(::GetAncestor(viewer, GA_ROOT));
+  ::KillTimer(g_host.host, kTimerIdle);
 
   SetChildStyle(true);
   ::SetParent(g_host.host, viewer);
@@ -667,6 +686,8 @@ bool BorrowHost(HWND viewer, const RECT* rc) {
     ::RedrawWindow(g_host.host, nullptr, nullptr,
                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE);
   }
+  // 空闲释放的定时器可能刚好在借用前把实例回收了：这里补一次 ensure。
+  EnsureEnvironment();
   return true;
 }
 
@@ -691,6 +712,7 @@ void UnborrowHost(HWND viewer) {
   SuspendIdle();
 
   HWND next = HistoryFirstLive(viewer);
+  if (!next) ArmIdleTimer();
   LogLine(L"WEBHOST: 归还宿主（controller 保留）%s%p", next ? L"，交回 " : L"", next);
   if (next) ::PostMessageW(next, WM_MDV_RECLAIM, 0, 0);
 }
@@ -743,16 +765,21 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       EnsureEnvironment();
       return 0;
 
-    case kCmdPrewarm:
+    case kCmdPrewarm: {
       g_host.prewarmEnabled = wParam != 0;
-      if (g_host.host) ::KillTimer(g_host.host, kTimerPrewarm);
+      int minutes = static_cast<int>(lParam);
+      if (minutes < 0) minutes = 0;
+      if (minutes > 1440) minutes = 1440;
+      g_host.idleReleaseMinutes = minutes;
+      ::KillTimer(hwnd, kTimerPrewarm);
+      ::KillTimer(hwnd, kTimerIdle);
       if (g_host.prewarmEnabled) {
         SchedulePrewarm(kPrewarmDelayMs);
-      } else if (!g_host.borrower && (g_host.controller || g_host.env)) {
-        LogLine(L"WEBHOST: 预热已关闭，释放空闲实例");
-        ReleaseInstance();
+      } else {
+        ArmIdleTimer();
       }
       return 1;
+    }
 
     case WM_TIMER:
       if (wParam == kTimerPrewarm) {
@@ -762,6 +789,16 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       }
       if (wParam == kTimerWatch) {
         WatchTick();
+        return 0;
+      }
+      if (wParam == kTimerIdle) {
+        ::KillTimer(hwnd, kTimerIdle);
+        if (g_host.prewarmEnabled || g_host.borrower) return 0;
+        if (g_host.controller || g_host.env) {
+          LogLine(L"WEBHOST: 预热关闭，空闲 %d 分钟，释放 WebView2",
+                  g_host.idleReleaseMinutes);
+          ReleaseInstance();
+        }
         return 0;
       }
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
@@ -877,8 +914,12 @@ DWORD WINAPI HostThreadProc(LPVOID param) {
   g_host.host = ::CreateWindowExW(WS_EX_NOACTIVATE, kHostClass, L"DopusMdViewerHost",
                                   WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, nullptr, nullptr,
                                   static_cast<HINSTANCE>(::GetModuleHandleW(nullptr)), nullptr);
+  g_host.prewarmEnabled = ::InterlockedCompareExchange(&g_cfgPrewarm, 0, 0) != 0;
+  g_host.idleReleaseMinutes = ::InterlockedCompareExchange(&g_cfgIdleMinutes, 0, 0);
   g_threadHost = g_host.host;
-  LogLine(L"WEBHOST: 宿主线程 %lu 就绪，窗口 %p", ::GetCurrentThreadId(), g_host.host);
+  LogLine(L"WEBHOST: 宿主线程 %lu 就绪，窗口 %p（预热=%d，空闲释放=%d 分钟）",
+          ::GetCurrentThreadId(), g_host.host, g_host.prewarmEnabled ? 1 : 0,
+          g_host.idleReleaseMinutes);
   ::SetEvent(readyEvent);
 
   if (!g_host.host) return 1;
@@ -934,10 +975,14 @@ bool SendCommand(UINT cmd, WPARAM wParam, LPARAM lParam, LRESULT* result = nullp
 
 bool WebHostEnsure(void) { return SendCommand(kCmdEnsure, 0, 0); }
 
-void WebHostPrewarm(bool enabled) {
-  // 关闭预热时如果宿主线程还没建起来，就别为了关一个定时器去建线程。
+void WebHostPrewarm(bool enabled, int idleReleaseMinutes) {
+  if (idleReleaseMinutes < 0) idleReleaseMinutes = 0;
+  if (idleReleaseMinutes > 1440) idleReleaseMinutes = 1440;
+  ::InterlockedExchange(&g_cfgPrewarm, enabled ? 1 : 0);
+  ::InterlockedExchange(&g_cfgIdleMinutes, idleReleaseMinutes);
+  // 关闭预热时如果宿主线程还没建起来，配置留在上面，等线程起来再套用。
   if (!enabled && ::InterlockedCompareExchange(&g_hasThread, 0, 0) == 0) return;
-  SendCommand(kCmdPrewarm, enabled ? 1 : 0, 0);
+  SendCommand(kCmdPrewarm, enabled ? 1 : 0, static_cast<LPARAM>(idleReleaseMinutes));
 }
 
 bool WebHostIsReady(void) { return ::InterlockedCompareExchange(&g_readyFlag, 0, 0) != 0; }

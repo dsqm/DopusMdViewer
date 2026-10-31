@@ -68,6 +68,8 @@ enum {
   kIdOpenConfig,
   kIdOpenSkins,
   kIdPrewarm,
+  kIdIdle,
+  kIdIdleSpin,
   kIdRestore = 3500,
   kIdApply,
   kIdOk,
@@ -110,6 +112,8 @@ struct DialogState {
   HWND hNetOff = nullptr;
   HWND hOutside = nullptr;
   HWND hPrewarm = nullptr;
+  HWND hIdle = nullptr;
+  HWND hIdleSpin = nullptr;
   HWND hApply = nullptr;
   bool dirty = false;
 };
@@ -304,6 +308,11 @@ void SetDirty(DialogState* st, bool dirty) {
   if (st->hApply) ::EnableWindow(st->hApply, dirty ? TRUE : FALSE);
 }
 
+void EnableIdleRelease(DialogState* st, bool enabled) {
+  if (st->hIdle) ::EnableWindow(st->hIdle, enabled ? TRUE : FALSE);
+  if (st->hIdleSpin) ::EnableWindow(st->hIdleSpin, enabled ? TRUE : FALSE);
+}
+
 void LoadUiFromStaged(DialogState* st) {
   RefreshSkins(st);
 
@@ -340,6 +349,10 @@ void LoadUiFromStaged(DialogState* st) {
   ::CheckDlgButton(st->hwnd, kIdOutside,
                    st->staged.allowOutsideImages ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdPrewarm, st->staged.prewarm ? BST_CHECKED : BST_UNCHECKED);
+  ::StringCchPrintfW(buf, ARRAYSIZE(buf), L"%d", st->staged.idleReleaseMinutes);
+  ::SetWindowTextW(st->hIdle, buf);
+  ::SendMessageW(st->hIdleSpin, UDM_SETPOS32, 0, st->staged.idleReleaseMinutes);
+  EnableIdleRelease(st, !st->staged.prewarm);
 
   ::CheckRadioButton(st->hwnd, kIdSlotUi, kIdSlotMono, kIdSlotUi + st->slot);
   RefreshChainList(st);
@@ -376,6 +389,8 @@ void ReadUiIntoStaged(DialogState* st) {
   }
   st->staged.allowOutsideImages = ::IsDlgButtonChecked(st->hwnd, kIdOutside) == BST_CHECKED;
   st->staged.prewarm = ::IsDlgButtonChecked(st->hwnd, kIdPrewarm) == BST_CHECKED;
+  const UINT idle = ::GetDlgItemInt(st->hwnd, kIdIdle, &ok, FALSE);
+  if (ok && idle <= 1440) st->staged.idleReleaseMinutes = static_cast<int>(idle);
 }
 
 bool ApplySettings(DialogState* st) {
@@ -386,7 +401,7 @@ bool ApplySettings(DialogState* st) {
     return false;
   }
   ViewerNotifyConfigChanged();
-  WebHostPrewarm(st->staged.prewarm);
+  WebHostPrewarm(st->staged.prewarm, st->staged.idleReleaseMinutes);
   SetDirty(st, false);
   LogLine(L"SETTINGS: 已应用 skin=\"%s\" size=%d lh=%.2f measure=%d net=%d", st->staged.skin.c_str(),
           st->staged.font.sizePx, st->staged.font.lineHeight, st->staged.font.measureEm,
@@ -593,7 +608,19 @@ void BuildUi(DialogState* st) {
   st->hPrewarm = AddControl(st, 3, L"BUTTON", L"启动时预热预览引擎（Opus 窗口关闭时释放）",
                             BS_AUTOCHECKBOX | WS_TABSTOP, 16, y, 480, 24, kIdPrewarm);
 
-  y = 202;
+  y = 196;
+  AddControl(st, 3, L"STATIC", L"关闭预热后空闲释放", SS_LEFT, 16, y + 3, 120, 20, 0);
+  st->hIdle = AddControl(st, 3, L"EDIT", L"",
+                         ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 140, y, 70, 24, kIdIdle,
+                         WS_EX_CLIENTEDGE);
+  st->hIdleSpin = AddControl(st, 3, UPDOWN_CLASSW, L"",
+                             UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,
+                             0, 0, 0, 0, kIdIdleSpin);
+  ::SendMessageW(st->hIdleSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(st->hIdle), 0);
+  ::SendMessageW(st->hIdleSpin, UDM_SETRANGE32, 0, 1440);
+  AddControl(st, 3, L"STATIC", L"分钟（0 = 不释放）", SS_LEFT, 220, y + 3, 220, 20, 0);
+
+  y = 234;
   AddControl(st, 3, L"BUTTON", L"打开日志目录", BS_PUSHBUTTON | WS_TABSTOP, 16, y, 130, 26,
              kIdOpenLog);
   AddControl(st, 3, L"BUTTON", L"打开配置根目录", BS_PUSHBUTTON | WS_TABSTOP, 154, y, 140, 26,
@@ -653,7 +680,15 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdSize:
     case kIdLh:
     case kIdMeasure:
+    case kIdIdle:
       if (code == EN_CHANGE) SetDirty(st, true);
+      return;
+
+    case kIdPrewarm:
+      if (code == BN_CLICKED) {
+        EnableIdleRelease(st, ::IsDlgButtonChecked(st->hwnd, kIdPrewarm) == BST_UNCHECKED);
+        SetDirty(st, true);
+      }
       return;
 
     case kIdUnlimited:
@@ -766,7 +801,8 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
           SetDirty(st, true);
           return 1;  // 位置已自己维护
         }
-        if (hdr->idFrom == kIdSizeSpin || hdr->idFrom == kIdMeasureSpin) {
+        if (hdr->idFrom == kIdSizeSpin || hdr->idFrom == kIdMeasureSpin ||
+            hdr->idFrom == kIdIdleSpin) {
           SetDirty(st, true);
         }
       }

@@ -45,6 +45,7 @@ void SetDefaults(Config* c) {
   c->renderInlineHtml = true;
   c->renderLocalImages = true;
   c->prewarm = false;
+  c->idleReleaseMinutes = 3;
 }
 
 int ClampInt(int v, int lo, int hi, int fallback) {
@@ -88,6 +89,11 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
 
   if (root.contains("prewarm") && root["prewarm"].is_boolean()) {
     c->prewarm = root["prewarm"].get<bool>();
+  }
+
+  if (root.contains("idleReleaseMinutes") && root["idleReleaseMinutes"].is_number_integer()) {
+    c->idleReleaseMinutes =
+        ClampInt(root["idleReleaseMinutes"].get<int>(), 0, 1440, 3);
   }
 
   if (root.contains("render") && root["render"].is_object()) {
@@ -239,6 +245,12 @@ bool ConfigPrewarm(void) {
   return g_config.prewarm;
 }
 
+int ConfigIdleReleaseMinutes(void) {
+  if (!g_loaded) ConfigLoad();
+  std::lock_guard<std::mutex> lock(g_modeMutex);
+  return g_config.idleReleaseMinutes;
+}
+
 Config ConfigDefaults(void) {
   Config c;
   SetDefaults(&c);
@@ -253,6 +265,7 @@ bool ConfigSave(const Config& input) {
   c.font.sizePx = ClampInt(c.font.sizePx, 8, 48, 15);
   c.font.lineHeight = ClampDouble(c.font.lineHeight, 1.2, 2.2, 1.65);
   if (c.font.measureEm != 0) c.font.measureEm = ClampInt(c.font.measureEm, 8, 80, 40);
+  c.idleReleaseMinutes = ClampInt(c.idleReleaseMinutes, 0, 1440, 3);
 
   const wchar_t* path = ConfigPath();
   if (!path || !*path) {
@@ -293,6 +306,7 @@ bool ConfigSave(const Config& input) {
       c.netImageMode == 0 ? "off" : (c.netImageMode == 2 ? "doc" : "host");
   root["allowOutsideImages"] = c.allowOutsideImages;
   root["prewarm"] = c.prewarm;
+  root["idleReleaseMinutes"] = c.idleReleaseMinutes;
   nlohmann::json render;
   render["mermaid"] = c.renderMermaid;
   render["katex"] = c.renderKatex;
@@ -307,10 +321,10 @@ bool ConfigSave(const Config& input) {
     return false;
   }
   LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
-          L"net=%d outside=%d render=%d%d%d%d%d prewarm=%d",
+          L"net=%d outside=%d render=%d%d%d%d%d prewarm=%d idle=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
           c.netImageMode, c.allowOutsideImages ? 1 : 0, c.renderMermaid ? 1 : 0,
           c.renderKatex ? 1 : 0, c.renderHighlight ? 1 : 0, c.renderInlineHtml ? 1 : 0,
-          c.renderLocalImages ? 1 : 0, c.prewarm ? 1 : 0);
+          c.renderLocalImages ? 1 : 0, c.prewarm ? 1 : 0, c.idleReleaseMinutes);
   return true;
 }
