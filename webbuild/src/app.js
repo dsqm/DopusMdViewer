@@ -44,6 +44,8 @@ const DOC_HOST = 'https://mddoc.local/'
 const BLOCKS_URL = 'https://mdblocks.local/__blocks'
 const LINES_URL = 'https://mdblocks.local/__lines'
 const DEFS_URL = 'https://mdblocks.local/__defs'
+const SEARCH_URL = 'https://mdblocks.local/__search'
+const OUTLINE_URL = 'https://mdblocks.local/__outline'
 
 const OVERSCAN = 120          // 视口上下各留多少块
 const MAX_FETCH_BLOCKS = 100  // 单次请求块数（票 03：50–200）
@@ -372,14 +374,55 @@ const decoder = new TextDecoder('utf-8')
 const KIND_NAMES = ['none', 'para', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'fence', 'table', 'list', 'quote', 'html', 'hr', 'fm']
 
+/* 页内搜索与大纲（M6）。命中在 C++ 里按源字节找，块内偏移换成解码文本的
+   UTF-16 单元下标；前端在渲染后的文本里找最近的一处真实出现位置再包 mark——
+   源码里的 `**`、链接语法不在渲染文本里，纯按下标切会偏。 */
+const FIND = {
+  open: false,
+  query: '',
+  cs: false,
+  results: [],
+  index: -1,
+  total: 0,
+  truncated: false,
+  busy: false,
+  seq: 0,
+  timer: 0,
+  pending: null,
+  current: null,
+}
+
+const OUT = {
+  items: [],
+  loaded: false,
+  loading: false,
+  total: 0,
+  truncated: false,
+  seq: 0,
+}
+
 let docEl = null
 let sbEl = null
 let thumbEl = null
+let toolsEl = null
+let findEl = null
+let findInput = null
+let findCount = null
+let findCaseBtn = null
+let outlineEl = null
+let outlineList = null
 
 function bindDom() {
   docEl = document.getElementById('doc')
   sbEl = document.getElementById('sb')
   thumbEl = document.getElementById('sb-thumb')
+  toolsEl = document.getElementById('tools')
+  findEl = document.getElementById('find')
+  findInput = document.getElementById('find-input')
+  findCount = document.getElementById('find-count')
+  findCaseBtn = document.getElementById('find-case')
+  outlineEl = document.getElementById('outline')
+  outlineList = document.getElementById('outline-list')
 }
 
 /* ---------------- 几何 ---------------- */
@@ -610,6 +653,7 @@ function rerenderResidents() {
     setHeight(i, rec.el.offsetHeight)
     queueMermaid(rec.el, V.docId)
   }
+  reapplyCurrentHit()
   schedulePlace()
 }
 
@@ -797,6 +841,7 @@ function renderItem(item) {
   if (V.hidden[i]) return
   if (V.big.has(i)) {  // 巨型块不渲染正文，只建段容器
     ensureBigResident(i)
+    if (FIND.pending && FIND.pending.b === i) FIND.pending = null
     return
   }
   // 跳跃滚动时队列里可能攒着旧窗口的块，窗口已经走了就别建 DOM
@@ -825,6 +870,8 @@ function renderItem(item) {
   processNetImages(rec.el)
   setHeight(i, rec.el.offsetHeight)
   queueMermaid(rec.el, V.docId)
+  if (FIND.pending && FIND.pending.b === i) maybeApplyHit()
+  else if (FIND.current && FIND.current.b === i) applyHitMark(rec.el, FIND.current.off, false)
 }
 
 /* ---------------- 巨型块：分段 + 块内行窗口 ----------------
@@ -1075,6 +1122,7 @@ function applyBigTable(text) {
   }
   rebuildFenwick()
   schedulePlace()
+  maybeApplyHit()
 }
 
 function recycleOutside(a, b) {
@@ -1334,6 +1382,16 @@ function finishInit() {
 }
 
 function resetVirtual() {
+  resetFind()
+  OUT.seq++
+  OUT.items = []
+  OUT.total = 0
+  OUT.truncated = false
+  OUT.loaded = false
+  OUT.loading = false
+  if (outlineEl) outlineEl.hidden = true
+  if (toolsEl) toolsEl.hidden = true
+
   V.docId++
   V.active = false
   if (V.pumpRaf) cancelAnimationFrame(V.pumpRaf)
@@ -1408,14 +1466,19 @@ function applyIndex(base, prefix, est, fileSize, enc, lastVisible) {
     bigMetrics()
   }
 
+  if (toolsEl) toolsEl.hidden = false
   requestBlocks(0, Math.min(30, Math.max(1, prefix || 1)), 'init')
   loadDefs()
+  loadOutline()
 }
 
 function applyIndexFull(count, lastVisible) {
   if (!V.active || !count) return
   // 前缀只扫了 8 MB，后面可能还有引用/脚注定义；全文索引到了再取一次
   loadDefs()
+  loadOutline()
+  // 搜索会扫全文，但命中块号要用全文索引才准；索引到了重跑一遍当前查询
+  if (FIND.open && FIND.query) runSearch()
   const lastChanged = lastVisible !== undefined && lastVisible !== V.lastVisible
   if (lastVisible !== undefined) V.lastVisible = lastVisible
   if (V.initializing) {
@@ -1511,6 +1574,8 @@ function horizontalAncestor(target) {
 
 function onWheel(e) {
   if (!V.active) return
+  // 搜索条 / 大纲里的滚轮交给它们自己（大纲列表要能滚）
+  if (e.target && e.target.closest && e.target.closest('.mdv-ui')) return
   if (e.shiftKey && horizontalAncestor(e.target)) return
   e.preventDefault()
   const unit = e.deltaMode === 1 ? emPx(1.65) : e.deltaMode === 2 ? V.vh : 1
@@ -1530,6 +1595,25 @@ function onWheel(e) {
 
 function onKeyDown(e) {
   if (!V.active) return
+  if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'f' || e.key === 'F')) {
+    e.preventDefault()
+    openFind()
+    return
+  }
+  if (e.key === 'Escape') {
+    if (FIND.open) {
+      e.preventDefault()
+      closeFind()
+      return
+    }
+    if (outlineEl && !outlineEl.hidden) {
+      e.preventDefault()
+      closeOutline()
+      return
+    }
+  }
+  // 输入框里的方向键/空格属于输入框，不能拿去滚文档
+  if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
   if (e.ctrlKey || e.altKey || e.metaKey) return
   const page = V.vh * 0.9
   const scrollable = Math.max(0, V.totalH - V.vh)
@@ -1594,6 +1678,411 @@ function onThumbUp(e) {
   if (!V.drag) return
   V.drag = null
   try { thumbEl.releasePointerCapture(e.pointerId) } catch { /* 忽略 */ }
+}
+
+/* ---------------- 搜索与大纲（M6） ---------------- */
+
+function foldAscii(text) {
+  // 与 C++ 的搜索保持一致：只折叠 ASCII 字母，长度不变
+  return text.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32))
+}
+
+function findOccurrences(text, query, caseSensitive) {
+  if (!query) return []
+  const hay = caseSensitive ? text : foldAscii(text)
+  const needle = caseSensitive ? query : foldAscii(query)
+  const out = []
+  let p = 0
+  for (;;) {
+    p = hay.indexOf(needle, p)
+    if (p < 0) break
+    out.push(p)
+    p += Math.max(1, needle.length)
+    if (out.length >= 500) break
+  }
+  return out
+}
+
+function clearHitMarks() {
+  for (const mark of document.querySelectorAll('mark.hit')) {
+    const parent = mark.parentNode
+    if (!parent) continue
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark)
+    parent.removeChild(mark)
+    parent.normalize()
+  }
+}
+
+// 把 [start, end) 字符区间包成 mark；跨节点时逐节点包。
+function wrapTextRange(root, start, end) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let pos = 0
+  let node
+  const parts = []
+  while ((node = walker.nextNode())) {
+    const len = node.nodeValue.length
+    const a = Math.max(0, start - pos)
+    const b = Math.min(len, end - pos)
+    if (a < b) parts.push([node, a, b])
+    pos += len
+    if (pos >= end) break
+  }
+  for (const [textNode, a, b] of parts) {
+    const range = document.createRange()
+    range.setStart(textNode, a)
+    range.setEnd(textNode, b)
+    const mark = document.createElement('mark')
+    mark.className = 'hit hit--current'
+    range.surroundContents(mark)
+  }
+}
+
+function jumpToOffset(y) {
+  if (!V.active) return
+  const max = Math.max(0, V.totalH - V.vh)
+  V.off = Math.min(Math.max(0, y), max)
+  V.target = V.off
+  place()
+}
+
+function updateFindCount() {
+  if (!findCount) return
+  let text = ''
+  if (FIND.open && FIND.query) {
+    if (FIND.busy) {
+      text = '\u2026'
+    } else if (!FIND.results.length) {
+      text = '无结果'
+    } else {
+      text = (FIND.index >= 0 ? FIND.index + 1 : 0) + '/' + FIND.total
+        + (FIND.truncated ? '+' : '')
+    }
+  }
+  findCount.textContent = text
+}
+
+function openFind() {
+  if (!V.active) return
+  FIND.open = true
+  findEl.hidden = false
+  if (toolsEl) toolsEl.hidden = true
+  findInput.focus()
+  findInput.select()
+}
+
+function closeFind() {
+  FIND.open = false
+  FIND.seq++
+  if (FIND.timer) {
+    clearTimeout(FIND.timer)
+    FIND.timer = 0
+  }
+  FIND.results = []
+  FIND.index = -1
+  FIND.total = 0
+  FIND.truncated = false
+  FIND.busy = false
+  FIND.pending = null
+  FIND.current = null
+  if (findEl) findEl.hidden = true
+  if (findInput) findInput.blur()
+  if (V.active && toolsEl && outlineEl && outlineEl.hidden) toolsEl.hidden = false
+  clearHitMarks()
+  updateFindCount()
+}
+
+function scheduleSearch() {
+  FIND.query = findInput.value
+  FIND.results = []
+  FIND.index = -1
+  FIND.total = 0
+  FIND.truncated = false
+  FIND.pending = null
+  FIND.current = null
+  FIND.seq++
+  clearHitMarks()
+  if (FIND.timer) clearTimeout(FIND.timer)
+  if (!FIND.query) {
+    FIND.busy = false
+    FIND.timer = 0
+    updateFindCount()
+    return
+  }
+  FIND.busy = true
+  updateFindCount()
+  FIND.timer = setTimeout(runSearch, 220)
+}
+
+function runSearch() {
+  FIND.timer = 0
+  if (!V.active || !FIND.query) return
+  const seq = ++FIND.seq
+  const docId = V.docId
+  FIND.busy = true
+  FIND.pending = null
+  FIND.current = null
+  clearHitMarks()
+  updateFindCount()
+
+  const url = SEARCH_URL + '?q=' + encodeURIComponent(FIND.query)
+    + (FIND.cs ? '&cs=1' : '')
+  fetch(url, { cache: 'no-store' })
+    .then((res) => {
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      return res.arrayBuffer()
+    })
+    .then((buf) => {
+      if (seq !== FIND.seq || docId !== V.docId || !V.active) return
+      if (buf.byteLength < 12) throw new Error('bad search frame')
+      const dv = new DataView(buf)
+      const total = dv.getUint32(0, true)
+      const count = dv.getUint32(4, true)
+      const flags = dv.getUint32(8, true)
+      const results = []
+      let o = 12
+      for (let i = 0; i < count && o + 8 <= buf.byteLength; i++) {
+        results.push({ b: dv.getUint32(o, true), off: dv.getUint32(o + 4, true) })
+        o += 8
+      }
+      FIND.results = results
+      FIND.total = total
+      FIND.truncated = (flags & 1) !== 0
+      FIND.index = -1
+      FIND.busy = false
+      updateFindCount()
+      if (results.length) goToHit(0)
+    })
+    .catch((err) => {
+      if (seq !== FIND.seq || docId !== V.docId) return
+      FIND.busy = false
+      FIND.results = []
+      FIND.total = 0
+      FIND.index = -1
+      updateFindCount()
+      report('search-error', String(err))
+    })
+}
+
+function goToHit(i) {
+  const n = FIND.results.length
+  if (!n) return
+  FIND.index = ((i % n) + n) % n
+  const hit = FIND.results[FIND.index]
+  FIND.pending = hit
+  FIND.current = null
+  clearHitMarks()
+  updateFindCount()
+  jumpToOffset(pos(hit.b) - V.vh * 0.15)
+  maybeApplyHit()
+}
+
+function maybeApplyHit() {
+  const hit = FIND.pending
+  if (!hit || !V.active) return
+  if (V.big.has(hit.b)) {
+    FIND.pending = null
+    return
+  }
+  if (hit.b < V.windowStart || hit.b > V.windowEnd) return
+  const rec = V.resident.get(hit.b)
+  if (!rec || !rec.el || !rec.text) return
+  FIND.pending = null
+  FIND.current = hit
+  applyHitMark(rec.el, hit.off)
+}
+
+function applyHitMark(el, unitOff, center = true) {
+  clearHitMarks()
+  const query = FIND.query
+  if (!query) return
+  const occurrences = findOccurrences(el.textContent || '', query, FIND.cs)
+  if (!occurrences.length) return
+
+  let best = occurrences[0]
+  let bestDist = Math.abs(occurrences[0] - unitOff)
+  for (const start of occurrences) {
+    const dist = Math.abs(start - unitOff)
+    if (dist < bestDist) {
+      best = start
+      bestDist = dist
+    }
+  }
+  wrapTextRange(el, best, best + query.length)
+  if (!center) return
+  const mark = el.querySelector('mark.hit')
+  if (!mark) return
+  const rect = mark.getBoundingClientRect()
+  jumpToOffset(V.off + rect.top - V.vh * 0.4)
+}
+
+function reapplyCurrentHit() {
+  if (!FIND.current || !V.active) return
+  const rec = V.resident.get(FIND.current.b)
+  if (rec && rec.el && rec.text) applyHitMark(rec.el, FIND.current.off, false)
+}
+
+function resetFind() {
+  closeFind()
+  if (findInput) findInput.value = ''
+  FIND.query = ''
+}
+
+function loadOutline() {
+  if (!V.active) return
+  const docId = V.docId
+  const seq = ++OUT.seq
+  OUT.items = []
+  OUT.total = 0
+  OUT.truncated = false
+  OUT.loaded = false
+  OUT.loading = true
+  if (outlineEl && !outlineEl.hidden) renderOutline()
+
+  fetch(OUTLINE_URL, { cache: 'no-store' })
+    .then((res) => {
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      return res.arrayBuffer()
+    })
+    .then((buf) => {
+      if (docId !== V.docId || seq !== OUT.seq || !V.active) return
+      if (buf.byteLength < 12) throw new Error('bad outline frame')
+      const dv = new DataView(buf)
+      const total = dv.getUint32(0, true)
+      const count = dv.getUint32(4, true)
+      const flags = dv.getUint32(8, true)
+      const items = []
+      let o = 12
+      for (let i = 0; i < count; i++) {
+        if (o + 7 > buf.byteLength) break
+        const block = dv.getUint32(o, true)
+        const level = dv.getUint8(o + 4)
+        const len = dv.getUint16(o + 5, true)
+        o += 7
+        if (o + len > buf.byteLength) break
+        items.push({
+          block,
+          level,
+          text: decoder.decode(new Uint8Array(buf, o, len)),
+        })
+        o += len
+      }
+      OUT.items = items
+      OUT.total = total
+      OUT.truncated = (flags & 1) !== 0
+      OUT.loaded = true
+      OUT.loading = false
+      if (!outlineEl.hidden) renderOutline()
+    })
+    .catch((err) => {
+      if (docId !== V.docId || seq !== OUT.seq) return
+      OUT.loaded = true
+      OUT.loading = false
+      OUT.items = []
+      if (!outlineEl.hidden) renderOutline()
+      report('outline-error', String(err))
+    })
+}
+
+function renderOutline() {
+  if (!outlineList) return
+  outlineList.textContent = ''
+  if (OUT.loading) {
+    const note = document.createElement('div')
+    note.className = 'outline-empty'
+    note.textContent = '正在读取大纲\u2026'
+    outlineList.appendChild(note)
+    return
+  }
+  if (!OUT.items.length) {
+    const note = document.createElement('div')
+    note.className = 'outline-empty'
+    note.textContent = '没有标题'
+    outlineList.appendChild(note)
+    return
+  }
+  const frag = document.createDocumentFragment()
+  for (const item of OUT.items) {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'outline-item'
+    btn.style.paddingLeft = (10 + (Math.max(1, item.level) - 1) * 12) + 'px'
+    btn.textContent = item.text || '（无标题）'
+    btn.title = item.text || ''
+    btn.dataset.block = String(item.block)
+    frag.appendChild(btn)
+  }
+  outlineList.appendChild(frag)
+  if (OUT.truncated) {
+    const note = document.createElement('div')
+    note.className = 'outline-note'
+    note.textContent = '仅显示前 ' + OUT.items.length + ' 条（共 ' + OUT.total + ' 条）'
+    outlineList.appendChild(note)
+  }
+}
+
+function toggleOutline() {
+  if (!V.active) return
+  if (!outlineEl.hidden) {
+    closeOutline()
+    return
+  }
+  outlineEl.hidden = false
+  if (toolsEl) toolsEl.hidden = true
+  renderOutline()
+  if (!OUT.loaded && !OUT.loading) loadOutline()
+}
+
+function closeOutline() {
+  if (outlineEl) outlineEl.hidden = true
+  if (V.active && toolsEl && (!findEl || findEl.hidden)) toolsEl.hidden = false
+}
+
+function onOutlineClick(e) {
+  const btn = e.target && e.target.closest ? e.target.closest('.outline-item') : null
+  if (!btn) return
+  const block = parseInt(btn.dataset.block, 10)
+  if (!Number.isInteger(block)) return
+  jumpToOffset(pos(block) - V.vh * 0.1)
+}
+
+function bindFindUi() {
+  bindDom()
+  const findBtn = toolsEl && toolsEl.querySelector('[data-act="find"]')
+  const outlineBtn = toolsEl && toolsEl.querySelector('[data-act="outline"]')
+  if (findBtn) findBtn.addEventListener('click', openFind)
+  if (outlineBtn) outlineBtn.addEventListener('click', toggleOutline)
+  if (!findEl) return
+
+  findInput.addEventListener('input', scheduleSearch)
+  findInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (FIND.results.length) goToHit(FIND.index + (e.shiftKey ? -1 : 1))
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      closeFind()
+    }
+  })
+  document.getElementById('find-prev').addEventListener('click', () => {
+    if (FIND.results.length) goToHit(FIND.index - 1)
+  })
+  document.getElementById('find-next').addEventListener('click', () => {
+    if (FIND.results.length) goToHit(FIND.index + 1)
+  })
+  document.getElementById('find-close').addEventListener('click', closeFind)
+  findCaseBtn.addEventListener('click', () => {
+    FIND.cs = !FIND.cs
+    findCaseBtn.classList.toggle('on', FIND.cs)
+    if (FIND.query) {
+      FIND.busy = true
+      updateFindCount()
+      runSearch()
+    }
+  })
+  document.getElementById('outline-close').addEventListener('click', closeOutline)
+  outlineList.addEventListener('click', onOutlineClick)
 }
 
 function remeasureAll() {
@@ -1990,6 +2479,7 @@ async function devBoot() {
 
 function bindInput() {
   bindDom()
+  bindFindUi()
   window.addEventListener('wheel', onWheel, { passive: false })
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('resize', () => {

@@ -22,20 +22,37 @@ struct RangeResult {
   uint64_t total = 0;
 };
 
+inline unsigned char FoldAscii(unsigned char c) {
+  return (c >= 'A' && c <= 'Z') ? static_cast<unsigned char>(c + ('a' - 'A')) : c;
+}
+
 // 在 [begin, end) 里找起点 < end 的命中。缓冲区尾部保留 m-1 字节做跨块回看：
 // 上一轮只报「整段都落在已读区间内」的命中，下一轮从 bufferEnd-m+1 重新开始，
 // 因此既不漏跨块命中，也不重复计数。
 void SearchRange(HANDLE h, uint64_t begin, uint64_t end, uint64_t fileSize,
-                 const std::string& pat, RangeResult* out) {
+                 const std::string& pat, bool caseSensitive, RangeResult* out) {
   const size_t m = pat.size();
   if (m == 0 || begin >= end || m > fileSize) return;
 
   size_t shift[256];
   for (size_t i = 0; i < 256; ++i) shift[i] = m;
   for (size_t i = 0; i + 1 < m; ++i) {
-    shift[static_cast<unsigned char>(pat[i])] = m - 1 - i;
+    const unsigned char c = caseSensitive ? static_cast<unsigned char>(pat[i])
+                                          : FoldAscii(static_cast<unsigned char>(pat[i]));
+    shift[c] = m - 1 - i;
   }
-  const unsigned char last = static_cast<unsigned char>(pat[m - 1]);
+  const unsigned char last = caseSensitive ? static_cast<unsigned char>(pat[m - 1])
+                                           : FoldAscii(static_cast<unsigned char>(pat[m - 1]));
+  // 大小写不敏感时先把整个读块折叠一遍，比较就能继续用 memcmp；
+  // 逐字节读时再折叠会让每条 Horspool 分支都多一次条件跳转（实测慢一倍）。
+  std::string foldedPat;
+  if (!caseSensitive) {
+    foldedPat.resize(m);
+    for (size_t i = 0; i < m; ++i) {
+      foldedPat[i] = static_cast<char>(FoldAscii(static_cast<unsigned char>(pat[i])));
+    }
+  }
+  const char* cmpPat = caseSensitive ? pat.data() : foldedPat.data();
 
   const uint64_t overlap = m - 1;
   const uint64_t readLimit = std::min<uint64_t>(fileSize, end + overlap);
@@ -56,6 +73,11 @@ void SearchRange(HANDLE h, uint64_t begin, uint64_t end, uint64_t fileSize,
     DWORD got = 0;
     if (toRead > 0) {
       if (!::ReadFile(h, buf.data() + carry, static_cast<DWORD>(toRead), &got, nullptr)) break;
+      if (!caseSensitive) {
+        for (size_t i = 0; i < got; ++i) {
+          buf[carry + i] = FoldAscii(buf[carry + i]);
+        }
+      }
     }
 
     const size_t n = carry + got;
@@ -73,7 +95,7 @@ void SearchRange(HANDLE h, uint64_t begin, uint64_t end, uint64_t fileSize,
       const unsigned char c = buf[k];
       if (c == last) {
         const uint64_t startAbs = bufferStart + k - (m - 1);
-        if (startAbs < end && std::memcmp(buf.data() + k - (m - 1), pat.data(), m) == 0) {
+        if (startAbs < end && std::memcmp(buf.data() + k - (m - 1), cmpPat, m) == 0) {
           ++out->total;
           if (out->hits.size() < kHitsCap) out->hits.push_back(startAbs);
         }
@@ -96,7 +118,7 @@ void SearchRange(HANDLE h, uint64_t begin, uint64_t end, uint64_t fileSize,
 }  // namespace
 
 SearchHits SearchFileBytes(const std::wstring& path, const std::string& needle, int threads,
-                           std::wstring* error) {
+                           std::wstring* error, bool caseSensitive) {
   if (error) error->clear();
   SearchHits result;
   if (needle.empty()) return result;
@@ -140,7 +162,8 @@ SearchHits SearchFileBytes(const std::wstring& path, const std::string& needle, 
                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
       if (h == INVALID_HANDLE_VALUE) return;
-      SearchRange(h, begin, end, fileSize, needle, &parts[static_cast<size_t>(i)]);
+      SearchRange(h, begin, end, fileSize, needle, caseSensitive,
+                  &parts[static_cast<size_t>(i)]);
       ::CloseHandle(h);
     });
   }

@@ -33,6 +33,8 @@ const UINT_PTR kDumpTimerId = 8;
 const UINT_PTR kSeamTimerId = 9;
 const UINT_PTR kConsentTimerId = 10;
 const UINT_PTR kReloadTimerId = 11;
+const UINT_PTR kFindTimerId = 12;
+const UINT_PTR kOutlineTimerId = 13;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -53,6 +55,9 @@ bool g_dump = false;        // 5 秒后把视口/常驻块/段几何回传到日
 bool g_seam = false;        // 5 秒后滚到第 10 万行（第一段与第二段的接缝）
 bool g_consent = false;     // 5 秒后点页内网络图确认面板的“允许”，4 秒后回流图片状态
 bool g_reload = false;      // 6.5 秒后重新 LOADW 同一个文件，验进程内记忆跨文件保留
+bool g_find = false;        // 5 秒后打开搜索、查 g_findQuery、翻到下一个，回流计数与 mark
+wchar_t g_findQuery[128] = L"中文";
+bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条目数与滚动位置
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
 HINSTANCE g_hInst = nullptr;
@@ -283,6 +288,36 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         if (g_viewer && g_szFile[0]) {
           ::PostMessageW(g_viewer, DVPLUGINMSG_LOADW, 0, reinterpret_cast<LPARAM>(g_szFile));
         }
+      } else if (wParam == kFindTimerId) {
+        ::KillTimer(hwnd, kFindTimerId);
+        wchar_t script[4096];
+        ::StringCchPrintfW(
+            script, ARRAYSIZE(script),
+            L"(function(){var b=document.querySelector('[data-act=\"find\"]');if(b)b.click();"
+            L"var inp=document.getElementById('find-input');inp.value='%s';"
+            L"inp.dispatchEvent(new Event('input',{bubbles:true}));"
+            L"function rep(tag){var m=[].map.call(document.querySelectorAll('mark.hit'),"
+            L"function(x){return x.textContent;});"
+            L"window.chrome.webview.postMessage('event|find|'+tag"
+            L"+' count='+document.getElementById('find-count').textContent"
+            L"+' marks='+m.join('|')+' off='+Math.round(window.__mdv.V.off));}"
+            L"setTimeout(function(){rep('first');var n=document.getElementById('find-next');"
+            L"if(n)n.click();setTimeout(function(){rep('next');},700);},1500);"
+            L"setTimeout(function(){var c=document.getElementById('find-case');if(c)c.click();"
+            L"setTimeout(function(){rep('case');},1200);},3200);})();",
+            g_findQuery);
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kOutlineTimerId) {
+        ::KillTimer(hwnd, kOutlineTimerId);
+        const wchar_t* script =
+            L"(function(){var b=document.querySelector('[data-act=\"outline\"]');if(b)b.click();"
+            L"setTimeout(function(){var items=document.querySelectorAll('.outline-item');"
+            L"var n=items.length;var k=n?Math.min(2,n-1):0;"
+            L"var t=n?items[k].textContent:'';if(n)items[k].click();"
+            L"setTimeout(function(){window.chrome.webview.postMessage('event|outline|items='+n"
+            L"+' text='+t+' off='+Math.round(window.__mdv.V.off)"
+            L"+' open='+(document.getElementById('outline').hidden?0:1));},700);},400);})();";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kSeamTimerId) {
         ::KillTimer(hwnd, kSeamTimerId);
         // 段边界 10 万行：把视口对到接缝上，肉眼查边框是否连续
@@ -351,6 +386,18 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"seam")) g_seam = true;
   if (*p && wcsstr(p, L"consent")) g_consent = true;
   if (*p && wcsstr(p, L"reload")) g_reload = true;
+  if (*p && wcsstr(p, L"find")) g_find = true;
+  if (*p && wcsstr(p, L"outline")) g_outline = true;
+  if (*p) {
+    const wchar_t* q = wcsstr(p, L"q=");
+    if (q) {
+      q += 2;
+      const wchar_t* end = q;
+      while (*end && *end != L' ' && *end != L'\t') ++end;
+      if (end > q) ::StringCchCopyNW(g_findQuery, ARRAYSIZE(g_findQuery), q,
+                                     static_cast<size_t>(end - q));
+    }
+  }
 
   wchar_t szTemp[MAX_PATH];
   const DWORD n = ::GetTempPathW(MAX_PATH, szTemp);
@@ -418,6 +465,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_reload) {
     ::SetTimer(g_hwndMain, kReloadTimerId, 6500, nullptr);
+  }
+  if (g_find) {
+    ::SetTimer(g_hwndMain, kFindTimerId, 5000, nullptr);
+  }
+  if (g_outline) {
+    ::SetTimer(g_hwndMain, kOutlineTimerId, 5000, nullptr);
   }
 
   if (g_szShot[0]) {

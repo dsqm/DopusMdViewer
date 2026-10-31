@@ -20,6 +20,29 @@
 <body class="mdv-root">
 <div id="doc"></div>
 <div id="sb" hidden><div id="sb-thumb"></div></div>
+
+<div id="tools" class="ui mdv-ui" hidden>
+  <button type="button" data-act="find">搜索</button>
+  <button type="button" data-act="outline">大纲</button>
+</div>
+
+<div id="find" class="ui mdv-ui" hidden>
+  <input id="find-input" type="search" autocomplete="off" spellcheck="false" placeholder="搜索本文档">
+  <span id="find-count"></span>
+  <button id="find-case" type="button" class="tog" title="区分大小写">Aa</button>
+  <button id="find-prev" type="button" title="上一个 (Shift+Enter)">↑</button>
+  <button id="find-next" type="button" title="下一个 (Enter)">↓</button>
+  <button id="find-close" type="button" title="关闭 (Esc)">×</button>
+</div>
+
+<aside id="outline" class="ui mdv-ui" hidden>
+  <div class="outline-head">
+    <span>大纲</span>
+    <button id="outline-close" type="button" title="关闭 (Esc)">×</button>
+  </div>
+  <div id="outline-list" class="outline-list"></div>
+</aside>
+
 <script src="app.js"></script>
 </body>
 </html>

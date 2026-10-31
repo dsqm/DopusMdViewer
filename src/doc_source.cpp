@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "doc_index.h"
+#include "doc_search.h"
 #include "config.h"
 #include "log.h"
 
@@ -355,6 +356,197 @@ std::string ToUtf8(doc::Encoding enc, std::string raw) {
       return DecodeWide(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), true);
   }
   return raw;
+}
+
+void AppendU16(std::string* out, uint16_t v) {
+  out->push_back(static_cast<char>(v & 0xFF));
+  out->push_back(static_cast<char>((v >> 8) & 0xFF));
+}
+
+std::string WideToUtf8String(const std::wstring& s) {
+  return WideToUtf8(s.data(), static_cast<int>(s.size()));
+}
+
+std::string WideToMbcs(const std::wstring& s, UINT cp) {
+  if (s.empty()) return std::string();
+  const int n = ::WideCharToMultiByte(cp, 0, s.data(), static_cast<int>(s.size()), nullptr, 0,
+                                      nullptr, nullptr);
+  if (n <= 0) return std::string();
+  std::string out(static_cast<size_t>(n), '\0');
+  if (!::WideCharToMultiByte(cp, 0, s.data(), static_cast<int>(s.size()), &out[0], n, nullptr,
+                             nullptr)) {
+    return std::string();
+  }
+  return out;
+}
+
+// UTF-16 源文件上的宽字符搜索：单线程顺序读，返回源字节偏移。
+// 只折叠 ASCII 字母；UTF-16 文档通常不大，不为此再拆线程。
+doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& needle,
+                               bool caseSensitive, bool bigEndian) {
+  doc::SearchHits result;
+  const size_t m = needle.size();
+  if (m == 0) return result;
+
+  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return result;
+
+  auto fold = [caseSensitive](wchar_t c) -> wchar_t {
+    if (!caseSensitive && c >= L'A' && c <= L'Z') return static_cast<wchar_t>(c + 32);
+    return c;
+  };
+
+  std::vector<size_t> shift(65536, m);
+  for (size_t i = 0; i + 1 < m; ++i) shift[static_cast<uint16_t>(fold(needle[i]))] = m - 1 - i;
+  const wchar_t last = fold(needle[m - 1]);
+
+  constexpr size_t kChunkUnits = 1u << 19;  // 512 K 个 wchar_t
+  std::vector<unsigned char> raw(kChunkUnits * 2);
+  std::vector<wchar_t> buf;
+  buf.reserve(kChunkUnits + m);
+  uint64_t bufStartUnit = 0;
+  uint64_t nextUnit = 0;
+  std::vector<wchar_t> carry;
+
+  for (;;) {
+    DWORD got = 0;
+    if (!::ReadFile(h, raw.data(), static_cast<DWORD>(raw.size()), &got, nullptr) || got == 0) {
+      break;
+    }
+    const size_t units = got / 2;
+    buf.assign(carry.begin(), carry.end());
+    const size_t carryLen = buf.size();
+    for (size_t i = 0; i < units; ++i) {
+      const unsigned char a = raw[2 * i];
+      const unsigned char b = raw[2 * i + 1];
+      buf.push_back(bigEndian ? static_cast<wchar_t>((a << 8) | b)
+                              : static_cast<wchar_t>(a | (b << 8)));
+    }
+    const uint64_t startUnit = nextUnit - carryLen;
+    bufStartUnit = startUnit;
+
+    size_t k = m - 1;
+    while (k < buf.size()) {
+      const wchar_t c = fold(buf[k]);
+      if (c == last) {
+        bool match = true;
+        for (size_t j = 0; j < m; ++j) {
+          if (fold(buf[k - (m - 1) + j]) != fold(needle[j])) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          ++result.total;
+          if (result.offsets.size() < 10000) {
+            result.offsets.push_back((bufStartUnit + k - (m - 1)) * 2);
+          }
+        }
+        ++k;
+      } else {
+        k += shift[static_cast<uint16_t>(c)];
+      }
+    }
+
+    nextUnit += units;
+    carry.assign(buf.end() - static_cast<ptrdiff_t>(std::min<size_t>(m - 1, buf.size())),
+                 buf.end());
+  }
+  ::CloseHandle(h);
+  result.truncated = result.total > result.offsets.size();
+  return result;
+}
+
+struct SearchEntry {
+  uint64_t off = 0;
+  uint32_t block = 0;
+  uint32_t units = 0;
+};
+
+// 块内命中 → 解码文本里的 UTF-16 单元偏移。命中按偏移升序，同一块的命中一次扫完。
+// 只数不解码：UTF-8 按首字节数，GB18030 按首字节判 2/4 字节，UTF-16 直接除以 2。
+void FillBlockUnits(HANDLE h, doc::Encoding enc, uint64_t blockStart,
+                    std::vector<SearchEntry>* list, size_t first, size_t last) {
+  if (enc == doc::Encoding::Utf16LE || enc == doc::Encoding::Utf16BE) {
+    for (size_t i = first; i <= last; ++i) {
+      (*list)[i].units = static_cast<uint32_t>(((*list)[i].off - blockStart) / 2);
+    }
+    return;
+  }
+
+  const uint64_t lastOff = (*list)[last].off;
+  uint64_t pos = blockStart;
+  uint32_t units = 0;
+  size_t idx = first;
+  std::vector<unsigned char> buf(1u << 20);
+
+  while (idx <= last) {
+    while (idx <= last && (*list)[idx].off <= pos) {
+      (*list)[idx].units = units;
+      ++idx;
+    }
+    if (idx > last || pos >= lastOff) break;
+
+    const uint64_t want =
+        std::min<uint64_t>(buf.size(), lastOff - pos + static_cast<uint64_t>(4));
+    size_t got = 0;
+    if (!ReadAt(h, pos, static_cast<size_t>(want), &buf, &got) || got == 0) break;
+
+    size_t i = 0;
+    while (i < got) {
+      const unsigned char b = buf[i];
+      uint32_t len = 0;
+      uint32_t add = 1;
+      if (enc == doc::Encoding::Utf8) {
+        if (b < 0x80) {
+          len = 1;
+        } else if ((b & 0xE0) == 0xC0) {
+          len = 2;
+        } else if ((b & 0xF0) == 0xE0) {
+          len = 3;
+        } else if ((b & 0xF8) == 0xF0) {
+          len = 4;
+          add = 2;  // 4 字节 UTF-8 在 JS 里占两个 UTF-16 单元
+        } else {
+          len = 1;
+        }
+        if (i + len > got) break;
+      } else {
+        if (b < 0x80) {
+          len = 1;
+        } else if (b < 0x81 || b == 0xFF) {
+          len = 1;
+        } else {
+          if (i + 1 >= got) break;
+          const unsigned char b2 = buf[i + 1];
+          if (b2 >= 0x30 && b2 <= 0x39) {
+            if (i + 3 >= got) break;
+            len = 4;
+            add = (b >= 0x90) ? 2 : 1;
+          } else {
+            len = 2;
+          }
+        }
+      }
+
+      while (idx <= last && (*list)[idx].off < pos + i) {
+        (*list)[idx].units = units;
+        ++idx;
+      }
+      units += add;
+      i += len;
+    }
+
+    if (i == 0) break;  // 读块太小或数据异常，避免死循环
+    pos += i;
+  }
+
+  while (idx <= last) {
+    (*list)[idx].units = units;
+    ++idx;
+  }
 }
 
 std::shared_ptr<const Snapshot> MakeSnapshot(std::unique_ptr<doc::IndexBuilder> builder,
@@ -830,6 +1022,175 @@ void BigTable(std::string* out) {
     out->push_back(':');
     out->append(std::to_string(lines[k]));
   }
+}
+
+void PatchU32(std::string* out, size_t off, uint32_t v) {
+  if (off + 4 > out->size()) return;
+  (*out)[off] = static_cast<char>(v & 0xFF);
+  (*out)[off + 1] = static_cast<char>((v >> 8) & 0xFF);
+  (*out)[off + 2] = static_cast<char>((v >> 16) & 0xFF);
+  (*out)[off + 3] = static_cast<char>((v >> 24) & 0xFF);
+}
+
+bool ServeSearch(const std::wstring& uri, std::string* body, int* status) {
+  if (!body || !status) return false;
+  body->clear();
+  *status = 404;
+
+  static const wchar_t kBase[] = L"https://mdblocks.local/__search";
+  const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
+  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
+  *status = 200;
+
+  const size_t q = uri.find(L'?');
+  const std::wstring query = q == std::wstring::npos ? std::wstring() : uri.substr(q + 1);
+  const size_t pQ = query.find(L"q=");
+  if (pQ == std::wstring::npos) return true;
+  std::wstring raw = query.substr(pQ + 2);
+  const size_t amp = raw.find(L'&');
+  if (amp != std::wstring::npos) raw.resize(amp);
+
+  std::wstring needle;
+  if (!PercentDecode(raw, &needle)) return true;
+  if (needle.size() > 200) {
+    needle.resize(200);
+    if (needle.back() >= 0xD800 && needle.back() <= 0xDBFF) needle.pop_back();
+  }
+  if (needle.empty()) return true;
+  const bool caseSensitive = QueryU32(query, L"cs", 0) != 0;
+
+  std::shared_ptr<const Snapshot> snap;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    snap = g_snap;
+  }
+  if (!snap) return true;
+
+  const ULONGLONG t0 = ::GetTickCount64();
+  const bool wide = snap->enc.encoding == doc::Encoding::Utf16LE ||
+                    snap->enc.encoding == doc::Encoding::Utf16BE;
+  doc::SearchHits hits;
+  if (wide) {
+    hits = SearchWideFile(snap->path, needle, caseSensitive,
+                          snap->enc.encoding == doc::Encoding::Utf16BE);
+  } else {
+    const std::string bytes = snap->enc.encoding == doc::Encoding::Gb18030
+                                  ? WideToMbcs(needle, 54936)
+                                  : WideToUtf8String(needle);
+    if (!bytes.empty()) {
+      hits = doc::SearchFileBytes(snap->path, bytes, 4, nullptr, caseSensitive);
+    }
+  }
+
+  const doc::BlockIndex& ix = snap->builder->index();
+  constexpr size_t kMaxEntries = 2000;  // 导航与高亮的实际上限
+  std::vector<SearchEntry> list;
+  uint64_t visibleTotal = 0;
+  for (uint64_t off : hits.offsets) {
+    const uint32_t bi = ix.BlockAtOffset(off);
+    if (bi == doc::BlockIndex::kInvalidBlock || bi >= ix.BlockCount()) continue;
+    if (ix.IsHidden(bi)) continue;
+    ++visibleTotal;
+    if (list.size() < kMaxEntries) {
+      SearchEntry e;
+      e.off = off;
+      e.block = bi;
+      list.push_back(e);
+    }
+  }
+
+  HANDLE h = ::CreateFileW(snap->path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (h != INVALID_HANDLE_VALUE) {
+    size_t i = 0;
+    while (i < list.size()) {
+      size_t j = i;
+      while (j + 1 < list.size() && list[j + 1].block == list[i].block) ++j;
+      FillBlockUnits(h, snap->enc.encoding, ix.Start(list[i].block), &list, i, j);
+      i = j + 1;
+    }
+    ::CloseHandle(h);
+  }
+
+  const bool truncated = hits.truncated || visibleTotal > list.size();
+  AppendU32(body, static_cast<uint32_t>(std::min<uint64_t>(visibleTotal, 0xFFFFFFFFu)));
+  AppendU32(body, static_cast<uint32_t>(list.size()));
+  AppendU32(body, truncated ? 1u : 0u);
+  for (const SearchEntry& e : list) {
+    AppendU32(body, e.block);
+    AppendU32(body, e.units);
+  }
+
+  LogLine(L"DOCSRC: __search \"%s\" hits=%llu visible=%llu added=%zu ms=%llu", needle.c_str(),
+          static_cast<unsigned long long>(hits.total),
+          static_cast<unsigned long long>(visibleTotal), list.size(),
+          static_cast<unsigned long long>(::GetTickCount64() - t0));
+  return true;
+}
+
+bool ServeOutline(const std::wstring& uri, std::string* body, int* status) {
+  if (!body || !status) return false;
+  body->clear();
+  *status = 404;
+
+  static const wchar_t kBase[] = L"https://mdblocks.local/__outline";
+  const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
+  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
+  *status = 200;
+
+  std::shared_ptr<const Snapshot> snap;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    snap = g_snap;
+  }
+  if (!snap) return true;
+
+  constexpr size_t kMaxItems = 10000;
+  const std::vector<doc::OutlineNode>& nodes = snap->builder->outline();
+  const doc::BlockIndex& ix = snap->builder->index();
+
+  AppendU32(body, static_cast<uint32_t>(std::min<size_t>(nodes.size(), 0xFFFFFFFFu)));
+  AppendU32(body, 0);  // returned，最后回填
+  AppendU32(body, 0);  // flags
+
+  HANDLE h = ::CreateFileW(snap->path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  uint32_t added = 0;
+  if (h != INVALID_HANDLE_VALUE) {
+    std::vector<unsigned char> buf;
+    for (const doc::OutlineNode& node : nodes) {
+      if (added >= kMaxItems) break;
+      const uint32_t bi = ix.BlockAtOffset(node.start);
+      if (bi == doc::BlockIndex::kInvalidBlock || bi >= ix.BlockCount()) continue;
+      if (ix.IsHidden(bi)) continue;
+      const doc::Kind kind = ix.KindOf(bi);
+      if (kind < doc::Kind::H1 || kind > doc::Kind::H6) continue;
+
+      std::string text;
+      if (node.textLen > 0) {
+        buf.resize(node.textLen);
+        size_t got = 0;
+        if (ReadAt(h, node.start + node.textOff, node.textLen, &buf, &got) && got > 0) {
+          text = ToUtf8(snap->enc.encoding,
+                        std::string(reinterpret_cast<const char*>(buf.data()), got));
+        }
+      }
+      if (text.size() > 0xFFFF) text.resize(0xFFFF);
+
+      AppendU32(body, bi);
+      body->push_back(static_cast<char>(node.level));
+      AppendU16(body, static_cast<uint16_t>(text.size()));
+      body->append(text);
+      ++added;
+    }
+    ::CloseHandle(h);
+  }
+  PatchU32(body, 4, added);
+  PatchU32(body, 8, nodes.size() > added ? 1u : 0u);
+  LogLine(L"DOCSRC: __outline %zu 节点，返回 %u", nodes.size(), added);
+  return true;
 }
 
 bool ServeDefs(const std::wstring& uri, std::string* body, int* status) {

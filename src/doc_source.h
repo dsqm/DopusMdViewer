@@ -45,6 +45,17 @@ bool ServeLines(const std::wstring& uri, std::string* body, int* status);
 // 巨型块表："块号:行数,块号:行数…"（只含 > 2000 行的块，最多 4096 项）。
 void BigTable(std::string* out);
 
+// 响应 https://mdblocks.local/__search?q=<utf8>&cs=<0|1>：页内搜索。
+// body：u32 total | u32 returned | u32 flags | (u32 block, u32 offUnits)*。
+// offUnits 是命中在块内解码文本里的 UTF-16 单元偏移（与 JS 字符串下标一致）。
+// flags bit0 = 命中被截断（只返回导航上限内的条目）。
+bool ServeSearch(const std::wstring& uri, std::string* body, int* status);
+
+// 响应 https://mdblocks.local/__outline：标题大纲。
+// body：u32 total | u32 returned | u32 flags |
+//       (u32 block, u8 level, u16 len, UTF-8 标题文本)*
+bool ServeOutline(const std::wstring& uri, std::string* body, int* status);
+
 // 响应 https://mdblocks.local/__defs：所有隐藏块（front matter 除外）的原文。
 // 帧：u32 flags | u32 len | UTF-8 字节。链接引用定义与脚注定义都由前端消费，
 // 总量上限 8 MB（超出就截断，定义极多的文档会丢尾部引用）。

@@ -18,7 +18,9 @@ struct SearchHits {
 };
 
 // threads <= 0 时用 4。命中上限 10000（票 04）。
+// caseSensitive=false 时只折叠 ASCII 字母，多字节编码（UTF-8/GB18030）按原字节比较。
 SearchHits SearchFileBytes(const std::wstring& path, const std::string& needle,
-                           int threads, std::wstring* error = nullptr);
+                           int threads, std::wstring* error = nullptr,
+                           bool caseSensitive = true);
 
 }  // namespace doc

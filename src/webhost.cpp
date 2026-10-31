@@ -270,10 +270,14 @@ void CreateController() {
                       // （页面侧看到的是一句没头没尾的 "Failed to fetch"）。
                       if (!docsrc::ServeAsset(uri, &body, &status, &contentType)) {
                         status = 404;
-                        if (!docsrc::ServeLines(uri, &body, &status) &&
+                        // 未匹配的路径也要回一个空响应：只 return 会让请求挂到超时。
+                        if (!docsrc::ServeSearch(uri, &body, &status) &&
+                            !docsrc::ServeOutline(uri, &body, &status) &&
+                            !docsrc::ServeLines(uri, &body, &status) &&
                             !docsrc::ServeDefs(uri, &body, &status) &&
                             !docsrc::Serve(uri, &body, &status)) {
-                          return S_OK;
+                          status = 404;
+                          body.clear();
                         }
                       }
 
