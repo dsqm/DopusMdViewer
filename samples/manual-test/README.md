@@ -10,6 +10,10 @@
 | 04-math-mermaid.md | KaTeX 行内/独立公式、Mermaid 两种图、未知图降级 |
 | 05/06/07-encoding-*.md | GB18030 / UTF-16LE / UTF-8 BOM 三种编码同一内容 |
 | gen-enc.py → `%TEMP%\encsamples\` | 多编码判定样本（日/韩/繁/俄/西欧、无 BOM UTF-16、UTF-32 BOM、8 MB 探测边界）；用 `bin\encdetect.exe` 批跑。不入库，`very-late-sjis.md` 约 10 MB |
+| 10-search-regex.md | 正则：日期 10 处、二级标题 4 处、`Error` 大小写 4/1 处、非法正则的提示 |
+| 11-search-word.md | 整词与折叠：`cat` 7→3 处、`CAFÉ` 3/1 处、`中文` 3→2 处 |
+| gen-search.py → `%TEMP%\mdvsearch\` | 巨型块命中定位（`big-fence-hits.md`，命中在围栏内第 1001/90001 行与末行）与多块拖选（`mid-blocks.md`）。不入库 |
+| CHECK.md | 装机验收清单：每一项的样本、查询词、开关与精确预期 |
 | 08-outside-images.md | 设置开关前后的目录外图片（`../` 与绝对路径） |
 | big-mixed-3000.md | 普通块与 3000 行围栏混排，进出巨型块的滚动衔接 |
 | big-fence-120000.md | 12 万行单围栏：窗口化滚动、第 10 万行处的分段接缝 |
