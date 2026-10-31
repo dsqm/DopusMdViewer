@@ -118,7 +118,7 @@ void AppendFrame(std::string* out, uint32_t index, uint8_t flags, const unsigned
 }
 
 bool ParseBlocksUri(const std::wstring& uri, uint32_t* from, uint32_t* count) {
-  static const wchar_t kBase[] = L"https://mdblocks.local/__blocks";
+  static const wchar_t kBase[] = L"https://mdblocks.localhost/__blocks";
   const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
   if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
 
@@ -847,7 +847,7 @@ bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
   body->clear();
   *status = 404;
 
-  static const wchar_t kAssetBase[] = L"https://mdblocks.local/__asset";
+  static const wchar_t kAssetBase[] = L"https://mdblocks.localhost/__asset";
   const size_t baseLen = sizeof(kAssetBase) / sizeof(kAssetBase[0]) - 1;
   if (uri.size() < baseLen || uri.compare(0, baseLen, kAssetBase) != 0) return false;
 
@@ -889,13 +889,13 @@ bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
   return true;
 }
 
-// 响应 https://mdblocks.local/__lines：巨型块的行窗口。
+// 响应 https://mdblocks.localhost/__lines：巨型块的行窗口。
 bool ServeLines(const std::wstring& uri, std::string* body, int* status) {
   if (!body || !status) return false;
   body->clear();
   *status = 404;
 
-  static const wchar_t kBase[] = L"https://mdblocks.local/__lines";
+  static const wchar_t kBase[] = L"https://mdblocks.localhost/__lines";
   const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
   if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
 
@@ -1037,7 +1037,7 @@ bool ServeSearch(const std::wstring& uri, std::string* body, int* status) {
   body->clear();
   *status = 404;
 
-  static const wchar_t kBase[] = L"https://mdblocks.local/__search";
+  static const wchar_t kBase[] = L"https://mdblocks.localhost/__search";
   const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
   if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
   *status = 200;
@@ -1134,7 +1134,7 @@ bool ServeOutline(const std::wstring& uri, std::string* body, int* status) {
   body->clear();
   *status = 404;
 
-  static const wchar_t kBase[] = L"https://mdblocks.local/__outline";
+  static const wchar_t kBase[] = L"https://mdblocks.localhost/__outline";
   const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
   if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
   *status = 200;
@@ -1198,7 +1198,7 @@ bool ServeDefs(const std::wstring& uri, std::string* body, int* status) {
   body->clear();
   *status = 404;
 
-  static const wchar_t kBase[] = L"https://mdblocks.local/__defs";
+  static const wchar_t kBase[] = L"https://mdblocks.localhost/__defs";
   const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
   if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
 

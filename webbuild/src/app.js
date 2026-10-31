@@ -32,20 +32,20 @@ import powershell from 'highlight.js/lib/languages/powershell'
 /* ============================================================
    约定（票 03 / 05 / 06 / 07 / 08 / 11）
    - 全文不进 DOM：自绘滚动条 + 估算总高 + 常驻窗口（800 块量级）。
-   - 块正文走 https://mdblocks.local/__blocks 的二进制帧，批量取。
+   - 块正文走 https://mdblocks.localhost/__blocks 的二进制帧，批量取。
    - 颜色全在 #base / #skin，字体全在 #fx（#fx 永远最后）。
    - 单块高亮闸门：≤2000 行且 ≤256 KiB，超限只出纯文本。
    ============================================================ */
 
 const HIGHLIGHT_MAX_LINES = 2000
 const HIGHLIGHT_MAX_BYTES = 256 * 1024
-const DOC_BASE_DEFAULT = 'https://mddoc.local/'
-const DOC_HOST = 'https://mddoc.local/'
-const BLOCKS_URL = 'https://mdblocks.local/__blocks'
-const LINES_URL = 'https://mdblocks.local/__lines'
-const DEFS_URL = 'https://mdblocks.local/__defs'
-const SEARCH_URL = 'https://mdblocks.local/__search'
-const OUTLINE_URL = 'https://mdblocks.local/__outline'
+const DOC_BASE_DEFAULT = 'https://mddoc.localhost/'
+const DOC_HOST = 'https://mddoc.localhost/'
+const BLOCKS_URL = 'https://mdblocks.localhost/__blocks'
+const LINES_URL = 'https://mdblocks.localhost/__lines'
+const DEFS_URL = 'https://mdblocks.localhost/__defs'
+const SEARCH_URL = 'https://mdblocks.localhost/__search'
+const OUTLINE_URL = 'https://mdblocks.localhost/__outline'
 
 const OVERSCAN = 120          // 视口上下各留多少块
 const MAX_FETCH_BLOCKS = 100  // 单次请求块数（票 03：50–200）
@@ -247,7 +247,7 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
       return
     }
     // 绝对路径/../ 已被上面的 hook 换成本地 __asset，不要再走网络图确认
-    if (/^https:\/\/mdblocks\.local\//i.test(src)) return
+    if (/^https:\/\/mdblocks\.localhost\//i.test(src)) return
     if (isRemoteUrl(src)) {
       let absolute = null
       try { absolute = new URL(src, location.href) } catch { absolute = null }
@@ -275,10 +275,10 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 })
 
 // 图片走 __asset：虚拟主机映射出来的跨源 <img> 在 WebView2 里不生效（onerror），
-// 而 mdblocks.local 的请求由 C++ 合成，可带正确的 Content-Type。
+// 而 mdblocks.localhost 的请求由 C++ 合成，可带正确的 Content-Type。
 // 绝对路径与 ../ 也统一走 __asset，宿主按设置决定放不放行。
 function assetUrl(path) {
-  return 'https://mdblocks.local/__asset?p=' + encodeURIComponent(path)
+  return 'https://mdblocks.localhost/__asset?p=' + encodeURIComponent(path)
 }
 
 function decodePath(raw) {
@@ -2390,7 +2390,7 @@ function renderDocument(source, docBase) {
 }
 
 /* ---------------- 宿主通道 ----------------
-   控制帧格式：<type>|<字段…>，小载荷；块正文只走 mdblocks.local 的二进制帧。 */
+   控制帧格式：<type>|<字段…>，小载荷；块正文只走 mdblocks.localhost 的二进制帧。 */
 
 const violations = []
 window.__mdvCspViolations = violations

@@ -6,8 +6,8 @@
 <!-- CSP 只能写在这里：虚拟主机映射出来的响应由 WebView2 自己合成，加不了响应头，
      而映射过的请求也不会走到 WebResourceRequested。唯一因此拿不到的是
      frame-ancestors，但预览器本身就是顶层文档，用不上那条。
-     块正文走一个没有被映射的主机名 mdblocks.local。 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: https://mddoc.local https://mdblocks.local data:; font-src 'self' data:; connect-src https://mdblocks.local; base-uri 'none'; form-action 'none'; object-src 'none'">
+     块正文走一个没有被映射的主机名 mdblocks.localhost。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: https://mddoc.localhost https://mdblocks.localhost data:; font-src 'self' data:; connect-src https://mdblocks.localhost; base-uri 'none'; form-action 'none'; object-src 'none'">
 <title>DopusMdViewer</title>
 
 <!-- 三层样式，顺序即层叠顺序：base（本文件）→ skin（C++ 注入）→ fx（字体，永远最后） -->

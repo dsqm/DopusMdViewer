@@ -41,9 +41,9 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 const wchar_t kHostClass[] = L"DopusMdViewerHostWnd";
-const wchar_t kAppHost[] = L"mdprev.local";
-const wchar_t kDocHost[] = L"mddoc.local";
-const wchar_t kShellUrl[] = L"https://mdprev.local/shell.html";
+const wchar_t kAppHost[] = L"mdprev.localhost";
+const wchar_t kDocHost[] = L"mddoc.localhost";
+const wchar_t kShellUrl[] = L"https://mdprev.localhost/shell.html";
 
 // 命令号：调用线程 → 宿主线程。参数在 SendMessage 期间有效。
 const UINT kCmdBase = WM_APP + 0x200;
@@ -421,7 +421,7 @@ void CreateController() {
 
             // 块正文走一个没有被映射的主机名：映射过的请求不会进 WebResourceRequested。
             const HRESULT filterHr = g_host.webview->AddWebResourceRequestedFilter(
-                L"https://mdblocks.local/*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+                L"https://mdblocks.localhost/*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
             LogLine(L"WEBHOST: 块请求过滤器 hr=0x%08X", static_cast<unsigned>(filterHr));
 
             EventRegistrationToken resToken = {};
@@ -821,7 +821,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         LogLine(L"WEBHOST: 取消 %s 映射", kDocHost);
         return 1;
       }
-      // 图片已改走 mdblocks.local/__asset：虚拟主机映射出来的跨源 <img> 会
+      // 图片已改走 mdblocks.localhost/__asset：虚拟主机映射出来的跨源 <img> 会
       // 直接 onerror，这台映射留给后续需要同源读取的场景，仍按 DENY_CORS 收口。
       const HRESULT hr = g_host.webview3->SetVirtualHostNameToFolderMapping(
           kDocHost, dir->c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);

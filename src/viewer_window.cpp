@@ -1,7 +1,7 @@
 // viewer_window.cpp - 查看器窗口与消息分发。
 //
 // M4 起正文不再整篇读入推送：打开时由 doc_source 建索引（同步前缀 + 后台全文），
-// 这里只推 index 控制消息，块正文由页面按区间向 mdblocks.local 取。
+// 这里只推 index 控制消息，块正文由页面按区间向 mdblocks.localhost 取。
 
 #include "viewer_window.h"
 
@@ -27,7 +27,7 @@ namespace {
 
 const wchar_t kClassName[] = L"DopusMdViewerWindow";
 const wchar_t kTitle[] = L"DopusMdViewer";
-const wchar_t kDocBase[] = L"https://mddoc.local/";
+const wchar_t kDocBase[] = L"https://mddoc.localhost/";
 
 struct ViewerState {
   HWND hwndSelf;
@@ -242,7 +242,7 @@ void PushIndex(ViewerState* st) {
   if (!st->docOpened || !st->hasHost || st->webFailed || !WebHostIsReady()) return;
 
   if (!WebHostSetDocFolder(UtilParentDir(st->szFile))) {
-    LogLine(L"VIEWER: mddoc.local 映射失败，相对图片不会加载");
+    LogLine(L"VIEWER: mddoc.localhost 映射失败，相对图片不会加载");
   }
 
   const bool ok = WebHostPost(
@@ -365,7 +365,7 @@ void HandleHostEvent(ViewerState* st, int kind, const wchar_t* text) {
 
 void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
   if (!pszPath) pszPath = L"";
-  // 相对路径会让 mddoc.local 映射失败（映射要求绝对路径），这里统一转绝对。
+  // 相对路径会让 mddoc.localhost 映射失败（映射要求绝对路径），这里统一转绝对。
   wchar_t szFull[MAX_PATH * 2];
   const DWORD cchFull = ::GetFullPathNameW(pszPath, ARRAYSIZE(szFull), szFull, nullptr);
   if (cchFull > 0 && cchFull < ARRAYSIZE(szFull)) {

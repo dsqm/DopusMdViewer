@@ -59,7 +59,7 @@ void WebHostUnborrow(HWND hViewer);
 // 查看器尺寸变化。非借用方调用会被忽略——否则会把别人的内容缩成自己的尺寸。
 bool WebHostSetBounds(HWND hViewer, const RECT& client);
 
-// 当前文档所在目录 → mddoc.local 虚拟主机；空串表示取消映射。
+// 当前文档所在目录 → mddoc.localhost 虚拟主机；空串表示取消映射。
 bool WebHostSetDocFolder(const std::wstring& dir);
 
 // 关闭 controller（宿主线程保留）。当前只在需要强制重建时使用。
