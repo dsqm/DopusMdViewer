@@ -93,6 +93,34 @@ void AppendU32(std::string* out, uint32_t v) {
   out->append(b, 4);
 }
 
+// 源字节 → UTF-16 追加。块截断只可能落在 32 MB 预算处，多字节序列末尾的
+// 半个字符交给 MultiByteToWideChar 换成替换符，不影响前后内容。
+void AppendWideText(doc::Encoding enc, const unsigned char* p, size_t n, std::wstring* out) {
+  if (n == 0) return;
+  if (enc == doc::Encoding::Utf16LE || enc == doc::Encoding::Utf16BE) {
+    const size_t units = n / 2;
+    const size_t base = out->size();
+    out->resize(base + units);
+    wchar_t* dst = &(*out)[base];
+    for (size_t i = 0; i < units; ++i) {
+      const unsigned char a = p[2 * i];
+      const unsigned char b = p[2 * i + 1];
+      dst[i] = enc == doc::Encoding::Utf16LE
+                   ? static_cast<wchar_t>(a | (b << 8))
+                   : static_cast<wchar_t>((a << 8) | b);
+    }
+    return;
+  }
+  const UINT cp = enc == doc::Encoding::Gb18030 ? 54936 : CP_UTF8;
+  const int len = ::MultiByteToWideChar(cp, 0, reinterpret_cast<const char*>(p),
+                                        static_cast<int>(n), nullptr, 0);
+  if (len <= 0) return;
+  const size_t base = out->size();
+  out->resize(base + static_cast<size_t>(len));
+  ::MultiByteToWideChar(cp, 0, reinterpret_cast<const char*>(p), static_cast<int>(n),
+                        &(*out)[base], len);
+}
+
 void AppendFrame(std::string* out, uint32_t index, uint8_t flags, const unsigned char* p,
                  size_t n, doc::Encoding enc) {
   std::string utf8;
@@ -1249,6 +1277,94 @@ bool ServeDefs(const std::wstring& uri, std::string* body, int* status) {
   }
   ::CloseHandle(h);
   LogLine(L"DOCSRC: __defs %u 个隐藏块 / %zu B", blocks, body->size());
+  return true;
+}
+
+bool CopyText(uint64_t maxSourceBytes, std::wstring* text, bool* truncated, bool* complete) {
+  if (!text) return false;
+  text->clear();
+  if (truncated) *truncated = false;
+  if (complete) *complete = false;
+
+  std::shared_ptr<const Snapshot> snap;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    snap = g_snap;
+  }
+  if (!snap) return false;
+
+  // finished() 只表示这条扫描器封了口；前缀快照也是 finished，必须拿扫描字节数
+  // 和文件大小比（与 Open 里 complete 的判定同一条）。
+  const bool wholeFile = snap->builder->BytesScanned() >= snap->fileSize;
+  const doc::BlockIndex& ix = snap->builder->index();
+  const uint32_t total = ix.BlockCount();
+  if (total == 0) {
+    if (complete) *complete = wholeFile;
+    return true;
+  }
+
+  HANDLE h = ::CreateFileW(snap->path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+
+  // 连续块合并成一次读：4 MB / 次，按块顺序往下走；预算用完就停。
+  constexpr uint64_t kRunBytes = 4ull << 20;
+  std::vector<unsigned char> buf;
+  uint64_t used = 0;
+  bool cut = false;
+  bool any = false;
+  uint32_t i = 0;
+  while (i < total) {
+    if (ix.IsHidden(i)) {
+      ++i;
+      continue;
+    }
+    const uint64_t runStart = ix.Start(i);
+    uint32_t j = i + 1;
+    while (j < total && ix.End(j) - runStart <= kRunBytes) ++j;
+    const uint64_t runEnd = ix.End(j - 1);
+
+    const uint64_t remain = maxSourceBytes > used ? maxSourceBytes - used : 0;
+    if (remain == 0) {
+      cut = true;
+      break;
+    }
+    const uint64_t want = std::min<uint64_t>(runEnd - runStart, remain);
+    if (buf.size() < want) buf.resize(static_cast<size_t>(want));
+    size_t got = 0;
+    if (!ReadAt(h, runStart, static_cast<size_t>(want), &buf, &got) || got == 0) {
+      i = j;
+      continue;
+    }
+    const uint64_t bufEnd = runStart + got;
+    for (uint32_t k = i; k < j; ++k) {
+      if (ix.IsHidden(k)) continue;
+      const uint64_t bs = ix.Start(k);
+      if (bs >= bufEnd) {
+        cut = true;
+        break;
+      }
+      const uint64_t be = ix.End(k);
+      const uint64_t ce = std::min(be, bufEnd);
+      if (ce <= bs) continue;
+      if (any) text->append(L"\r\n\r\n");
+      AppendWideText(snap->enc.encoding, buf.data() + (bs - runStart),
+                     static_cast<size_t>(ce - bs), text);
+      any = true;
+      used += ce - bs;
+      if (be > ce) {
+        cut = true;
+        break;
+      }
+    }
+    if (cut) break;
+    i = j;
+  }
+  ::CloseHandle(h);
+
+  if (truncated) *truncated = cut;
+  if (complete) *complete = !cut && wholeFile;
   return true;
 }
 

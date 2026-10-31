@@ -61,6 +61,10 @@ bool ServeOutline(const std::wstring& uri, std::string* body, int* status);
 // 总量上限 8 MB（超出就截断，定义极多的文档会丢尾部引用）。
 bool ServeDefs(const std::wstring& uri, std::string* body, int* status);
 
+// 按块顺序拼接可见正文（块间空行，隐藏块跳过），最多 maxSourceBytes 源字节。
+// truncated = 达到上限被截断；complete = 当前索引已覆盖全文。
+bool CopyText(uint64_t maxSourceBytes, std::wstring* text, bool* truncated, bool* complete);
+
 // 响应 https://mdblocks.localhost/__asset?p=<相对路径>：读当前文档目录下的图片等资源。
 // 只允许文档目录内的相对路径，任何绝对路径、盘符或 .. 段都拒绝。
 bool ServeAsset(const std::wstring& uri, std::string* body, int* status,

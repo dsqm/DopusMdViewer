@@ -51,6 +51,11 @@ const OVERSCAN = 120          // 视口上下各留多少块
 const MAX_FETCH_BLOCKS = 100  // 单次请求块数（票 03：50–200）
 const MAX_INFLIGHT = 3
 
+// 钉块（票 05）：选区覆盖的常驻块不参与换出，上限 3000 块 / 32MB。
+const PIN_MAX_BLOCKS = 3000
+const PIN_MAX_BYTES = 32 * 1024 * 1024
+const SEL_EDGE = 42           // 拖选到离视口边缘多少 px 开始自动滚动
+
 // 巨型块（>2000 行）的块内行窗口：按 64 行 checkpoint 对齐，最少 128 行、
 // 最多 512 行。窗口放在视口上下各一屏之外，滚动时不至于看到空白带。
 const LINE_ALIGN = 64
@@ -370,6 +375,8 @@ const V = {
   resident: new Map(),
   pool: [],
   bigPool: [],
+  pinned: new Set(),     // 选区覆盖、暂时不换出的块号
+  pinsDirty: false,      // 钉块集合缩小过：即使窗口没变也要回收一次
   big: new Map(),        // 块号 -> { lines }（>2000 行的块）
   bigPending: null,      // 页面还没就绪时收到的巨型块表
   pending: new Set(),
@@ -1161,6 +1168,7 @@ function applyBigTable(text) {
 function recycleOutside(a, b) {
   for (const [i, rec] of V.resident) {
     if (i >= a && i <= b) continue
+    if (V.pinned.has(i)) continue
     if (rec.big) {
       releaseBig(rec)
     } else {
@@ -1311,11 +1319,12 @@ function place() {
   // 而元素的 top 也会被 Blink 的布局上限截断，所以让 stageBase 跟着视口走，
   // 只在跨过 4 屏时才重定一次基（重定会刷新所有常驻块的 top）。
   const anchor = Math.max(pos(a), V.off - V.vh * 2)
-  if (a !== V.windowStart || b !== V.windowEnd) {
+  if (a !== V.windowStart || b !== V.windowEnd || V.pinsDirty) {
     V.windowStart = a
     V.windowEnd = b
     V.stageBase = anchor
     recycleOutside(a, b)
+    V.pinsDirty = false
     // 跳跃滚动时队列里会攒下大量已经过时的窗口块，别让它们挡住当前窗口
     if (V.queue.length) {
       V.queue = V.queue.filter((it) => it.i >= a && it.i <= b)
@@ -1463,6 +1472,9 @@ function resetVirtual() {
   FOOT.html = ''
   SLUG.bySlug.clear()
   SLUG.byBlock.clear()
+  V.pinned.clear()
+  V.pinsDirty = false
+  onSelUp()
   resetNetConsent()
 }
 
@@ -1630,6 +1642,13 @@ function onWheel(e) {
 
 function onKeyDown(e) {
   if (!V.active) return
+  if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'a' || e.key === 'A')) {
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
+    // 全文不在 DOM 里，全选交给宿主按索引拼纯文本（票 05 第 5.2 节）
+    e.preventDefault()
+    postRaw('copyall')
+    return
+  }
   if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'f' || e.key === 'F')) {
     e.preventDefault()
     openFind()
@@ -1713,6 +1732,139 @@ function onThumbUp(e) {
   if (!V.drag) return
   V.drag = null
   try { thumbEl.releasePointerCapture(e.pointerId) } catch { /* 忽略 */ }
+}
+
+/* ---------------- 跨块选区：钉块 + 拖边自动滚动 ----------------
+   块会随视口换出，选区一旦跨到被换出的块就会塌陷。选区覆盖的常驻块钉住不换，
+   拖到视口边缘时按帧滚动并用 caretRangeFromPoint 把选区延伸过去。 */
+
+const SEL = { down: false, x: 0, y: 0, raf: 0, warned: false }
+
+function blockIndexOfNode(node) {
+  if (!node) return null
+  const el = node.nodeType === 1 ? node : node.parentElement
+  const blk = el && el.closest ? el.closest('.blk[data-i]') : null
+  if (!blk) return null
+  const i = parseInt(blk.dataset.i, 10)
+  return Number.isInteger(i) ? i : null
+}
+
+function refreshPins() {
+  if (!V.active) {
+    V.pinned.clear()
+    return
+  }
+  const sel = window.getSelection()
+  if (!sel || !sel.rangeCount) {
+    if (V.pinned.size) {
+      V.pinned.clear()
+      V.pinsDirty = true
+      schedulePlace()
+    }
+    return
+  }
+  const range = sel.getRangeAt(0)
+  if (range.collapsed) {
+    if (V.pinned.size) {
+      V.pinned.clear()
+      V.pinsDirty = true
+      schedulePlace()
+    }
+    return
+  }
+  const a = blockIndexOfNode(range.startContainer)
+  const b = blockIndexOfNode(range.endContainer)
+  if (a === null || b === null) return
+
+  const lo = Math.min(a, b)
+  const hi = Math.max(a, b)
+  const next = new Set()
+  let bytes = 0
+  let clipped = false
+  for (let i = lo; i <= hi; i++) {
+    const rec = V.resident.get(i)
+    if (!rec || rec.big || !rec.el) continue
+    if (next.size >= PIN_MAX_BLOCKS || bytes >= PIN_MAX_BYTES) {
+      clipped = true
+      break
+    }
+    next.add(i)
+    bytes += rec.text ? rec.text.length * 2 + 64 : 4096
+  }
+  if (clipped && !SEL.warned) {
+    SEL.warned = true
+    postRaw('status|选区过大，请分段复制')
+  }
+  let same = next.size === V.pinned.size
+  if (same) {
+    for (const i of next) {
+      if (!V.pinned.has(i)) { same = false; break }
+    }
+  }
+  if (!same) {
+    V.pinned = next
+    V.pinsDirty = true
+    schedulePlace()
+  }
+}
+
+// 指针还在边缘时持续滚动，并把选区焦点延伸到指针下的字符。
+function selEdgeTick() {
+  SEL.raf = 0
+  if (!SEL.down || !V.active) return
+  const y = SEL.y
+  const overTop = SEL_EDGE - y
+  const overBottom = y - (window.innerHeight - SEL_EDGE)
+  let dy = 0
+  if (overTop > 0) dy = -Math.min(overTop, SEL_EDGE) * 0.45
+  else if (overBottom > 0) dy = Math.min(overBottom, SEL_EDGE) * 0.45
+  if (!dy) return
+
+  const sel = window.getSelection()
+  if (!sel || !sel.rangeCount || sel.getRangeAt(0).collapsed) return
+
+  const scrollable = Math.max(0, V.totalH - V.vh)
+  const before = V.target
+  V.target = Math.min(Math.max(V.target + dy, 0), scrollable)
+  V.off = V.target
+  if (V.target === before) return
+  place()
+
+  if (document.caretRangeFromPoint) {
+    const r = document.caretRangeFromPoint(SEL.x, Math.min(Math.max(y, 1), window.innerHeight - 1))
+    if (r && docEl && docEl.contains(r.startContainer)) {
+      try { sel.extend(r.startContainer, r.startOffset) } catch { /* 忽略越界 */ }
+    }
+  }
+  SEL.raf = requestAnimationFrame(selEdgeTick)
+}
+
+function armSelScroll() {
+  if (!SEL.down || SEL.raf || !V.active) return
+  if (SEL.y > SEL_EDGE && SEL.y < window.innerHeight - SEL_EDGE) return
+  SEL.raf = requestAnimationFrame(selEdgeTick)
+}
+
+function onSelDown(e) {
+  if (!V.active || e.button !== 0) return
+  if (e.target && e.target.closest && e.target.closest('.mdv-ui')) return
+  SEL.down = true
+  SEL.x = e.clientX
+  SEL.y = e.clientY
+}
+
+function onSelMove(e) {
+  if (!SEL.down) return
+  SEL.x = e.clientX
+  SEL.y = e.clientY
+  armSelScroll()
+}
+
+function onSelUp() {
+  SEL.down = false
+  SEL.warned = false
+  if (SEL.raf) cancelAnimationFrame(SEL.raf)
+  SEL.raf = 0
 }
 
 /* ---------------- 搜索与大纲（M6） ---------------- */
@@ -2628,6 +2780,11 @@ function bindInput() {
   thumbEl.addEventListener('pointerup', onThumbUp)
   thumbEl.addEventListener('pointercancel', onThumbUp)
   sbEl.addEventListener('pointerdown', onTrackDown)
+  document.addEventListener('selectionchange', refreshPins)
+  document.addEventListener('mousedown', onSelDown)
+  document.addEventListener('mousemove', onSelMove)
+  document.addEventListener('mouseup', onSelUp)
+  window.addEventListener('blur', onSelUp)
   if (document.fonts && document.fonts.ready) {
     document.fonts.ready.then(() => {
       if (V.active) remeasureAll()

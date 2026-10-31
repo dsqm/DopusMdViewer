@@ -10,6 +10,7 @@
 
 #include <new>
 #include <stdlib.h>
+#include <string>
 #include <objidl.h>
 #include <strsafe.h>
 
@@ -42,6 +43,12 @@ const UINT_PTR kReleaseQuitTimerId = 16;
 const UINT_PTR kReleaseReopenTimerId = 17;
 const UINT_PTR kSlugTimerId = 18;
 const UINT_PTR kDropCloseTimerId = 19;
+const UINT_PTR kCopyTimerId = 20;
+const UINT_PTR kCopyCheckTimerId = 21;
+const UINT_PTR kSelectAllTimerId = 22;
+const UINT_PTR kPinTimerId = 23;
+const UINT_PTR kCopyEarlyTimerId = 24;
+const UINT_PTR kCopyEarlyCheckTimerId = 25;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -75,6 +82,9 @@ bool g_drop = false;        // 关预热、设 1 分钟空闲释放；5 秒后�
 wchar_t g_findQuery[128] = L"中文";
 bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条目数与滚动位置
 bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，回流映射与滚动位置
+bool g_copy = false;        // 5 秒后按 Ctrl+A，7 秒读剪贴板，9 秒再走 SELECTALL 消息
+bool g_pin = false;         // 5 秒后选区钉块 + 拖边滚动，滚到底验钉块没被换出
+bool g_copyEarly = false;   // 索引未完成时先复制前缀，全文索引到达后自动补全
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
 HWND g_hwndTimer = nullptr;  // release 模式：主窗口销毁后用它继续跑计时器
@@ -218,6 +228,25 @@ void LayoutChildren() {
   }
 }
 
+void LogClipboard(const wchar_t* tag) {
+  if (!::OpenClipboard(g_hwndMain)) {
+    LogLine(L"TEST: %s 剪贴板被占用", tag);
+    return;
+  }
+  HANDLE data = ::GetClipboardData(CF_UNICODETEXT);
+  const wchar_t* text = data ? static_cast<const wchar_t*>(::GlobalLock(data)) : nullptr;
+  if (text) {
+    std::wstring all(text);
+    const size_t tail = all.size() > 20 ? all.size() - 20 : 0;
+    LogLine(L"TEST: %s %zu 字符 head=\"%.40s\" tail=\"%.20s\"", tag, all.size(), all.c_str(),
+            all.c_str() + tail);
+    ::GlobalUnlock(data);
+  } else {
+    LogLine(L"TEST: %s 剪贴板没有文本", tag);
+  }
+  ::CloseClipboard();
+}
+
 LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   switch (uMsg) {
     case WM_SIZE:
@@ -338,6 +367,53 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"+' text='+t+' off='+Math.round(window.__mdv.V.off)"
             L"+' open='+(document.getElementById('outline').hidden?0:1));},700);},400);})();";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kCopyTimerId) {
+        ::KillTimer(hwnd, kCopyTimerId);
+        const wchar_t* script =
+            L"window.dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,"
+            L"bubbles:true,cancelable:true}));";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kCopyCheckTimerId) {
+        ::KillTimer(hwnd, kCopyCheckTimerId);
+        LogClipboard(L"Ctrl+A");
+        // 再走一遍 Opus 菜单「全选」的 SELECTALL 消息路径
+        if (g_viewer) ::PostMessageW(g_viewer, DVPLUGINMSG_SELECTALL, 0, 0);
+        ::SetTimer(hwnd, kSelectAllTimerId, 2000, nullptr);
+      } else if (wParam == kSelectAllTimerId) {
+        ::KillTimer(hwnd, kSelectAllTimerId);
+        LogClipboard(L"SELECTALL");
+      } else if (wParam == kCopyEarlyTimerId) {
+        ::KillTimer(hwnd, kCopyEarlyTimerId);
+        if (g_viewer) ::PostMessageW(g_viewer, DVPLUGINMSG_SELECTALL, 0, 0);
+      } else if (wParam == kCopyEarlyCheckTimerId) {
+        ::KillTimer(hwnd, kCopyEarlyCheckTimerId);
+        LogClipboard(L"copyearly");
+      } else if (wParam == kPinTimerId) {
+        ::KillTimer(hwnd, kPinTimerId);
+        const wchar_t* script =
+            L"(function(){var V=window.__mdv.V;"
+            L"var a=document.querySelector('.blk[data-i=\"1\"]'),"
+            L"b=document.querySelector('.blk[data-i=\"5\"]');"
+            L"var sel=window.getSelection();var r=document.createRange();"
+            L"r.setStart(a,0);r.setEnd(b,b.childNodes.length);"
+            L"sel.removeAllRanges();sel.addRange(r);"
+            L"function rep(tag){var s=window.getSelection();"
+            L"window.chrome.webview.postMessage('event|pin|'+tag+' pinned='+V.pinned.size"
+            L"+' resident='+V.resident.size+' has1='+(V.resident.has(1)?1:0)"
+            L"+' has5='+(V.resident.has(5)?1:0)+' collapsed='+(s.isCollapsed?1:0)"
+            L"+' target='+Math.round(V.target)+' off='+Math.round(V.off));}"
+            L"setTimeout(function(){rep('sel');"
+            L"document.dispatchEvent(new MouseEvent('mousedown',{button:0,clientX:200,clientY:120,"
+            L"bubbles:true,cancelable:true}));"
+            L"document.dispatchEvent(new MouseEvent('mousemove',{clientX:200,"
+            L"clientY:window.innerHeight-2,bubbles:true,cancelable:true}));},300);"
+            L"setTimeout(function(){rep('autoscroll');"
+            L"document.dispatchEvent(new MouseEvent('mouseup',{button:0,bubbles:true}));"
+            L"window.dispatchEvent(new WheelEvent('wheel',{deltaY:1000000000,deltaMode:0,"
+            L"bubbles:true,cancelable:true}));},1200);"
+            L"setTimeout(function(){rep('scrolled');sel.removeAllRanges();},2600);"
+            L"setTimeout(function(){rep('cleared');},3200);})();";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kSlugTimerId) {
         ::KillTimer(hwnd, kSlugTimerId);
         const wchar_t* script =
@@ -411,6 +487,15 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       }
       return 0;
 
+    case WM_NOTIFY: {
+      const NMHDR* hdr = reinterpret_cast<const NMHDR*>(lParam);
+      if (hdr && hdr->code == DVPN_STATUSTEXT) {
+        const DVPNMSTATUSTEXT* t = reinterpret_cast<const DVPNMSTATUSTEXT*>(lParam);
+        LogLine(L"TEST: 状态 \"%s\"", t->lpszStatusText ? t->lpszStatusText : L"");
+      }
+      return 0;
+    }
+
     case WM_DESTROY:
       // release 模式故意销毁主窗口但让进程继续跑，验证宿主自己回收实例。
       if (!g_release) ::PostQuitMessage(0);
@@ -461,6 +546,9 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"find")) g_find = true;
   if (*p && wcsstr(p, L"outline")) g_outline = true;
   if (*p && wcsstr(p, L"slug")) g_slug = true;
+  if (*p && wcsstr(p, L"copyearly")) g_copyEarly = true;
+  else if (*p && wcsstr(p, L"copy")) g_copy = true;
+  if (*p && wcsstr(p, L"pin")) g_pin = true;
   if (*p && wcsstr(p, L"prewarm")) g_prewarm = true;
   if (*p && wcsstr(p, L"release")) g_release = true;
   if (*p && wcsstr(p, L"idle")) g_idle = true;
@@ -570,6 +658,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_slug) {
     ::SetTimer(g_hwndMain, kSlugTimerId, 5000, nullptr);
+  }
+  if (g_copy) {
+    ::SetTimer(g_hwndMain, kCopyTimerId, 5000, nullptr);
+    ::SetTimer(g_hwndMain, kCopyCheckTimerId, 7000, nullptr);
+    ::SetTimer(g_hwndMain, kSelectAllTimerId, 9000, nullptr);
+  }
+  if (g_pin) {
+    ::SetTimer(g_hwndMain, kPinTimerId, 5000, nullptr);
+  }
+  if (g_copyEarly) {
+    ::SetTimer(g_hwndMain, kCopyEarlyTimerId, 300, nullptr);
+    ::SetTimer(g_hwndMain, kCopyEarlyCheckTimerId, 3000, nullptr);
   }
 
   if (g_drop) {

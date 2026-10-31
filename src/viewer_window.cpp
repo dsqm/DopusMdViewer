@@ -6,6 +6,7 @@
 #include "viewer_window.h"
 
 #include <cstdarg>
+#include <cstring>
 #include <mutex>
 #include <new>
 #include <vector>
@@ -28,6 +29,7 @@ namespace {
 const wchar_t kClassName[] = L"DopusMdViewerWindow";
 const wchar_t kTitle[] = L"DopusMdViewer";
 const wchar_t kDocBase[] = L"https://mddoc.localhost/";
+constexpr uint64_t kMaxCopyBytes = 32ull << 20;  // 票 05 第 5.2 节：Ctrl+A 上限 32 MB
 
 struct ViewerState {
   HWND hwndSelf;
@@ -44,6 +46,8 @@ struct ViewerState {
   LONGLONG qpcLoad;  // LOADW 起点，用于端到端耗时
   bool docOpened;    // doc_source 归本窗口
   bool indexFullPending;  // 全文索引已就绪但页面还没收到 index-full
+  bool copyPending;       // 索引未完成时复制了前缀，等全文索引到达后续拼
+  DWORD copySeq;          // 写剪贴板后的序号，用来判断中途有没有被别的复制覆盖
   bool chromePushed;
   bool webFailed;
   bool hasHost;  // 宿主此刻是否在本窗口（单宿主，被别的窗口借走时没有画面）
@@ -247,6 +251,83 @@ void EnsurePlaceholderFonts(ViewerState* st, HWND hwnd) {
   ::StringCchCopyW(st->fontFace, ARRAYSIZE(st->fontFace), face);
 }
 
+bool SetClipboardText(HWND owner, const std::wstring& text) {
+  if (!::OpenClipboard(owner)) return false;
+  ::EmptyClipboard();
+  const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+  HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, bytes);
+  bool ok = false;
+  if (mem) {
+    void* p = ::GlobalLock(mem);
+    if (p) {
+      std::memcpy(p, text.c_str(), bytes);
+      ::GlobalUnlock(mem);
+      ok = ::SetClipboardData(CF_UNICODETEXT, mem) != nullptr;
+      if (!ok) ::GlobalFree(mem);
+    } else {
+      ::GlobalFree(mem);
+    }
+  }
+  ::CloseClipboard();
+  return ok;
+}
+
+// Ctrl+A /「全选」：全文不在 DOM 里，由索引按块顺序拼纯文本进剪贴板（票 05）。
+void CopyAllText(ViewerState* st) {
+  if (!st->docOpened) {
+    SetStatus(st, L"没有可复制的文档");
+    return;
+  }
+  const ULONGLONG t0 = ::GetTickCount64();
+  std::wstring text;
+  bool truncated = false;
+  bool complete = false;
+  if (!docsrc::CopyText(kMaxCopyBytes, &text, &truncated, &complete)) {
+    SetStatus(st, L"复制失败：文档未打开");
+    return;
+  }
+  if (!SetClipboardText(st->hwndSelf, text)) {
+    SetStatus(st, L"复制失败：剪贴板被占用");
+    return;
+  }
+  st->copyPending = !complete && !truncated;
+  st->copySeq = st->copyPending ? ::GetClipboardSequenceNumber() : 0;
+  LogLine(L"VIEWER: 复制全文 %zu 字符，截断=%d 完整=%d 用时 %llu ms", text.size(),
+          truncated ? 1 : 0, complete ? 1 : 0,
+          static_cast<unsigned long long>(::GetTickCount64() - t0));
+  if (truncated) {
+    SetStatus(st, L"已复制前 32 MB 纯文本");
+  } else if (!complete) {
+    SetStatus(st, L"已复制已索引部分，全文索引完成后自动补全");
+  } else {
+    SetStatus(st, L"已复制全文（%zu 字符）", text.size());
+  }
+}
+
+// 全文索引到达：剪贴板没被别人改过就把整段重写一遍（前缀 + 剩余）。
+void MaybeFinishCopy(ViewerState* st) {
+  if (!st->copyPending) return;
+  st->copyPending = false;
+  if (::GetClipboardSequenceNumber() != st->copySeq) {
+    LogLine(L"VIEWER: 剪贴板已被修改，放弃补全复制");
+    SetStatus(st, L"剪贴板已变化，未补全复制");
+    return;
+  }
+  const ULONGLONG t0 = ::GetTickCount64();
+  std::wstring text;
+  bool truncated = false;
+  bool complete = false;
+  if (!docsrc::CopyText(kMaxCopyBytes, &text, &truncated, &complete)) return;
+  if (!SetClipboardText(st->hwndSelf, text)) {
+    SetStatus(st, L"复制失败：剪贴板被占用");
+    return;
+  }
+  LogLine(L"VIEWER: 补全复制 %zu 字符，截断=%d 用时 %llu ms", text.size(), truncated ? 1 : 0,
+          static_cast<unsigned long long>(::GetTickCount64() - t0));
+  if (truncated) SetStatus(st, L"已复制前 32 MB 纯文本");
+  else SetStatus(st, L"已复制全文（%zu 字符）", text.size());
+}
+
 // 皮肤与字体永远成对推送：先皮肤，再 fx（fx 最后注入且写全量槽位，压住皮肤）。
 void PushChrome(ViewerState* st) {
   if (!st->hasHost || st->webFailed || !WebHostIsReady()) return;
@@ -382,6 +463,16 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     return;
   }
 
+  if (type == L"copyall") {
+    CopyAllText(st);
+    return;
+  }
+
+  if (type == L"status") {
+    SetStatus(st, L"%s", rest.c_str());
+    return;
+  }
+
   if (type == L"open") {
     // 预览器不做导航：网页里的链接交回系统浏览器
     LogLine(L"VIEWER: 打开外部链接 %s", rest.c_str());
@@ -436,6 +527,7 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
   st->qpcLoad = tLoad.QuadPart;
 
   st->docOpened = false;
+  st->copyPending = false;
   docsrc::CloseIfOwner(st->hwndSelf);
 
   if (!st->hasHost) {
@@ -455,6 +547,7 @@ void HandleClear(ViewerState* st) {
   st->ullFileSize = 0;
   st->docOpened = false;
   st->indexFullPending = false;
+  st->copyPending = false;
   docsrc::CloseIfOwner(st->hwndSelf);
 
   if (st->hasHost && WebHostIsReady()) {
@@ -489,6 +582,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       st->hasHost = false;
       st->docOpened = false;
       st->indexFullPending = false;
+      st->copyPending = false;
       ::InvalidateRect(hwnd, nullptr, TRUE);
       return 0;
 
@@ -515,6 +609,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_MDV_INDEX_FULL:
       st->indexFullPending = true;
       MaybePushIndexFull(st);
+      MaybeFinishCopy(st);
       return 0;
 
     case WM_MDV_CONFIG_CHANGED:
@@ -623,6 +718,11 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       HandleClear(st);
       return 0;
 
+    case DVPLUGINMSG_SELECTALL:
+      // Opus 菜单里的「全选」也走同一条全选→复制路径
+      CopyAllText(st);
+      return 0;
+
     case DVPLUGINMSG_RESIZE: {
       const int iWidth = static_cast<short>(LOWORD(lParam));
       const int iHeight = static_cast<short>(HIWORD(lParam));
@@ -637,7 +737,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     }
 
     case DVPLUGINMSG_GETCAPABILITIES:
-      return VPCAPABILITY_WANTFOCUS;
+      return VPCAPABILITY_WANTFOCUS | VPCAPABILITY_SELECTALL;
 
     case DVPLUGINMSG_PREVENTAUTOSIZE:
       return TRUE;
@@ -759,6 +859,8 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->qpcLoad = 0;
   st->docOpened = false;
   st->indexFullPending = false;
+  st->copyPending = false;
+  st->copySeq = 0;
   st->chromePushed = false;
   st->webFailed = false;
   st->hasHost = false;
