@@ -7,6 +7,7 @@
 //   indextest outline <file> [max]
 //   indextest dump <file> [max]
 //   indextest search <file> <pattern>
+//   indextest regex <file> <pattern> [cs] [utf8|gb18030|utf16le|utf16be]
 //   indextest blockat <file> <offset>
 
 #define NOMINMAX
@@ -20,6 +21,7 @@
 #include <vector>
 
 #include "doc_index.h"
+#include "doc_regex.h"
 #include "doc_search.h"
 
 namespace {
@@ -343,6 +345,38 @@ int ModeSearch(const std::wstring& path, const std::string& pattern, bool caseSe
   return 0;
 }
 
+doc::EncodingInfo DetectFileEncoding(const std::wstring& path) {
+  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return doc::EncodingInfo();
+  unsigned char buf[4096];
+  DWORD got = 0;
+  ::ReadFile(h, buf, sizeof(buf), &got, nullptr);
+  ::CloseHandle(h);
+  return doc::DetectEncoding(buf, got);
+}
+
+int ModeRegex(const std::wstring& path, const std::wstring& pattern, bool caseSensitive,
+              doc::Encoding enc, uint32_t bomBytes) {
+  LARGE_INTEGER t0;
+  LARGE_INTEGER t1;
+  ::QueryPerformanceCounter(&t0);
+  doc::RegexHits hits;
+  std::wstring err;
+  const bool ok = doc::RegexSearchFile(path, enc, bomBytes, pattern, caseSensitive, nullptr, &hits,
+                       &err);
+  ::QueryPerformanceCounter(&t1);
+  wprintf(L"regex \"%s\" enc=%d cs=%d ok=%d total=%llu kept=%zu truncated=%d limited=%d %.1f ms %s\n",
+          pattern.c_str(), static_cast<int>(enc), caseSensitive ? 1 : 0, ok ? 1 : 0,
+          static_cast<unsigned long long>(hits.total), hits.offsets.size(),
+          hits.truncated ? 1 : 0, hits.limited ? 1 : 0,
+          QpcMs(t0.QuadPart, t1.QuadPart), err.c_str());
+  for (size_t i = 0; i < std::min<size_t>(hits.offsets.size(), 20); ++i) {
+    wprintf(L"  #%zu @%llu\n", i, static_cast<unsigned long long>(hits.offsets[i]));
+  }
+  return ok ? 0 : 1;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -387,6 +421,25 @@ int wmain(int argc, wchar_t** argv) {
     const std::wstring flags = argc >= 5 ? argv[4] : L"";
     return ModeSearch(path, pattern, flags.find(L"cs") != std::wstring::npos,
                       flags.find(L"ww") != std::wstring::npos);
+  }
+
+  if (mode == L"regex") {
+    if (argc < 4) {
+      wprintf(L"regex needs a pattern\n");
+      return 2;
+    }
+    const std::wstring flags = argc >= 5 ? argv[4] : L"";
+    const doc::EncodingInfo info = DetectFileEncoding(path);
+    doc::Encoding enc = info.encoding;
+    if (argc >= 6) {
+      const std::wstring e = argv[5];
+      if (e == L"utf8") enc = doc::Encoding::Utf8;
+      else if (e == L"gb18030") enc = doc::Encoding::Gb18030;
+      else if (e == L"utf16le") enc = doc::Encoding::Utf16LE;
+      else if (e == L"utf16be") enc = doc::Encoding::Utf16BE;
+    }
+    return ModeRegex(path, argv[3], flags.find(L"cs") != std::wstring::npos, enc,
+                     info.bomBytes);
   }
 
   wprintf(L"unknown mode %s\n", mode.c_str());

@@ -47,7 +47,7 @@ if not exist "bin\obj" mkdir "bin\obj"
 echo.
 echo [2/5] 编译源文件...
 rem 通配符收集 src 下全部 .cpp，新增文件不用改脚本
-"%CL%" /nologo /c /MT /O2 /W4 /EHsc /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /utf-8 "/Fo:bin\obj\\" "src\*.cpp"
+"%CL%" /nologo /c /MT /O2 /W4 /EHsc /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /utf-8 /DPCRE2_STATIC /Ithird_party\pcre2\include "/Fo:bin\obj\\" "src\*.cpp"
 if errorlevel 1 goto :fail
 
 echo.
@@ -56,10 +56,15 @@ echo [3/5] 编译版本资源...
 if errorlevel 1 goto :fail
 
 echo.
+echo [3b/5] PCRE2 ...
+call "%PROJ%build-pcre2.bat"
+if errorlevel 1 goto :fail
+
+echo.
 echo [4/5] 链接 DLL...
 "%LINK%" /nologo /DLL /MACHINE:X64 /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /OPT:REF /OPT:ICF ^
   "/DEF:%PROJ%DopusMdViewer.def" "/OUT:%PROJ%bin\DopusMdViewer.dll" ^
-  "bin\obj\*.obj" "bin\obj\resource.res" ^
+  "bin\obj\*.obj" "bin\obj\resource.res" "bin\obj-pcre2\8\*.obj" "bin\obj-pcre2\16\*.obj" "bin\obj-pcre2\common\*.obj" ^
   "%W2LIB%" kernel32.lib user32.lib gdi32.lib ole32.lib oleaut32.lib ^
   shell32.lib shlwapi.lib advapi32.lib psapi.lib version.lib comctl32.lib
 if errorlevel 1 goto :fail

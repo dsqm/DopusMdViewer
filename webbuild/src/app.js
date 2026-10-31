@@ -414,6 +414,9 @@ const FIND = {
   query: '',
   cs: false,
   ww: false,
+  re: false,
+  error: '',
+  limited: false,
   results: [],
   index: -1,
   total: 0,
@@ -461,6 +464,7 @@ let findInput = null
 let findCount = null
 let findCaseBtn = null
 let findWordBtn = null
+let findRegexBtn = null
 let outlineEl = null
 let outlineList = null
 
@@ -474,6 +478,7 @@ function bindDom() {
   findCount = document.getElementById('find-count')
   findCaseBtn = document.getElementById('find-case')
   findWordBtn = document.getElementById('find-word')
+  findRegexBtn = document.getElementById('find-regex')
   outlineEl = document.getElementById('outline')
   outlineList = document.getElementById('outline-list')
 }
@@ -2171,11 +2176,13 @@ function updateFindCount() {
   if (FIND.open && FIND.query) {
     if (FIND.busy) {
       text = '\u2026'
+    } else if (FIND.error) {
+      text = FIND.error.length > 28 ? FIND.error.slice(0, 28) + '\u2026' : FIND.error
     } else if (!FIND.results.length) {
       text = '无结果'
     } else {
       text = (FIND.index >= 0 ? FIND.index + 1 : 0) + '/' + FIND.total
-        + (FIND.truncated ? '+' : '')
+        + (FIND.truncated ? '+' : '') + (FIND.limited ? '?' : '')
     }
   }
   findCount.textContent = text
@@ -2202,6 +2209,8 @@ function closeFind() {
   FIND.total = 0
   FIND.truncated = false
   FIND.busy = false
+  FIND.error = ''
+  FIND.limited = false
   FIND.pending = null
   FIND.current = null
   if (findEl) findEl.hidden = true
@@ -2217,6 +2226,8 @@ function scheduleSearch() {
   FIND.index = -1
   FIND.total = 0
   FIND.truncated = false
+  FIND.error = ''
+  FIND.limited = false
   FIND.pending = null
   FIND.current = null
   FIND.seq++
@@ -2239,6 +2250,8 @@ function runSearch() {
   const seq = ++FIND.seq
   const docId = V.docId
   FIND.busy = true
+  FIND.error = ''
+  FIND.limited = false
   FIND.pending = null
   FIND.current = null
   clearHitMarks()
@@ -2246,7 +2259,8 @@ function runSearch() {
 
   const url = SEARCH_URL + '?q=' + encodeURIComponent(FIND.query)
     + (FIND.cs ? '&cs=1' : '')
-    + (FIND.ww ? '&ww=1' : '')
+    + (!FIND.re && FIND.ww ? '&ww=1' : '')
+    + (FIND.re ? '&re=1' : '')
   fetch(url, { cache: 'no-store' })
     .then((res) => {
       if (!res.ok) throw new Error('HTTP ' + res.status)
@@ -2259,6 +2273,25 @@ function runSearch() {
       const total = dv.getUint32(0, true)
       const count = dv.getUint32(4, true)
       const flags = dv.getUint32(8, true)
+      if (flags & 2) {
+        let msg = '正则无效'
+        if (buf.byteLength >= 16) {
+          const len = dv.getUint32(12, true)
+          if (len && 16 + len <= buf.byteLength) {
+            msg = new TextDecoder().decode(new Uint8Array(buf, 16, len))
+          }
+        }
+        FIND.error = msg
+        FIND.results = []
+        FIND.total = 0
+        FIND.truncated = false
+        FIND.limited = false
+        FIND.index = -1
+        FIND.busy = false
+        updateFindCount()
+        report('search-error', msg)
+        return
+      }
       const results = []
       let o = 12
       for (let i = 0; i < count && o + 8 <= buf.byteLength; i++) {
@@ -2268,6 +2301,8 @@ function runSearch() {
       FIND.results = results
       FIND.total = total
       FIND.truncated = (flags & 1) !== 0
+      FIND.limited = (flags & 4) !== 0
+      FIND.error = ''
       FIND.index = -1
       FIND.busy = false
       updateFindCount()
@@ -2312,23 +2347,49 @@ function maybeApplyHit() {
   applyHitMark(rec.el, hit.off)
 }
 
+function regexMatches(text, pattern, caseSensitive) {
+  const out = []
+  let re
+  try {
+    re = new RegExp(pattern, 'gmu' + (caseSensitive ? '' : 'i'))
+  } catch {
+    return out
+  }
+  let m
+  while ((m = re.exec(text)) !== null) {
+    out.push({ start: m.index, len: m[0].length })
+    if (m[0] === '') re.lastIndex++
+    if (out.length >= 500) break
+  }
+  return out
+}
+
+function nearestHit(el, unitOff) {
+  const text = el.textContent || ''
+  if (FIND.re) {
+    const ms = regexMatches(text, FIND.query, FIND.cs)
+    if (!ms.length) return null
+    let best = ms[0]
+    for (const m of ms) {
+      if (Math.abs(m.start - unitOff) < Math.abs(best.start - unitOff)) best = m
+    }
+    return best
+  }
+  const starts = findOccurrences(text, FIND.query, FIND.cs, FIND.ww)
+  if (!starts.length) return null
+  let best = starts[0]
+  for (const start of starts) {
+    if (Math.abs(start - unitOff) < Math.abs(best - unitOff)) best = start
+  }
+  return { start: best, len: FIND.query.length }
+}
+
 function applyHitMark(el, unitOff, center = true) {
   clearHitMarks()
-  const query = FIND.query
-  if (!query) return
-  const occurrences = findOccurrences(el.textContent || '', query, FIND.cs, FIND.ww)
-  if (!occurrences.length) return
-
-  let best = occurrences[0]
-  let bestDist = Math.abs(occurrences[0] - unitOff)
-  for (const start of occurrences) {
-    const dist = Math.abs(start - unitOff)
-    if (dist < bestDist) {
-      best = start
-      bestDist = dist
-    }
-  }
-  wrapTextRange(el, best, best + query.length)
+  if (!FIND.query) return
+  const hit = nearestHit(el, unitOff)
+  if (!hit) return
+  wrapTextRange(el, hit.start, hit.start + hit.len)
   if (!center) return
   const mark = el.querySelector('mark.hit')
   if (!mark) return
@@ -2562,6 +2623,22 @@ function bindFindUi() {
     findWordBtn.classList.toggle('on', FIND.ww)
     if (FIND.query) {
       FIND.busy = true
+      updateFindCount()
+      runSearch()
+    }
+  })
+  findRegexBtn.addEventListener('click', () => {
+    FIND.re = !FIND.re
+    findRegexBtn.classList.toggle('on', FIND.re)
+    findInput.placeholder = FIND.re ? '正则表达式' : '搜索本文档'
+    if (FIND.re) {
+      FIND.ww = false
+      findWordBtn.classList.remove('on')
+    }
+    findWordBtn.disabled = FIND.re
+    if (FIND.query) {
+      FIND.busy = true
+      FIND.error = ''
       updateFindCount()
       runSearch()
     }

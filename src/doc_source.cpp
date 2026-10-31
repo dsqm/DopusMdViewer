@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "doc_index.h"
+#include "doc_regex.h"
 #include "doc_search.h"
 #include "config.h"
 #include "log.h"
@@ -1099,13 +1100,15 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
 
   std::wstring needle;
   if (!PercentDecode(raw, &needle)) return true;
-  if (needle.size() > 200) {
-    needle.resize(200);
+  const bool caseSensitive = QueryU32(query, L"cs", 0) != 0;
+  const bool regex = QueryU32(query, L"re", 0) != 0;
+  const bool wholeWord = !regex && QueryU32(query, L"ww", 0) != 0;
+  const size_t maxNeedle = regex ? 1024 : 200;
+  if (needle.size() > maxNeedle) {
+    needle.resize(maxNeedle);
     if (needle.back() >= 0xD800 && needle.back() <= 0xDBFF) needle.pop_back();
   }
   if (needle.empty()) return true;
-  const bool caseSensitive = QueryU32(query, L"cs", 0) != 0;
-  const bool wholeWord = QueryU32(query, L"ww", 0) != 0;
 
   std::shared_ptr<const Snapshot> snap;
   {
@@ -1118,7 +1121,30 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
   const bool wide = snap->enc.encoding == doc::Encoding::Utf16LE ||
                     snap->enc.encoding == doc::Encoding::Utf16BE;
   doc::SearchHits hits;
-  if (wide) {
+  bool limited = false;
+  if (regex) {
+    doc::RegexHits rh;
+    std::wstring reError;
+    if (!doc::RegexSearchFile(snap->path, snap->enc.encoding, snap->enc.bomBytes, needle,
+                              caseSensitive, cancel,
+                              &rh, &reError)) {
+      // flags bit1：正则错误，帧尾跟一条 u32 长度 + UTF-8 消息。
+      AppendU32(body, 0);
+      AppendU32(body, 0);
+      AppendU32(body, 2);
+      const std::string msg = WideToUtf8String(reError);
+      AppendU32(body, static_cast<uint32_t>(msg.size()));
+      body->append(msg);
+      LogLine(L"DOCSRC: __search re \"%s\" 失败: %s ms=%llu", needle.c_str(),
+              reError.c_str(),
+              static_cast<unsigned long long>(::GetTickCount64() - t0));
+      return true;
+    }
+    hits.offsets = std::move(rh.offsets);
+    hits.total = rh.total;
+    hits.truncated = rh.truncated;
+    limited = rh.limited;
+  } else if (wide) {
     hits = SearchWideFile(snap->path, needle, caseSensitive,
                           snap->enc.encoding == doc::Encoding::Utf16BE, wholeWord, cancel);
   } else {
@@ -1169,17 +1195,20 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
   }
 
   const bool truncated = hits.truncated || visibleTotal > list.size();
-  AppendU32(body, static_cast<uint32_t>(std::min<uint64_t>(visibleTotal, 0xFFFFFFFFu)));
+  // 计数给源文本的精确命中数（含隐藏块）；导航仍只覆盖前面 list.size() 条。
+  AppendU32(body, static_cast<uint32_t>(std::min<uint64_t>(hits.total, 0xFFFFFFFFu)));
   AppendU32(body, static_cast<uint32_t>(list.size()));
-  AppendU32(body, truncated ? 1u : 0u);
+  AppendU32(body, (truncated ? 1u : 0u) | (limited ? 4u : 0u));
   for (const SearchEntry& e : list) {
     AppendU32(body, e.block);
     AppendU32(body, e.units);
   }
 
-  LogLine(L"DOCSRC: __search \"%s\" hits=%llu visible=%llu added=%zu ms=%llu", needle.c_str(),
+  LogLine(L"DOCSRC: __search%s \"%s\" hits=%llu visible=%llu added=%zu%s ms=%llu",
+          regex ? L" re" : L"", needle.c_str(),
           static_cast<unsigned long long>(hits.total),
           static_cast<unsigned long long>(visibleTotal), list.size(),
+          limited ? L" limited" : L"",
           static_cast<unsigned long long>(::GetTickCount64() - t0));
   return true;
 }

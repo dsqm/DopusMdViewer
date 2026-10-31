@@ -575,6 +575,7 @@ pre.mermaid-src {
 }
 
 #find button { padding: 1px 6px; }
+#find button:disabled { opacity: 0.45; cursor: default; }
 
 #find .tog.on {
   border-color: var(--md-link);

@@ -19,6 +19,7 @@ DopusMdViewer 的 web\ 目录随插件分发，其中打包了以下第三方代
   katex.txt                    KaTeX 0.19.1（代码与 CSS）MIT
   katex-fonts-NOTE.txt         KaTeX 字体（woff2）       SIL OFL 1.1
   mermaid.txt                  Mermaid 12.2.0            MIT
+  pcre2.txt                    PCRE2 10.45（静态链入 DLL） BSD-3-Clause
 
 说明
 ----
@@ -26,3 +27,4 @@ DopusMdViewer 的 web\ 目录随插件分发，其中打包了以下第三方代
 - DOMPurify 是双许可，取 MPL-2.0 分支：只保留声明即可，未修改其源码。
 - KaTeX 的 woff2 字体属 SIL OFL 1.1，单独说明见 katex-fonts-NOTE.txt。
 - Esbuild 只用于构建，不随插件分发，因此不在本清单内。
+- PCRE2 静态链接进 DopusMdViewer.dll（页内正则搜索），源码与构建脚本在 third_party/pcre2/。
