@@ -1130,7 +1130,9 @@ void IndexBuilder::Feed(const void* data, size_t bytes) {
   }
 
   if (s.unitBytes == 1) {
-    s.charFeeder->Feed(reinterpret_cast<const char*>(p), n, s.consumed);
+    // LineView.off 相对去 BOM 后的内容；Push 时还会加 baseBytes，
+    // 所以这里的基准必须减掉 BOM，否则整份文件的块偏移都多 3 字节。
+    s.charFeeder->Feed(reinterpret_cast<const char*>(p), n, s.consumed - s.enc.bomBytes);
     s.consumed += n;
     s.units += n;
     return;
