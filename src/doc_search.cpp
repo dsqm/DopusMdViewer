@@ -30,7 +30,8 @@ inline unsigned char FoldAscii(unsigned char c) {
 // 上一轮只报「整段都落在已读区间内」的命中，下一轮从 bufferEnd-m+1 重新开始，
 // 因此既不漏跨块命中，也不重复计数。
 void SearchRange(HANDLE h, uint64_t begin, uint64_t end, uint64_t fileSize,
-                 const std::string& pat, bool caseSensitive, RangeResult* out) {
+                 const std::string& pat, bool caseSensitive, RangeResult* out,
+                 const std::atomic<bool>* cancel) {
   const size_t m = pat.size();
   if (m == 0 || begin >= end || m > fileSize) return;
 
@@ -66,6 +67,7 @@ void SearchRange(HANDLE h, uint64_t begin, uint64_t end, uint64_t fileSize,
   uint64_t bufferStart = begin;
 
   for (;;) {
+    if (cancel && cancel->load(std::memory_order_relaxed)) return;
     const uint64_t toRead =
         std::min<uint64_t>(kChunk, readLimit > bufferStart ? readLimit - bufferStart : 0);
     if (toRead == 0 && carry == 0) break;
@@ -118,7 +120,8 @@ void SearchRange(HANDLE h, uint64_t begin, uint64_t end, uint64_t fileSize,
 }  // namespace
 
 SearchHits SearchFileBytes(const std::wstring& path, const std::string& needle, int threads,
-                           std::wstring* error, bool caseSensitive) {
+                           std::wstring* error, bool caseSensitive,
+                           const std::atomic<bool>* cancel) {
   if (error) error->clear();
   SearchHits result;
   if (needle.empty()) return result;
@@ -163,7 +166,7 @@ SearchHits SearchFileBytes(const std::wstring& path, const std::string& needle, 
                                nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
       if (h == INVALID_HANDLE_VALUE) return;
       SearchRange(h, begin, end, fileSize, needle, caseSensitive,
-                  &parts[static_cast<size_t>(i)]);
+                  &parts[static_cast<size_t>(i)], cancel);
       ::CloseHandle(h);
     });
   }

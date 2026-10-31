@@ -383,7 +383,8 @@ std::string WideToMbcs(const std::wstring& s, UINT cp) {
 // UTF-16 源文件上的宽字符搜索：单线程顺序读，返回源字节偏移。
 // 只折叠 ASCII 字母；UTF-16 文档通常不大，不为此再拆线程。
 doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& needle,
-                               bool caseSensitive, bool bigEndian) {
+                               bool caseSensitive, bool bigEndian,
+                               const std::atomic<bool>* cancel) {
   doc::SearchHits result;
   const size_t m = needle.size();
   if (m == 0) return result;
@@ -411,6 +412,7 @@ doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& nee
   std::vector<wchar_t> carry;
 
   for (;;) {
+    if (cancel && cancel->load(std::memory_order_relaxed)) break;
     DWORD got = 0;
     if (!::ReadFile(h, raw.data(), static_cast<DWORD>(raw.size()), &got, nullptr) || got == 0) {
       break;
@@ -1032,14 +1034,21 @@ void PatchU32(std::string* out, size_t off, uint32_t v) {
   (*out)[off + 3] = static_cast<char>((v >> 24) & 0xFF);
 }
 
-bool ServeSearch(const std::wstring& uri, std::string* body, int* status) {
+bool IsSearchUri(const std::wstring& uri) {
+  static const wchar_t kBase[] = L"https://mdblocks.localhost/__search";
+  const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
+  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
+  // 前缀匹配之后必须紧跟 ? 或结束，否则 __searchfoo 也会被当成搜索。
+  return uri.size() == baseLen || uri[baseLen] == L'?';
+}
+
+bool SearchBody(const std::wstring& uri, std::string* body, int* status,
+                const std::atomic<bool>* cancel) {
   if (!body || !status) return false;
   body->clear();
   *status = 404;
 
-  static const wchar_t kBase[] = L"https://mdblocks.localhost/__search";
-  const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
-  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
+  if (!IsSearchUri(uri)) return false;
   *status = 200;
 
   const size_t q = uri.find(L'?');
@@ -1072,14 +1081,20 @@ bool ServeSearch(const std::wstring& uri, std::string* body, int* status) {
   doc::SearchHits hits;
   if (wide) {
     hits = SearchWideFile(snap->path, needle, caseSensitive,
-                          snap->enc.encoding == doc::Encoding::Utf16BE);
+                          snap->enc.encoding == doc::Encoding::Utf16BE, cancel);
   } else {
     const std::string bytes = snap->enc.encoding == doc::Encoding::Gb18030
                                   ? WideToMbcs(needle, 54936)
                                   : WideToUtf8String(needle);
     if (!bytes.empty()) {
-      hits = doc::SearchFileBytes(snap->path, bytes, 4, nullptr, caseSensitive);
+      hits = doc::SearchFileBytes(snap->path, bytes, 4, nullptr, caseSensitive, cancel);
     }
+  }
+
+  if (cancel && cancel->load(std::memory_order_relaxed)) {
+    LogLine(L"DOCSRC: __search \"%s\" 已取消 ms=%llu", needle.c_str(),
+            static_cast<unsigned long long>(::GetTickCount64() - t0));
+    return true;
   }
 
   const doc::BlockIndex& ix = snap->builder->index();

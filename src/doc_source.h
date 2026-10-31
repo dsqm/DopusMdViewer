@@ -8,6 +8,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -49,7 +50,12 @@ void BigTable(std::string* out);
 // body：u32 total | u32 returned | u32 flags | (u32 block, u32 offUnits)*。
 // offUnits 是命中在块内解码文本里的 UTF-16 单元偏移（与 JS 字符串下标一致）。
 // flags bit0 = 命中被截断（只返回导航上限内的条目）。
-bool ServeSearch(const std::wstring& uri, std::string* body, int* status);
+// **SearchBody 要读整个文件，必须放在后台线程上跑**：WebResourceRequested 在宿主
+// 线程上串行回调，直接扫 1 GB 会把输入与窗口消息一起卡住（webhost 只在拿不到
+// deferral 的罕见情况下同步兜底）。
+bool IsSearchUri(const std::wstring& uri);
+bool SearchBody(const std::wstring& uri, std::string* body, int* status,
+                const std::atomic<bool>* cancel);
 
 // 响应 https://mdblocks.localhost/__outline：标题大纲。
 // body：u32 total | u32 returned | u32 flags |

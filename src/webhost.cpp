@@ -31,6 +31,13 @@
 
 #include <WebView2.h>
 
+#include <atomic>
+#include <condition_variable>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <vector>
+
 #include "doc_source.h"
 #include "log.h"
 #include "util.h"
@@ -253,6 +260,175 @@ void ResumeIfSuspended() {
           QpcMs(t0.QuadPart, t1.QuadPart));
 }
 
+// ---- 页内搜索：后台线程 + 延迟响应 ----
+//
+// __search 要读整个文件（1 GB 约 0.6–0.9 s）。在 WebResourceRequested 回调里直接
+// 扫会卡住整条宿主线程——WebView2 子窗口的输入消息也归它，搜一次就是一次假死。
+// 所以请求回调只登记 deferral，扫描交给单独的搜索线程，扫完 PostMessage 回来再拼
+// 响应。同一时刻只答最新一问：新请求到达时旧请求立即以空结果收尾（前端按 seq
+// 丢弃），正在跑的扫描收到取消标志后尽早退出。
+
+const UINT kSearchDone = WM_APP + 0x250;
+
+struct SearchDone {
+  uint64_t id = 0;
+  int status = 200;
+  std::string body;
+};
+
+struct PendingSearch {
+  ComPtr<ICoreWebView2WebResourceRequestedEventArgs> args;
+  ComPtr<ICoreWebView2Deferral> deferral;
+};
+
+std::map<uint64_t, PendingSearch> g_searchWait;  // 只在宿主线程访问
+uint64_t g_searchNextId = 1;
+
+std::mutex g_searchMu;
+std::condition_variable g_searchCv;
+std::wstring g_searchReqUri;
+uint64_t g_searchReqId = 0;
+std::shared_ptr<std::atomic<bool>> g_searchCancel;  // 正在跑的扫描
+bool g_searchQuit = false;
+volatile LONG g_searchStarted = 0;
+
+std::string EmptySearchFrame() { return std::string(12, '\0'); }
+
+void CompleteSearch(PendingSearch& ps, const std::string& body, int status) {
+  if (g_host.env && ps.args) {
+    static const BYTE kEmpty = 0;
+    const BYTE* data =
+        body.empty() ? &kEmpty : reinterpret_cast<const BYTE*>(body.data());
+    ComPtr<IStream> stream;
+    stream.Attach(::SHCreateMemStream(data, static_cast<UINT>(body.size())));
+    ComPtr<ICoreWebView2WebResourceResponse> response;
+    if (stream &&
+        SUCCEEDED(g_host.env->CreateWebResourceResponse(
+            stream.Get(), status, L"OK",
+            L"Content-Type: application/octet-stream\r\nCache-Control: no-store\r\n"
+            L"Access-Control-Allow-Origin: *\r\n",
+            &response)) &&
+        response) {
+      ps.args->put_Response(response.Get());
+    }
+  }
+  if (ps.deferral) ps.deferral->Complete();
+}
+
+// 把所有在等的请求以空结果收尾。先摘下来再 Complete：Complete 可能同步把控制权
+// 交还渲染进程，别在遍历中改 map。
+void DropPendingSearches() {
+  std::vector<PendingSearch> wait;
+  wait.reserve(g_searchWait.size());
+  for (auto& kv : g_searchWait) wait.push_back(std::move(kv.second));
+  g_searchWait.clear();
+  for (PendingSearch& ps : wait) CompleteSearch(ps, EmptySearchFrame(), 200);
+}
+
+DWORD WINAPI SearchThreadProc(LPVOID) {
+  for (;;) {
+    std::wstring uri;
+    uint64_t id = 0;
+    std::shared_ptr<std::atomic<bool>> cancel;
+    {
+      std::unique_lock<std::mutex> lock(g_searchMu);
+      g_searchCv.wait(lock, [] { return g_searchQuit || g_searchReqId != 0; });
+      if (g_searchQuit) break;
+      uri.swap(g_searchReqUri);
+      id = g_searchReqId;
+      g_searchReqId = 0;
+      cancel = std::make_shared<std::atomic<bool>>(false);
+      g_searchCancel = cancel;
+    }
+
+    std::string body;
+    int status = 200;
+    docsrc::SearchBody(uri, &body, &status, cancel.get());
+
+    bool stale = false;
+    {
+      std::lock_guard<std::mutex> lock(g_searchMu);
+      if (g_searchCancel == cancel) g_searchCancel.reset();
+      stale = g_searchQuit || g_searchReqId != 0;
+    }
+    if (stale) continue;  // 已经有人顶替，或者正在退出
+
+    SearchDone* done = new SearchDone();
+    done->id = id;
+    done->status = status;
+    done->body.swap(body);
+    HWND target = g_threadHost;
+    if (!target || !::IsWindow(target) ||
+        !::PostMessageW(target, kSearchDone, 0, reinterpret_cast<LPARAM>(done))) {
+      delete done;
+    }
+  }
+  return 0;
+}
+
+void EnsureSearchThread() {
+  if (::InterlockedCompareExchange(&g_searchStarted, 1, 0) != 0) return;
+  HANDLE h = ::CreateThread(nullptr, 0, SearchThreadProc, nullptr, 0, nullptr);
+  if (h) {
+    ::CloseHandle(h);  // 与进程同寿命，不需要 join
+  } else {
+    ::InterlockedExchange(&g_searchStarted, 0);
+    LogLine(L"WEBHOST: 搜索线程创建失败 err=%lu", ::GetLastError());
+  }
+}
+
+// 返回 false 表示拿不到 deferral，调用方退回同步扫描。
+bool BeginAsyncSearch(const std::wstring& uri,
+                      ICoreWebView2WebResourceRequestedEventArgs* args) {
+  ComPtr<ICoreWebView2Deferral> deferral;
+  if (!args || FAILED(args->GetDeferral(&deferral)) || !deferral) return false;
+
+  // 先把旧请求摘干净再登记新请求，最后才 Complete：Complete 有可能同步回调起来
+  // 新的请求，那时 g_searchWait 应该已经稳定。
+  std::vector<PendingSearch> old;
+  old.reserve(g_searchWait.size());
+  for (auto& kv : g_searchWait) old.push_back(std::move(kv.second));
+  g_searchWait.clear();
+
+  const uint64_t id = g_searchNextId++;
+  PendingSearch ps;
+  ps.args = args;
+  ps.deferral = deferral;
+  g_searchWait[id] = ps;
+
+  {
+    std::lock_guard<std::mutex> lock(g_searchMu);
+    g_searchReqUri = uri;
+    g_searchReqId = id;
+    if (g_searchCancel) g_searchCancel->store(true, std::memory_order_relaxed);
+  }
+  g_searchCv.notify_one();
+  EnsureSearchThread();
+
+  for (PendingSearch& prev : old) CompleteSearch(prev, EmptySearchFrame(), 200);
+  return true;
+}
+
+// 释放实例/退出时调用：请求收尾、扫描停下。
+void CancelSearches() {
+  DropPendingSearches();
+  {
+    std::lock_guard<std::mutex> lock(g_searchMu);
+    g_searchReqUri.clear();
+    g_searchReqId = 0;
+    if (g_searchCancel) g_searchCancel->store(true, std::memory_order_relaxed);
+  }
+}
+
+void QuitSearchThread() {
+  {
+    std::lock_guard<std::mutex> lock(g_searchMu);
+    g_searchQuit = true;
+    if (g_searchCancel) g_searchCancel->store(true, std::memory_order_relaxed);
+  }
+  g_searchCv.notify_all();
+}
+
 // 预热关闭时，从最后一次预览结束起算空闲释放；预热开着就保持到 DO 窗口关闭。
 void ArmIdleTimer() {
   if (!g_host.host) return;
@@ -340,6 +516,8 @@ void ApplySettings(ICoreWebView2* webview) {
 }
 
 void ReleaseController() {
+  // 先把在等的搜索请求收尾：controller 关掉后这些 deferral 就再也没有机会完成。
+  CancelSearches();
   if (g_host.controller) {
     g_host.controller->Close();
     g_host.controller.Reset();
@@ -456,6 +634,22 @@ void CreateController() {
                       const std::wstring uri(rawUri);
                       ::CoTaskMemFree(rawUri);
 
+                      // 搜索要读全文，不能在宿主线程上算。
+                      if (docsrc::IsSearchUri(uri)) {
+                        if (BeginAsyncSearch(uri, args)) {
+                          LogLine(L"WEBHOST: __search 转后台 %s", uri.c_str());
+                          return S_OK;
+                        }
+                        std::string body;
+                        int status = 200;
+                        docsrc::SearchBody(uri, &body, &status, nullptr);
+                        PendingSearch ps;
+                        ps.args = args;
+                        CompleteSearch(ps, body, status);
+                        LogLine(L"WEBHOST: __search 同步兜底 status=%d", status);
+                        return S_OK;
+                      }
+
                       std::string body;
                       int status = 404;
                       std::wstring contentType = L"application/octet-stream";
@@ -464,8 +658,7 @@ void CreateController() {
                       if (!docsrc::ServeAsset(uri, &body, &status, &contentType)) {
                         status = 404;
                         // 未匹配的路径也要回一个空响应：只 return 会让请求挂到超时。
-                        if (!docsrc::ServeSearch(uri, &body, &status) &&
-                            !docsrc::ServeOutline(uri, &body, &status) &&
+                        if (!docsrc::ServeOutline(uri, &body, &status) &&
                             !docsrc::ServeLines(uri, &body, &status) &&
                             !docsrc::ServeDefs(uri, &body, &status) &&
                             !docsrc::Serve(uri, &body, &status)) {
@@ -892,7 +1085,19 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       return SUCCEEDED(g_host.webview->ExecuteScript(script->c_str(), nullptr)) ? 1 : 0;
     }
 
+    case kSearchDone: {
+      std::unique_ptr<SearchDone> done(reinterpret_cast<SearchDone*>(lParam));
+      if (!done) return 0;
+      auto it = g_searchWait.find(done->id);
+      if (it == g_searchWait.end()) return 0;  // 已被更新的查询顶替
+      PendingSearch ps = std::move(it->second);
+      g_searchWait.erase(it);
+      CompleteSearch(ps, done->body, done->status);
+      return 0;
+    }
+
     case WM_NCDESTROY:
+      QuitSearchThread();
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
       ReleaseInstance();
       g_host.host = nullptr;

@@ -48,6 +48,9 @@ const UINT_PTR kCopyCheckTimerId = 21;
 const UINT_PTR kPinTimerId = 23;
 const UINT_PTR kPrintTimerId = 26;
 const UINT_PTR kCopyLateTimerId = 27;
+const UINT_PTR kFindPingTimerId = 28;
+const UINT_PTR kFindPing2TimerId = 29;
+const UINT_PTR kFindRaceTimerId = 30;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -74,6 +77,7 @@ bool g_seam = false;        // 5 秒后滚到第 10 万行（第一段与第二�
 bool g_consent = false;     // 5 秒后点页内网络图确认面板的“允许”，4 秒后回流图片状态
 bool g_reload = false;      // 6.5 秒后重新 LOADW 同一个文件，验进程内记忆跨文件保留
 bool g_find = false;        // 5 秒后打开搜索、查 g_findQuery、翻到下一个，回流计数与 mark
+bool g_findRace = false;    // 5 秒后连打两个查询：验证旧扫描被取消、后一问生效
 bool g_prewarm = false;     // 先预热，7 秒后再建查看器，验首开耗时
 bool g_release = false;     // 5 秒后销毁主窗口，验 DO 窗口关闭后实例释放
 bool g_idle = false;        // 配合 prewarm：只预热、不建查看器，量常驻内存
@@ -355,6 +359,29 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"setTimeout(function(){rep('case');},1200);},3200);})();",
             g_findQuery);
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
+        // 搜索期间向宿主线程要一次执行：同步扫描会把这条消息堵住几百毫秒。
+        ::SetTimer(hwnd, kFindPingTimerId, 600, nullptr);
+        ::SetTimer(hwnd, kFindPing2TimerId, 900, nullptr);
+      } else if (wParam == kFindPingTimerId || wParam == kFindPing2TimerId) {
+        ::KillTimer(hwnd, wParam);
+        const ULONGLONG t0 = ::GetTickCount64();
+        if (g_viewer) WebHostExecuteScript(g_viewer, L"1");
+        LogLine(L"TEST: 搜索期间宿主线程响应 %llu ms", ::GetTickCount64() - t0);
+      } else if (wParam == kFindRaceTimerId) {
+        ::KillTimer(hwnd, kFindRaceTimerId);
+        const wchar_t* script =
+            L"(function(){var b=document.querySelector('[data-act=\"find\"]');if(b)b.click();"
+            L"var inp=document.getElementById('find-input');"
+            L"function type(v){inp.value=v;inp.dispatchEvent(new Event('input',"
+            L"{bubbles:true}));}"
+            L"type('parser');"
+            L"setTimeout(function(){type('parsery');},400);"
+            L"setTimeout(function(){var m=[].map.call(document.querySelectorAll('mark.hit'),"
+            L"function(x){return x.textContent;});"
+            L"window.chrome.webview.postMessage('event|findrace|count='"
+            L"+document.getElementById('find-count').textContent+' marks='+m.join('|'));},3000);"
+            L"})();";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kOutlineTimerId) {
         ::KillTimer(hwnd, kOutlineTimerId);
         const wchar_t* script =
@@ -553,6 +580,10 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"consent")) g_consent = true;
   if (*p && wcsstr(p, L"reload")) g_reload = true;
   if (*p && wcsstr(p, L"find")) g_find = true;
+  if (*p && wcsstr(p, L"findrace")) {
+    g_find = false;
+    g_findRace = true;
+  }
   if (*p && wcsstr(p, L"outline")) g_outline = true;
   if (*p && wcsstr(p, L"slug")) g_slug = true;
   if (*p && wcsstr(p, L"copy")) g_copy = true;
@@ -661,6 +692,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_find) {
     ::SetTimer(g_hwndMain, kFindTimerId, 5000, nullptr);
+  }
+  if (g_findRace) {
+    ::SetTimer(g_hwndMain, kFindRaceTimerId, 5000, nullptr);
   }
   if (g_outline) {
     ::SetTimer(g_hwndMain, kOutlineTimerId, 5000, nullptr);
