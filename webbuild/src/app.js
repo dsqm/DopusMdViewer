@@ -1926,12 +1926,39 @@ function selectAllText() {
   postRaw('status|已全选全文，Ctrl+C 复制')
 }
 
-// 渲染后的纯文本：直接用 markdown-it 的 token 取，不生成 DOM、不渲染 KaTeX/高亮。
-// 块之间空行，表格行换行/单元格制表符，<br> 换行，图片跳过，脚注编号保留。
+// 渲染后的纯文本：用 markdown-it 的 token 取，不生成整篇 DOM。
+// 公式走 KaTeX 的 MathML 再取文字；Mermaid 图不复制源码。块之间空行，
+// 表格行换行/单元格制表符，<br> 换行，图片跳过，脚注编号保留。
 function htmlPlain(raw) {
   return String(raw || '')
+    .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<[^>]*>/g, '')
+}
+
+function decodeEntities(text) {
+  return String(text)
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => {
+      try { return String.fromCodePoint(parseInt(h, 16)) } catch { return '' }
+    })
+    .replace(/&#(\d+);/g, (m, d) => {
+      try { return String.fromCodePoint(parseInt(d, 10)) } catch { return '' }
+    })
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&nbsp;/g, ' ')
+}
+
+// 只取 MathML 的可见符号；annotation 里是 LaTeX 源码，不能进剪贴板。
+function mathText(tex) {
+  try {
+    const html = katex.renderToString(tex, { throwOnError: false, strict: false, output: 'mathml' })
+    const plain = html
+      .replace(/<annotation[\s\S]*?<\/annotation>/gi, '')
+      .replace(/<[^>]*>/g, '')
+    return decodeEntities(plain).trim()
+  } catch {
+    return ''
+  }
 }
 
 function inlineText(children) {
@@ -1943,7 +1970,7 @@ function inlineText(children) {
     else if (t.type === 'html_inline') s += htmlPlain(t.content)
     else if (t.type === 'image') continue
     else if (t.type === 'math_inline' || t.type === 'math_inline_double' ||
-             t.type === 'math_block' || t.type === 'math_block_eqno') s += t.content
+             t.type === 'math_block' || t.type === 'math_block_eqno') s += mathText(t.content)
     else if (t.children) s += inlineText(t.children)
   }
   return s
@@ -1961,10 +1988,18 @@ function blockText(src) {
         out += inlineText(t.children)
         break
       case 'fence':
+        // Mermaid 渲染成图以后源码不该出现在剪贴板里；关掉渲染时才按代码块复制
+        if (state.render.mermaid && /^mermaid\b/i.test((t.info || '').trim())) break
+        out += t.content
+        line()
+        break
       case 'code_block':
+        out += t.content
+        line()
+        break
       case 'math_block':
       case 'math_block_eqno':
-        out += t.content
+        out += mathText(t.content)
         line()
         break
       case 'html_block':
