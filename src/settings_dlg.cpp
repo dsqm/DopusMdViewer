@@ -764,16 +764,22 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
     }
 
+    case WM_ERASEBKGND: {
+      // 显式刷白：不依赖类背景刷子，静态文本再返回同一个刷子就不会出现灰底板。
+      RECT rc;
+      ::GetClientRect(hwnd, &rc);
+      ::FillRect(reinterpret_cast<HDC>(wParam), &rc, ::GetSysColorBrush(COLOR_WINDOW));
+      return 1;
+    }
+
     case WM_CTLCOLORSTATIC: {
       HDC hdc = reinterpret_cast<HDC>(wParam);
       HWND control = reinterpret_cast<HWND>(lParam);
-      // 静态文本一律透明：默认刷子会在每个标签后面画一块比窗口更深/更浅的
-      // 矩形，看起来像一堆灰色小底板。
       ::SetBkMode(hdc, TRANSPARENT);
       if (st && control == st->hPreviewNote && st->previewMissing) {
         ::SetTextColor(hdc, RGB(192, 0, 0));
       }
-      return reinterpret_cast<LRESULT>(::GetSysColorBrush(COLOR_BTNFACE));
+      return reinterpret_cast<LRESULT>(::GetSysColorBrush(COLOR_WINDOW));
     }
 
     case WM_CLOSE:
@@ -804,7 +810,7 @@ bool RegisterWindowClass(void) {
   wc.lpfnWndProc = SettingsProc;
   wc.hInstance = ModuleHandle();
   wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
   wc.lpszClassName = kClass;
 
   if (::RegisterClassExW(&wc) || ::GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
