@@ -47,8 +47,10 @@ bool ServeLines(const std::wstring& uri, std::string* body, int* status);
 void BigTable(std::string* out);
 
 // 响应 https://mdblocks.localhost/__search?q=<utf8>&cs=<0|1>：页内搜索。
-// body：u32 total | u32 returned | u32 flags | (u32 block, u32 offUnits)*。
-// offUnits 是命中在块内解码文本里的 UTF-16 单元偏移（与 JS 字符串下标一致）。
+// body：u32 total | u32 returned | u32 flags | (u32 block, u32 offUnits, u32 line)*。
+// offUnits 是命中在块内解码文本里的 UTF-16 单元偏移（与 JS 字符串下标一致）；
+// line 是块内行号（0 起，与 __lines 的 from 同口径），**只对巨型块有意义**，
+// 普通块恒 0——前端只在巨型块上用它定位命中行。
 // flags bit0 = 命中被截断（只返回导航上限内的条目）。
 // **SearchBody 要读整个文件，必须放在后台线程上跑**：WebResourceRequested 在宿主
 // 线程上串行回调，直接扫 1 GB 会把输入与窗口消息一起卡住（webhost 只在拿不到

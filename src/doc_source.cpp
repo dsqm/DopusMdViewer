@@ -504,7 +504,55 @@ struct SearchEntry {
   uint64_t off = 0;
   uint32_t block = 0;
   uint32_t units = 0;
+  uint32_t line = 0;  // 块内行号（0 起，只对巨型块填；其余块前端不看）
 };
+
+// 命中在巨型块里的行号：行号 = 命中偏移之前出现过的换行数，与 __lines 的行下标一致。
+// 只对巨型块调用（一块一次顺读，命中按偏移升序，边扫边填）。
+void FillBlockLines(HANDLE h, doc::Encoding enc, uint64_t blockStart,
+                    std::vector<SearchEntry>* list, size_t first, size_t last) {
+  const bool wide = enc == doc::Encoding::Utf16LE || enc == doc::Encoding::Utf16BE;
+  const bool bigEndian = enc == doc::Encoding::Utf16BE;
+  const size_t step = wide ? 2 : 1;
+  const uint64_t lastOff = (*list)[last].off;
+  if (lastOff <= blockStart) return;
+
+  std::vector<unsigned char> buf(1u << 20);
+  uint64_t pos = blockStart;
+  uint32_t base = 0;  // 本块之前的行数
+  size_t idx = first;
+
+  while (idx <= last && pos <= lastOff) {
+    const uint64_t want =
+        std::min<uint64_t>(buf.size(), lastOff - pos + step);
+    size_t got = 0;
+    if (want == 0 || !ReadAt(h, pos, static_cast<size_t>(want), &buf, &got) || got == 0) break;
+
+    uint32_t seen = 0;
+    size_t i = 0;
+    while (i + step <= got) {
+      const uint64_t abs = pos + i;
+      while (idx <= last && (*list)[idx].off <= abs) {
+        (*list)[idx].line = base + seen;
+        ++idx;
+      }
+      const bool nl = wide ? (bigEndian ? (buf[i] == 0 && buf[i + 1] == 0x0A)
+                                        : (buf[i] == 0x0A && buf[i + 1] == 0))
+                           : (buf[i] == 0x0A);
+      if (nl) ++seen;
+      i += step;
+    }
+    base += seen;
+    pos += i;
+    if (i == 0) break;
+  }
+}
+
+// 该块是否是巨型块（与 __big 表同源：索引里的 bigBlockIndex_ 递增）。
+bool IsBigBlock(const doc::BlockIndex& ix, uint32_t block) {
+  const std::vector<uint32_t>& v = ix.bigBlockIndex();
+  return std::binary_search(v.begin(), v.end(), block);
+}
 
 // 块内命中 → 解码文本里的 UTF-16 单元偏移。命中按偏移升序，同一块的命中一次扫完。
 // 只数不解码：UTF-8 按首字节数，GB18030 按首字节判 2/4 字节，UTF-16 直接除以 2。
@@ -1206,6 +1254,10 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
       size_t j = i;
       while (j + 1 < list.size() && list[j + 1].block == list[i].block) ++j;
       FillBlockUnits(h, snap->enc.encoding, ix.Start(list[i].block), &list, i, j);
+      // 巨型块要给出块内行号，前端才能跳到命中那一行；普通块用不上，省掉这次顺读。
+      if (IsBigBlock(ix, list[i].block)) {
+        FillBlockLines(h, snap->enc.encoding, ix.Start(list[i].block), &list, i, j);
+      }
       i = j + 1;
     }
     ::CloseHandle(h);
@@ -1219,6 +1271,7 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
   for (const SearchEntry& e : list) {
     AppendU32(body, e.block);
     AppendU32(body, e.units);
+    AppendU32(body, e.line);
   }
 
   LogLine(L"DOCSRC: __search%s%s \"%s\" hits=%llu visible=%llu added=%zu%s ms=%llu",

@@ -426,6 +426,7 @@ const FIND = {
   timer: 0,
   pending: null,
   current: null,
+  bigHit: null,  // 巨型块里待高亮的行：{ b, line }，等行窗口到位后包 mark
 }
 
 const PRINT = {
@@ -1131,9 +1132,9 @@ function requestBigLines(i, k, from, count) {
         'translateY(' + ((from - k * BIG_SEG_LINES) * g.lineH).toFixed(1) + 'px)'
       curSeg.from = from
       curSeg.got = got
-      curSeg.want = null
       if (got < count) curSeg.shortAt = from
       if (total > 0) updateBigLines(i, total)
+      if (FIND.bigHit && FIND.bigHit.b === i) applyBigHitMark()
     })
     .catch((err) => {
       if (docId === V.docId) report('lines-error', String(err))
@@ -1378,6 +1379,7 @@ function place() {
     V.topsDirty = false
   }
   updateBigWindows()
+  applyBigHitMark()
   updateScrollbar()
   V.anchorId = first
   V.anchorDy = V.off - pos(first)
@@ -2099,15 +2101,41 @@ async function copyRendered() {
 /* ---------------- 搜索与大纲（M6） ---------------- */
 
 function foldAscii(text) {
-  // 与 C++ 的搜索保持一致：只折叠 ASCII 字母，长度不变
+  // 兜底路径（正则不可用时）只折叠 ASCII；正常路径由 findOccurrences 里的 i+u 正则负责
   return text.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32))
 }
 
+function escapeRegex(text) {
+  return text.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+}
+
+// 不区分大小写时交给正则的 i+u：V8 的 Canonicalize 做 Unicode 简单折叠，
+// 与后端 PCRE2 的口径一致，而且下标仍落在原串上（toLowerCase 会因 ß/İ 变长而错位）。
 function findOccurrences(text, query, caseSensitive, wholeWord) {
   if (!query) return []
+  const out = []
+  if (!caseSensitive) {
+    let re = null
+    try {
+      re = new RegExp(escapeRegex(query), 'giu')
+    } catch {
+      re = null
+    }
+    if (re) {
+      let m
+      while ((m = re.exec(text)) !== null) {
+        if (!wholeWord ||
+            (!isWordCharAt(text, m.index - 1) && !isWordCharAt(text, m.index + m[0].length))) {
+          out.push(m.index)
+        }
+        if (m[0] === '') re.lastIndex++
+        if (out.length >= 500) break
+      }
+      return out
+    }
+  }
   const hay = caseSensitive ? text : foldAscii(text)
   const needle = caseSensitive ? query : foldAscii(query)
-  const out = []
   let p = 0
   for (;;) {
     p = hay.indexOf(needle, p)
@@ -2294,9 +2322,13 @@ function runSearch() {
       }
       const results = []
       let o = 12
-      for (let i = 0; i < count && o + 8 <= buf.byteLength; i++) {
-        results.push({ b: dv.getUint32(o, true), off: dv.getUint32(o + 4, true) })
-        o += 8
+      for (let i = 0; i < count && o + 12 <= buf.byteLength; i++) {
+        results.push({
+          b: dv.getUint32(o, true),
+          off: dv.getUint32(o + 4, true),
+          line: dv.getUint32(o + 8, true),
+        })
+        o += 12
       }
       FIND.results = results
       FIND.total = total
@@ -2326,17 +2358,41 @@ function goToHit(i) {
   const hit = FIND.results[FIND.index]
   FIND.pending = hit
   FIND.current = null
+  FIND.bigHit = null
   clearHitMarks()
   updateFindCount()
-  jumpToOffset(pos(hit.b) - V.vh * 0.15)
+  // 巨型块直接由 maybeApplyHit 定位到命中行，先跳块顶会多取一次用不上的行窗口。
+  if (!V.big.has(hit.b)) jumpToOffset(pos(hit.b) - V.vh * 0.15)
   maybeApplyHit()
+}
+
+function segIndexOfLine(i, line) {
+  const n = Math.max(1, segCount(i))
+  return Math.min(n - 1, Math.max(0, Math.floor(line / BIG_SEG_LINES)))
+}
+
+// 行号 → 文档 Y。与 updateBigWindows 里「视口顶在第几行」的算法同源，误差只来自
+// overhead 把段的上下内边距一起算进去（几 px）。
+function bigLineTop(i, line) {
+  const g = bigMetrics()
+  const k = segIndexOfLine(i, line)
+  return pos(i) + segTop(i, k) + (k === 0 ? g.overhead : 0)
+    + (line - k * BIG_SEG_LINES) * g.lineH
 }
 
 function maybeApplyHit() {
   const hit = FIND.pending
   if (!hit || !V.active) return
   if (V.big.has(hit.b)) {
+    // 巨型块没有渲染文本可用：先滚到命中行，行窗口到位后再在那一行里包 mark。
     FIND.pending = null
+    FIND.current = hit
+    const m = V.big.get(hit.b)
+    const total = m && m.lines ? m.lines : 0
+    const line = total ? Math.min(Math.max(0, hit.line | 0), total - 1) : 0
+    FIND.bigHit = { b: hit.b, line }
+    jumpToOffset(bigLineTop(hit.b, line) - V.vh * 0.25)
+    applyBigHitMark()
     return
   }
   if (hit.b < V.windowStart || hit.b > V.windowEnd) return
@@ -2345,6 +2401,42 @@ function maybeApplyHit() {
   FIND.pending = null
   FIND.current = hit
   applyHitMark(rec.el, hit.off)
+}
+
+// 在巨型块的行窗口里给命中行包 mark。行窗口是异步取的，所以由 place() 每帧调一次：
+// 行还没到就直接返回，到了就一次画上并清掉待办。
+function applyBigHitMark() {
+  const want = FIND.bigHit
+  if (!want || !V.active || !FIND.query) return
+  const rec = V.resident.get(want.b)
+  if (!rec || !rec.big) return
+  const seg = rec.big.segs.get(segIndexOfLine(want.b, want.line))
+  if (!seg || seg.from < 0) return
+  const rel = want.line - seg.from
+  if (rel < 0 || rel >= seg.got) return
+  const text = seg.code.textContent || ''
+  let start = 0
+  for (let n = 0; n < rel; n++) {
+    const p = text.indexOf('\n', start)
+    if (p < 0) return
+    start = p + 1
+  }
+  let end = text.indexOf('\n', start)
+  if (end < 0) end = text.length
+  const lineText = text.slice(start, end)
+  let at = -1
+  let len = 0
+  if (FIND.re) {
+    const ms = regexMatches(lineText, FIND.query, FIND.cs)
+    if (ms.length) { at = ms[0].start; len = ms[0].len }
+  } else {
+    const starts = findOccurrences(lineText, FIND.query, FIND.cs, FIND.ww)
+    if (starts.length) { at = starts[0]; len = FIND.query.length }
+  }
+  if (at < 0) return
+  clearHitMarks()
+  wrapTextRange(seg.code, start + at, start + at + len)
+  FIND.bigHit = null
 }
 
 function regexMatches(text, pattern, caseSensitive) {
@@ -2407,6 +2499,7 @@ function resetFind() {
   closeFind()
   if (findInput) findInput.value = ''
   FIND.query = ''
+  FIND.bigHit = null
 }
 
 // 标题的渲染文本（去掉 ** / 链接语法与 HTML 标签），slug 按它算而不是按源文本，
