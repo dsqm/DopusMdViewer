@@ -32,6 +32,7 @@ const UINT_PTR kSettingsTimerId = 7;
 const UINT_PTR kDumpTimerId = 8;
 const UINT_PTR kSeamTimerId = 9;
 const UINT_PTR kConsentTimerId = 10;
+const UINT_PTR kReloadTimerId = 11;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -50,7 +51,8 @@ bool g_scroll = false;      // 5 秒后滚动到底，验虚拟滚动与滚动�
 bool g_settings = false;    // 3 秒后打开设置窗口，验 DVP_Configure 与 config 写盘
 bool g_dump = false;        // 5 秒后把视口/常驻块/段几何回传到日志
 bool g_seam = false;        // 5 秒后滚到第 10 万行（第一段与第二段的接缝）
-bool g_consent = false;     // 5 秒后点页内网络图确认面板的“允许”，1.5 秒后回流图片状态
+bool g_consent = false;     // 5 秒后点页内网络图确认面板的“允许”，4 秒后回流图片状态
+bool g_reload = false;      // 6.5 秒后重新 LOADW 同一个文件，验进程内记忆跨文件保留
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
 HINSTANCE g_hInst = nullptr;
@@ -257,6 +259,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"var ims=[].map.call(document.querySelectorAll('img'),function(t){"
             L"return (t.getAttribute('src')||'-').slice(0,72)+'|nw='+t.naturalWidth;});"
             L"out.push('imgs='+ims.join(' ; '));"
+            L"out.push('panel='+(document.querySelector('.net-consent:not([hidden])')?1:0));"
             L"var b5=document.querySelector('.blk[data-i=\"5\"]');"
             L"out.push('blk5='+String(b5&&b5.innerHTML).slice(0,240));"
             L"out.push('bigmap='+bl+' heights='+Array.from(V.heights.slice(0,4)).join(',')"
@@ -275,6 +278,11 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"window.chrome.webview.postMessage('event|consent|shown='+(shown?1:0)"
             L"+' imgs='+imgs.join(' ; '));},4000);})();";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kReloadTimerId) {
+        ::KillTimer(hwnd, kReloadTimerId);
+        if (g_viewer && g_szFile[0]) {
+          ::PostMessageW(g_viewer, DVPLUGINMSG_LOADW, 0, reinterpret_cast<LPARAM>(g_szFile));
+        }
       } else if (wParam == kSeamTimerId) {
         ::KillTimer(hwnd, kSeamTimerId);
         // 段边界 10 万行：把视口对到接缝上，肉眼查边框是否连续
@@ -342,6 +350,7 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"dump")) g_dump = true;
   if (*p && wcsstr(p, L"seam")) g_seam = true;
   if (*p && wcsstr(p, L"consent")) g_consent = true;
+  if (*p && wcsstr(p, L"reload")) g_reload = true;
 
   wchar_t szTemp[MAX_PATH];
   const DWORD n = ::GetTempPathW(MAX_PATH, szTemp);
@@ -406,6 +415,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_consent) {
     ::SetTimer(g_hwndMain, kConsentTimerId, 5000, nullptr);
+  }
+  if (g_reload) {
+    ::SetTimer(g_hwndMain, kReloadTimerId, 6500, nullptr);
   }
 
   if (g_szShot[0]) {
