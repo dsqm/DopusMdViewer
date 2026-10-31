@@ -44,6 +44,7 @@ void SetDefaults(Config* c) {
   c->renderHighlight = true;
   c->renderInlineHtml = true;
   c->renderLocalImages = true;
+  c->prewarm = true;
 }
 
 int ClampInt(int v, int lo, int hi, int fallback) {
@@ -83,6 +84,10 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
 
   if (root.contains("allowOutsideImages") && root["allowOutsideImages"].is_boolean()) {
     c->allowOutsideImages = root["allowOutsideImages"].get<bool>();
+  }
+
+  if (root.contains("prewarm") && root["prewarm"].is_boolean()) {
+    c->prewarm = root["prewarm"].get<bool>();
   }
 
   if (root.contains("render") && root["render"].is_object()) {
@@ -228,6 +233,12 @@ bool ConfigAllowOutsideImages(void) {
   return g_config.allowOutsideImages;
 }
 
+bool ConfigPrewarm(void) {
+  if (!g_loaded) ConfigLoad();
+  std::lock_guard<std::mutex> lock(g_modeMutex);
+  return g_config.prewarm;
+}
+
 Config ConfigDefaults(void) {
   Config c;
   SetDefaults(&c);
@@ -281,6 +292,7 @@ bool ConfigSave(const Config& input) {
   root["netImageConfirm"] =
       c.netImageMode == 0 ? "off" : (c.netImageMode == 2 ? "doc" : "host");
   root["allowOutsideImages"] = c.allowOutsideImages;
+  root["prewarm"] = c.prewarm;
   nlohmann::json render;
   render["mermaid"] = c.renderMermaid;
   render["katex"] = c.renderKatex;
@@ -295,10 +307,10 @@ bool ConfigSave(const Config& input) {
     return false;
   }
   LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
-          L"net=%d outside=%d render=%d%d%d%d%d",
+          L"net=%d outside=%d render=%d%d%d%d%d prewarm=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
           c.netImageMode, c.allowOutsideImages ? 1 : 0, c.renderMermaid ? 1 : 0,
           c.renderKatex ? 1 : 0, c.renderHighlight ? 1 : 0, c.renderInlineHtml ? 1 : 0,
-          c.renderLocalImages ? 1 : 0);
+          c.renderLocalImages ? 1 : 0, c.prewarm ? 1 : 0);
   return true;
 }

@@ -37,6 +37,10 @@ struct MDV_EVENT {
 // 建宿主线程并按需创建 controller。幂等：已就绪或正在创建时立即返回。
 bool WebHostEnsure(void);
 
+// 启动时预热：延迟一段时间后在宿主线程上建好 Environment/controller 并导航 shell；
+// 关闭开关或 DO 窗口全部关闭时释放实例。
+void WebHostPrewarm(bool enabled);
+
 // 页面是否已发过 ready（未就绪时 Post 会失败，调用方要先缓存内容）。
 bool WebHostIsReady(void);
 

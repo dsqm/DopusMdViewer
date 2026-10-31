@@ -67,6 +67,7 @@ enum {
   kIdOpenLog,
   kIdOpenConfig,
   kIdOpenSkins,
+  kIdPrewarm,
   kIdRestore = 3500,
   kIdApply,
   kIdOk,
@@ -108,6 +109,7 @@ struct DialogState {
   HWND hNetHost = nullptr;
   HWND hNetOff = nullptr;
   HWND hOutside = nullptr;
+  HWND hPrewarm = nullptr;
   HWND hApply = nullptr;
   bool dirty = false;
 };
@@ -337,6 +339,7 @@ void LoadUiFromStaged(DialogState* st) {
   ::CheckRadioButton(st->hwnd, kIdNetDoc, kIdNetOff, netId);
   ::CheckDlgButton(st->hwnd, kIdOutside,
                    st->staged.allowOutsideImages ? BST_CHECKED : BST_UNCHECKED);
+  ::CheckDlgButton(st->hwnd, kIdPrewarm, st->staged.prewarm ? BST_CHECKED : BST_UNCHECKED);
 
   ::CheckRadioButton(st->hwnd, kIdSlotUi, kIdSlotMono, kIdSlotUi + st->slot);
   RefreshChainList(st);
@@ -372,6 +375,7 @@ void ReadUiIntoStaged(DialogState* st) {
     st->staged.netImageMode = 1;
   }
   st->staged.allowOutsideImages = ::IsDlgButtonChecked(st->hwnd, kIdOutside) == BST_CHECKED;
+  st->staged.prewarm = ::IsDlgButtonChecked(st->hwnd, kIdPrewarm) == BST_CHECKED;
 }
 
 bool ApplySettings(DialogState* st) {
@@ -382,6 +386,7 @@ bool ApplySettings(DialogState* st) {
     return false;
   }
   ViewerNotifyConfigChanged();
+  WebHostPrewarm(st->staged.prewarm);
   SetDirty(st, false);
   LogLine(L"SETTINGS: 已应用 skin=\"%s\" size=%d lh=%.2f measure=%d net=%d", st->staged.skin.c_str(),
           st->staged.font.sizePx, st->staged.font.lineHeight, st->staged.font.measureEm,
@@ -584,7 +589,11 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"STATIC", L"常驻窗口", SS_LEFT, 16, y + 2, 90, 20, 0);
   AddControl(st, 3, L"STATIC", L"视口上下各 120 块", SS_LEFT, 110, y + 2, 420, 20, kIdResident);
 
-  y = 178;
+  y = 166;
+  st->hPrewarm = AddControl(st, 3, L"BUTTON", L"启动时预热预览引擎（Opus 窗口关闭时释放）",
+                            BS_AUTOCHECKBOX | WS_TABSTOP, 16, y, 480, 24, kIdPrewarm);
+
+  y = 202;
   AddControl(st, 3, L"BUTTON", L"打开日志目录", BS_PUSHBUTTON | WS_TABSTOP, 16, y, 130, 26,
              kIdOpenLog);
   AddControl(st, 3, L"BUTTON", L"打开配置根目录", BS_PUSHBUTTON | WS_TABSTOP, 154, y, 140, 26,

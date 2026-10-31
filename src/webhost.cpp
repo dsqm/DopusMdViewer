@@ -55,6 +55,15 @@ const UINT kCmdPost = kCmdBase + 5;
 const UINT kCmdDocFolder = kCmdBase + 6;
 const UINT kCmdRelease = kCmdBase + 7;
 const UINT kCmdScript = kCmdBase + 8;
+const UINT kCmdPrewarm = kCmdBase + 9;
+
+// 预热：InitEx 后等一会儿再开始，避开 Opus 自己的启动高峰。
+const UINT_PTR kTimerPrewarm = 1;
+const UINT_PTR kTimerWatch = 2;
+const UINT kPrewarmDelayMs = 3000;
+const UINT kWatchIntervalMs = 2000;
+const int kWatchEmptyLimit = 2;  // 连续两次看不见 DO 窗口才释放（约 4 秒）
+const int kMaxRoots = 8;
 
 // 以下状态只在宿主线程上访问。
 struct Host {
@@ -68,9 +77,22 @@ struct Host {
   bool creating = false;
   bool ready = false;
   bool borrowed = false;
+  bool prewarmEnabled = false;
+  bool everSawViewer = false;  // 预热后是否真的被查看器借过
+  bool sawDopusWindow = false;
+  bool suspended = false;
+  int watchEmpty = 0;
+  LARGE_INTEGER tEnsure = {};
+  LARGE_INTEGER tController = {};
+  LARGE_INTEGER tNav = {};
 };
 
 Host g_host;
+
+// 用过的查看器的顶层祖先（Lister / 独立查看器窗口）。最后一个关掉后释放实例。
+HWND g_roots[kMaxRoots] = {};
+int g_rootsCount = 0;
+int g_memLevel = -1;
 
 // 借用方历史（MRU，最多 8 个）。宿主只有一个窗口，谁最后借用谁显示；归还时按这里
 // 把宿主交给上一个还活着的查看器，否则关掉一个窗口就会留下另一片空白。
@@ -161,6 +183,131 @@ HWND HistoryFirstLive(HWND except) {
   return nullptr;
 }
 
+double QpcMs(LONGLONG from, LONGLONG to) {
+  static LONGLONG freq = 0;
+  if (!freq) {
+    LARGE_INTEGER f;
+    ::QueryPerformanceFrequency(&f);
+    freq = f.QuadPart;
+  }
+  if (!freq || !from) return 0.0;
+  return static_cast<double>(to - from) * 1000.0 / static_cast<double>(freq);
+}
+
+// 空闲时把 WebView2 的内存目标压到 LOW（运行时 1.0.2277+ 才支持，失败就跳过）。
+void SetMemoryLevel(bool low) {
+  if (!g_host.webview) return;
+  ComPtr<ICoreWebView2_19> webview19;
+  if (FAILED(g_host.webview.As(&webview19)) || !webview19) return;
+
+  const HRESULT hr = webview19->put_MemoryUsageTargetLevel(
+      low ? COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+          : COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
+  const int level = low ? 1 : 0;
+  if (level != g_memLevel) {
+    g_memLevel = level;
+    LogLine(L"WEBHOST: 内存目标 %s hr=0x%08X", low ? L"LOW" : L"NORMAL",
+            static_cast<unsigned>(hr));
+  }
+}
+
+// 空闲时藏起画面并尝试挂起渲染器；借用时 Resume。挂起失败就只保持隐藏。
+void SuspendIdle() {
+  if (g_host.suspended || g_host.borrower || !g_host.webview3) return;
+  if (g_host.controller) g_host.controller->put_IsVisible(FALSE);
+
+  const HRESULT hr = g_host.webview3->TrySuspend(
+      Callback<ICoreWebView2TrySuspendCompletedHandler>(
+          [](HRESULT result, BOOL ok) -> HRESULT {
+            LogLine(L"WEBHOST: TrySuspend hr=0x%08X ok=%d", static_cast<unsigned>(result),
+                    ok ? 1 : 0);
+            if (SUCCEEDED(result) && ok) {
+              if (!g_host.borrower) {
+                g_host.suspended = true;
+              } else if (g_host.webview3) {
+                // 挂起完成前已经被借走了：立刻恢复，别让画面停在冻结状态。
+                g_host.webview3->Resume();
+              }
+            }
+            return S_OK;
+          })
+          .Get());
+  LogLine(L"WEBHOST: 请求挂起 hr=0x%08X", static_cast<unsigned>(hr));
+}
+
+void ResumeIfSuspended() {
+  if (!g_host.suspended || !g_host.webview3) return;
+  LARGE_INTEGER t0;
+  LARGE_INTEGER t1;
+  ::QueryPerformanceCounter(&t0);
+  const HRESULT hr = g_host.webview3->Resume();
+  ::QueryPerformanceCounter(&t1);
+  g_host.suspended = false;
+  LogLine(L"WEBHOST: Resume hr=0x%08X +%.1fms", static_cast<unsigned>(hr),
+          QpcMs(t0.QuadPart, t1.QuadPart));
+}
+
+void NoteRoot(HWND root) {
+  if (!root) return;
+  DWORD pid = 0;
+  ::GetWindowThreadProcessId(root, &pid);
+  if (pid != ::GetCurrentProcessId()) return;
+
+  for (int i = 0; i < g_rootsCount; ++i) {
+    if (g_roots[i] == root) return;
+  }
+  if (g_rootsCount < kMaxRoots) {
+    g_roots[g_rootsCount++] = root;
+    return;
+  }
+  for (int i = 1; i < kMaxRoots; ++i) g_roots[i - 1] = g_roots[i];
+  g_roots[kMaxRoots - 1] = root;
+}
+
+void PruneRoots() {
+  int keep = 0;
+  for (int i = 0; i < g_rootsCount; ++i) {
+    DWORD pid = 0;
+    ::GetWindowThreadProcessId(g_roots[i], &pid);
+    if (::IsWindow(g_roots[i]) && pid == ::GetCurrentProcessId()) {
+      g_roots[keep++] = g_roots[i];
+    }
+  }
+  g_rootsCount = keep;
+}
+
+struct WindowScan {
+  DWORD pid;
+  int count;
+  std::wstring detail;
+};
+
+BOOL CALLBACK ScanWindowProc(HWND hwnd, LPARAM param) {
+  WindowScan* scan = reinterpret_cast<WindowScan*>(param);
+  DWORD pid = 0;
+  ::GetWindowThreadProcessId(hwnd, &pid);
+  if (pid != scan->pid || !::IsWindowVisible(hwnd)) return TRUE;
+
+  wchar_t cls[128] = L"";
+  ::GetClassNameW(hwnd, cls, ARRAYSIZE(cls));
+  // 插件自己的窗口不算 DO 窗口：宿主、查看器、设置窗口都以 DopusMdViewer 开头。
+  if (wcsncmp(cls, L"DopusMdViewer", 13) == 0) return TRUE;
+  // 无标题的多半是 Opus 的辅助窗口，不作为“窗口还开着”的依据。
+  if (::GetWindowTextLengthW(hwnd) == 0) return TRUE;
+
+  ++scan->count;
+  if (scan->detail.size() < 240) {
+    wchar_t title[96] = L"";
+    ::GetWindowTextW(hwnd, title, ARRAYSIZE(title));
+    if (!scan->detail.empty()) scan->detail += L"; ";
+    scan->detail += cls;
+    scan->detail += L" \"";
+    scan->detail += title;
+    scan->detail += L"\"";
+  }
+  return TRUE;
+}
+
 // ---- 宿主线程内部 ----
 
 void ApplySettings(ICoreWebView2* webview) {
@@ -183,8 +330,27 @@ void ReleaseController() {
   g_host.webview3.Reset();
   g_host.webview.Reset();
   g_host.ready = false;
+  g_host.suspended = false;
+  g_memLevel = -1;
   ::InterlockedExchange(&g_readyFlag, 0);
   LogLine(L"WEBHOST: controller 已释放");
+}
+
+// 关闭 controller 并回收 Environment：浏览器进程树随之退出。宿主窗口与线程保留，
+// 下次借用时从 Environment 重新开始建（冷路径）。
+void ReleaseInstance() {
+  if (g_host.host) {
+    ::KillTimer(g_host.host, kTimerWatch);
+    ::KillTimer(g_host.host, kTimerPrewarm);
+  }
+  ReleaseController();
+  g_host.env.Reset();
+  g_host.docFolder.clear();
+  g_host.watchEmpty = 0;
+  g_host.everSawViewer = false;
+  g_host.sawDopusWindow = false;
+  g_rootsCount = 0;
+  LogLine(L"WEBHOST: 实例已释放（Environment 也回收，下次借用重建）");
 }
 
 void CreateController();
@@ -199,13 +365,16 @@ void OnEnvironmentReady(HRESULT hr, ICoreWebView2Environment* env) {
     return;
   }
   g_host.env = env;
-  LogLine(L"WEBHOST: Environment 就绪");
+  LARGE_INTEGER now;
+  ::QueryPerformanceCounter(&now);
+  LogLine(L"WEBHOST: Environment 就绪 +%.1fms", QpcMs(g_host.tEnsure.QuadPart, now.QuadPart));
   CreateController();
 }
 
 void CreateController() {
   if (!g_host.host || !g_host.env) return;
   g_host.creating = true;
+  ::QueryPerformanceCounter(&g_host.tController);
 
   const HRESULT hr = g_host.env->CreateCoreWebView2Controller(
       g_host.host,
@@ -221,6 +390,12 @@ void CreateController() {
             }
 
             g_host.controller = controller;
+            ::SetTimer(g_host.host, kTimerWatch, kWatchIntervalMs, nullptr);
+
+            LARGE_INTEGER tReady;
+            ::QueryPerformanceCounter(&tReady);
+            LogLine(L"WEBHOST: controller 回调 +%.1fms",
+                    QpcMs(g_host.tController.QuadPart, tReady.QuadPart));
 
             if (FAILED(controller->get_CoreWebView2(&g_host.webview)) || !g_host.webview) {
               Fail(L"get_CoreWebView2 失败");
@@ -323,10 +498,26 @@ void CreateController() {
                       const std::wstring frame(raw);
                       ::CoTaskMemFree(raw);
 
-                      if (frame == L"ready") {
+                      if (frame == L"ready" || frame.rfind(L"ready|", 0) == 0) {
                         g_host.ready = true;
                         ::InterlockedExchange(&g_readyFlag, 1);
-                        LogLine(L"WEBHOST: 页面已就绪");
+                        LARGE_INTEGER now;
+                        ::QueryPerformanceCounter(&now);
+                        const std::wstring perf =
+                            frame.size() > 6 ? frame.substr(6) : std::wstring();
+                        LogLine(L"WEBHOST: 页面已就绪 +%.1fms（导航起）%s",
+                                QpcMs(g_host.tNav.QuadPart, now.QuadPart), perf.c_str());
+                        if (g_host.borrower && g_host.host) {
+                          // 冷启动时宿主一直藏着，让查看器先画“正在加载”；页面好了再露出来。
+                          ::ShowWindow(g_host.host, SW_SHOW);
+                          ::RedrawWindow(g_host.host, nullptr, nullptr,
+                                         RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW |
+                                             RDW_ERASE);
+                          SetMemoryLevel(false);
+                        } else {
+                          SetMemoryLevel(true);
+                          SuspendIdle();
+                        }
                         PostEvent(MDV_EVT_READY, L"");
                       } else {
                         PostEvent(MDV_EVT_MESSAGE, frame.c_str());
@@ -337,6 +528,22 @@ void CreateController() {
                 &msgToken);
 
             EventRegistrationToken navToken = {};
+            g_host.webview->add_NavigationStarting(
+                Callback<ICoreWebView2NavigationStartingEventHandler>(
+                    [](ICoreWebView2* sender,
+                       ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+                      (void)sender;
+                      (void)args;
+                      LARGE_INTEGER now;
+                      ::QueryPerformanceCounter(&now);
+                      LogLine(L"WEBHOST: NavigationStarting +%.1fms",
+                              QpcMs(g_host.tNav.QuadPart, now.QuadPart));
+                      return S_OK;
+                    })
+                    .Get(),
+                &navToken);
+
+            EventRegistrationToken navDoneToken = {};
             g_host.webview->add_NavigationCompleted(
                 Callback<ICoreWebView2NavigationCompletedEventHandler>(
                     [](ICoreWebView2* sender,
@@ -344,19 +551,24 @@ void CreateController() {
                       (void)sender;
                       BOOL ok = FALSE;
                       args->get_IsSuccess(&ok);
-                      LogLine(L"WEBHOST: NavigationCompleted ok=%d", ok ? 1 : 0);
+                      LARGE_INTEGER now;
+                      ::QueryPerformanceCounter(&now);
+                      LogLine(L"WEBHOST: NavigationCompleted ok=%d +%.1fms", ok ? 1 : 0,
+                              QpcMs(g_host.tNav.QuadPart, now.QuadPart));
                       if (!ok) Fail(L"shell.html 导航失败");
                       return S_OK;
                     })
                     .Get(),
-                &navToken);
+                &navDoneToken);
 
             RECT rc = {0, 0, 0, 0};
             if (g_host.host) ::GetClientRect(g_host.host, &rc);
             controller->put_Bounds(rc);
             controller->put_IsVisible(TRUE);
 
-            LogLine(L"WEBHOST: controller 就绪，导航到 %s", kShellUrl);
+            ::QueryPerformanceCounter(&g_host.tNav);
+            LogLine(L"WEBHOST: controller 就绪 +%.1fms，导航到 %s",
+                    QpcMs(g_host.tController.QuadPart, g_host.tNav.QuadPart), kShellUrl);
             g_host.webview->Navigate(kShellUrl);
             return S_OK;
           })
@@ -379,6 +591,7 @@ void EnsureEnvironment() {
   if (g_host.creating) return;
 
   g_host.creating = true;
+  ::QueryPerformanceCounter(&g_host.tEnsure);
 
   const std::wstring userData = UserDataDir();
   const HRESULT hr = ::CreateCoreWebView2EnvironmentWithOptions(
@@ -434,17 +647,26 @@ bool BorrowHost(HWND viewer, const RECT* rc) {
   HistoryPush(viewer);
   g_host.borrower = viewer;
   g_host.borrowed = true;
+  g_host.everSawViewer = true;
+  g_host.sawDopusWindow = true;
+  NoteRoot(::GetAncestor(viewer, GA_ROOT));
 
   SetChildStyle(true);
   ::SetParent(g_host.host, viewer);
   ::SetWindowPos(g_host.host, nullptr, 0, 0, rcClient.right - rcClient.left,
                  rcClient.bottom - rcClient.top, SWP_NOZORDER | SWP_FRAMECHANGED);
-  ::ShowWindow(g_host.host, SW_SHOW);
+  // 页面还没就绪时先别露宿主，让查看器窗口里的“正在加载”占位可见。
+  ::ShowWindow(g_host.host, g_host.ready ? SW_SHOW : SW_HIDE);
 
   if (g_host.controller) g_host.controller->put_Bounds(rcClient);
+  ResumeIfSuspended();
+  if (g_host.controller) g_host.controller->put_IsVisible(TRUE);
+  SetMemoryLevel(false);
   // 宿主可能刚被藏过一阵，强制重画一次，避免回来时是一片旧像素。
-  ::RedrawWindow(g_host.host, nullptr, nullptr,
-                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE);
+  if (g_host.ready) {
+    ::RedrawWindow(g_host.host, nullptr, nullptr,
+                   RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE);
+  }
   return true;
 }
 
@@ -465,17 +687,84 @@ void UnborrowHost(HWND viewer) {
   ::SetParent(g_host.host, nullptr);
   SetChildStyle(false);
   ::SetWindowPos(g_host.host, nullptr, 0, 0, 1, 1, SWP_NOZORDER | SWP_FRAMECHANGED);
+  SetMemoryLevel(true);
+  SuspendIdle();
 
   HWND next = HistoryFirstLive(viewer);
   LogLine(L"WEBHOST: 归还宿主（controller 保留）%s%p", next ? L"，交回 " : L"", next);
   if (next) ::PostMessageW(next, WM_MDV_RECLAIM, 0, 0);
 }
 
+// 预热：宿主隐藏时先用一个正常尺寸把页面布局好，借用时再改成查看器大小。
+void StartPrewarm() {
+  if (!g_host.host || g_host.controller || g_host.creating || g_host.borrower) return;
+  ::SetWindowPos(g_host.host, nullptr, 0, 0, 800, 600, SWP_NOZORDER | SWP_NOACTIVATE);
+  LogLine(L"WEBHOST: 预热开始");
+  EnsureEnvironment();
+}
+
+void SchedulePrewarm(UINT delayMs) {
+  if (!g_host.host || !g_host.prewarmEnabled) return;
+  if (g_host.controller || g_host.creating || g_host.borrower) return;
+  ::SetTimer(g_host.host, kTimerPrewarm, delayMs, nullptr);
+}
+
+// 每 2 秒看一次：本进程还有没有 DO 的可见顶层窗口。连续两次都没有才释放。
+void WatchTick() {
+  if (!g_host.host) return;
+  if (g_host.borrower || (!g_host.controller && !g_host.env)) {
+    g_host.watchEmpty = 0;
+    return;
+  }
+
+  PruneRoots();
+  WindowScan scan = {::GetCurrentProcessId(), 0, std::wstring()};
+  ::EnumWindows(ScanWindowProc, reinterpret_cast<LPARAM>(&scan));
+  if (scan.count > 0) g_host.sawDopusWindow = true;
+
+  const bool noWindows = scan.count == 0;
+  const bool gone = noWindows && (g_host.everSawViewer ? g_rootsCount == 0
+                                                       : g_host.sawDopusWindow);
+  if (!gone) {
+    g_host.watchEmpty = 0;
+    return;
+  }
+  if (++g_host.watchEmpty < kWatchEmptyLimit) return;
+
+  LogLine(L"WEBHOST: DO 窗口已关闭（活跃根 %d 个，可见顶层 %d 个 %s），释放 WebView2",
+          g_rootsCount, scan.count, scan.detail.c_str());
+  ReleaseInstance();
+}
+
 LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   switch (uMsg) {
     case kCmdEnsure:
+      if (g_host.host) ::KillTimer(g_host.host, kTimerPrewarm);
       EnsureEnvironment();
       return 0;
+
+    case kCmdPrewarm:
+      g_host.prewarmEnabled = wParam != 0;
+      if (g_host.host) ::KillTimer(g_host.host, kTimerPrewarm);
+      if (g_host.prewarmEnabled) {
+        SchedulePrewarm(kPrewarmDelayMs);
+      } else if (!g_host.borrower && (g_host.controller || g_host.env)) {
+        LogLine(L"WEBHOST: 预热已关闭，释放空闲实例");
+        ReleaseInstance();
+      }
+      return 1;
+
+    case WM_TIMER:
+      if (wParam == kTimerPrewarm) {
+        ::KillTimer(hwnd, kTimerPrewarm);
+        StartPrewarm();
+        return 0;
+      }
+      if (wParam == kTimerWatch) {
+        WatchTick();
+        return 0;
+      }
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
 
     case kCmdBorrow:
       return BorrowHost(reinterpret_cast<HWND>(wParam),
@@ -554,7 +843,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
     case WM_NCDESTROY:
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-      ReleaseController();
+      ReleaseInstance();
       g_host.host = nullptr;
       g_threadHost = nullptr;
       LogLine(L"WEBHOST: 宿主窗口被销毁");
@@ -644,6 +933,12 @@ bool SendCommand(UINT cmd, WPARAM wParam, LPARAM lParam, LRESULT* result = nullp
 }  // namespace
 
 bool WebHostEnsure(void) { return SendCommand(kCmdEnsure, 0, 0); }
+
+void WebHostPrewarm(bool enabled) {
+  // 关闭预热时如果宿主线程还没建起来，就别为了关一个定时器去建线程。
+  if (!enabled && ::InterlockedCompareExchange(&g_hasThread, 0, 0) == 0) return;
+  SendCommand(kCmdPrewarm, enabled ? 1 : 0, 0);
+}
 
 bool WebHostIsReady(void) { return ::InterlockedCompareExchange(&g_readyFlag, 0, 0) != 0; }
 

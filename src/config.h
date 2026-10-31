@@ -34,6 +34,8 @@ struct Config {
   bool renderHighlight;
   bool renderInlineHtml;
   bool renderLocalImages;
+  // 启动后在后台预热 WebView2（Opus 窗口关闭时释放）。默认开启。
+  bool prewarm;
 };
 
 // 内置默认值（设置界面的“恢复默认”与外置 JSON 缺失时共用）。
@@ -56,6 +58,9 @@ int ConfigNetImageMode(void);
 
 // 是否允许图片引用文档目录外的路径（../ 与绝对路径）。
 bool ConfigAllowOutsideImages(void);
+
+// 启动时是否预热 WebView2。
+bool ConfigPrewarm(void);
 
 // 写入整份设置并更新内存值；原子写（.tmp + MoveFileEx），保留未知键。
 bool ConfigSave(const Config& config);

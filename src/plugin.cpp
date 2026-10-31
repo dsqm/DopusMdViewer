@@ -8,9 +8,11 @@
 #include <objidl.h>  // LPSTREAM，"viewer plugins.h" 需要（WIN32_LEAN_AND_MEAN 会藏掉）
 #include <strsafe.h>
 
+#include "config.h"
 #include "settings_dlg.h"
 #include "log.h"
 #include "viewer_window.h"
+#include "webhost.h"
 #include "viewer plugins.h"
 
 namespace {
@@ -132,6 +134,9 @@ extern "C" BOOL DVP_InitEx(LPDVPINITEXDATA pInitExData) {
           static_cast<unsigned long>(g_dwOpusVerMinor), g_szLanguage,
           static_cast<unsigned long>(::GetCurrentProcessId()));
   LogModuleStamp();
+
+  // 启动后台预热（可在设置里关掉）。失败只在日志里出现，不影响预览。
+  WebHostPrewarm(ConfigPrewarm());
   return TRUE;
 }
 

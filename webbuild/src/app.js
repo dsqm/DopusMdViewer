@@ -2562,7 +2562,12 @@ bindInput()
 
 if (window.chrome && window.chrome.webview) {
   window.chrome.webview.addEventListener('message', onHostMessage)
-  postRaw('ready')
+  const resources = performance.getEntriesByType ? performance.getEntriesByType('resource') : []
+  const appScript = resources.find((r) => r.name.endsWith('/app.js'))
+  postRaw(
+    'ready|js=' + Math.round(performance.now()) +
+      (appScript ? '|appjs=' + Math.round(appScript.duration) : '')
+  )
   document.body.classList.add('virtual')
 } else {
   // 开发模式没有宿主推档位，直接放行（远程资源仍受 CSP 约束）
