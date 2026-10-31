@@ -127,9 +127,9 @@ write("03-images.md", """# 图片
 
 > 预期：
 > - 同目录 / 子目录图片显示；块高会随图片加载后回填。
-> - 上级目录与绝对路径不显示（只有 alt 文字）。
+> - 上级目录与绝对路径默认不显示（只有 alt 文字）；设置里勾选“允许图片引用文档目录外的路径”后显示。
 > - data URI 显示。
-> - 网络图默认弹原生确认框；选“是”后加载（设置里可切三档）。
+> - 网络图默认在预览页内弹确认面板；点“允许”后加载（设置里可切三档）。
 
 ## 同目录
 
@@ -139,13 +139,13 @@ write("03-images.md", """# 图片
 
 ![子目录图片](sub/pic2.png)
 
-## 上级目录（预期不显示）
+## 上级目录（默认不显示）
 
 ![上级目录图片](../up.png)
 
-## 绝对路径（预期不显示）
+## 绝对路径（默认不显示）
 
-![绝对路径图片](C:/Users/momo/Documents/ai/Directory Opus plugins/DopusMdViewer/samples/manual-test/pic.png)
+![绝对路径图片](<C:/Users/momo/Documents/ai/Directory Opus plugins/DopusMdViewer/samples/manual-test/pic.png>)
 
 ## data URI（预期显示）
 
@@ -253,6 +253,21 @@ open(path, "wb").write(b"\xff\xfe" + data)
 print("06-encoding-utf16le.md BOM added")
 write("07-encoding-utf8-bom.md", enc_text, bom=True)
 
+abs_pic = os.path.join(ROOT, "pic.png").replace("\\", "/")
+write("08-outside-images.md", """# 文档目录外的图片
+
+> 预期（默认关闭）：两张图都不显示，只留 alt 文字。
+> 预期（设置里勾选“允许图片引用文档目录外的路径”后重新打开）：两张图都显示。
+
+## 上级目录（../）
+
+![上级目录](../up.png)
+
+## 绝对路径
+
+![绝对路径](<%s>)
+""" % abs_pic)
+
 write("README.md", """# 手动验收样本（DopusMdViewer）
 
 在 Opus 里按顺序打开，每个文件开头都写了预期。
@@ -261,9 +276,10 @@ write("README.md", """# 手动验收样本（DopusMdViewer）
 |---|---|
 | 01-syntax.md | GFM 排版、代码高亮、任务列表、定义列表、内联 HTML、front matter 隐藏 |
 | 02-refs-footnotes.md | 跨块引用 `[x][ref]`、脚注角标与文末脚注区、未定义项保持原文 |
-| 03-images.md | 本地图（同目录/子目录）、`../` 与绝对路径被拒、data URI、网络图确认 |
+| 03-images.md | 本地图（同目录/子目录）、`../` 与绝对路径默认被拒、data URI、网络图页内确认 |
 | 04-math-mermaid.md | KaTeX 行内/独立公式、Mermaid 两种图、未知图降级 |
 | 05/06/07-encoding-*.md | GB18030 / UTF-16LE / UTF-8 BOM 三种编码同一内容 |
+| 08-outside-images.md | 设置开关前后的目录外图片（`../` 与绝对路径） |
 | big-mixed-3000.md | 普通块与 3000 行围栏混排，进出巨型块的滚动衔接 |
 | big-fence-120000.md | 12 万行单围栏：窗口化滚动、第 10 万行处的分段接缝 |
 | big-table-3000.md | 已知取舍：巨型表格按纯文本显示 |

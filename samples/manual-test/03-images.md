@@ -2,9 +2,9 @@
 
 > 预期：
 > - 同目录 / 子目录图片显示；块高会随图片加载后回填。
-> - 上级目录与绝对路径不显示（只有 alt 文字）。
+> - 上级目录与绝对路径默认不显示（只有 alt 文字）；设置里勾选“允许图片引用文档目录外的路径”后显示。
 > - data URI 显示。
-> - 网络图默认弹原生确认框；选“是”后加载（设置里可切三档）。
+> - 网络图默认在预览页内弹确认面板；点“允许”后加载（设置里可切三档）。
 
 ## 同目录
 
@@ -14,13 +14,13 @@
 
 ![子目录图片](sub/pic2.png)
 
-## 上级目录（预期不显示）
+## 上级目录（默认不显示）
 
 ![上级目录图片](../up.png)
 
-## 绝对路径（预期不显示）
+## 绝对路径（默认不显示）
 
-![绝对路径图片](C:/Users/momo/Documents/ai/Directory Opus plugins/DopusMdViewer/samples/manual-test/pic.png)
+![绝对路径图片](<C:/Users/momo/Documents/ai/Directory Opus plugins/DopusMdViewer/samples/manual-test/pic.png>)
 
 ## data URI（预期显示）
 

@@ -6,9 +6,10 @@
 |---|---|
 | 01-syntax.md | GFM 排版、代码高亮、任务列表、定义列表、内联 HTML、front matter 隐藏 |
 | 02-refs-footnotes.md | 跨块引用 `[x][ref]`、脚注角标与文末脚注区、未定义项保持原文 |
-| 03-images.md | 本地图（同目录/子目录）、`../` 与绝对路径被拒、data URI、网络图确认 |
+| 03-images.md | 本地图（同目录/子目录）、`../` 与绝对路径默认被拒、data URI、网络图页内确认 |
 | 04-math-mermaid.md | KaTeX 行内/独立公式、Mermaid 两种图、未知图降级 |
 | 05/06/07-encoding-*.md | GB18030 / UTF-16LE / UTF-8 BOM 三种编码同一内容 |
+| 08-outside-images.md | 设置开关前后的目录外图片（`../` 与绝对路径） |
 | big-mixed-3000.md | 普通块与 3000 行围栏混排，进出巨型块的滚动衔接 |
 | big-fence-120000.md | 12 万行单围栏：窗口化滚动、第 10 万行处的分段接缝 |
 | big-table-3000.md | 已知取舍：巨型表格按纯文本显示 |

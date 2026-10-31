@@ -31,6 +31,7 @@ const UINT_PTR kScrollTimerId = 6;
 const UINT_PTR kSettingsTimerId = 7;
 const UINT_PTR kDumpTimerId = 8;
 const UINT_PTR kSeamTimerId = 9;
+const UINT_PTR kConsentTimerId = 10;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -49,6 +50,7 @@ bool g_scroll = false;      // 5 秒后滚动到底，验虚拟滚动与滚动�
 bool g_settings = false;    // 3 秒后打开设置窗口，验 DVP_Configure 与 config 写盘
 bool g_dump = false;        // 5 秒后把视口/常驻块/段几何回传到日志
 bool g_seam = false;        // 5 秒后滚到第 10 万行（第一段与第二段的接缝）
+bool g_consent = false;     // 5 秒后点页内网络图确认面板的“允许”，1.5 秒后回流图片状态
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
 HINSTANCE g_hInst = nullptr;
@@ -252,9 +254,26 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"var d=document.getElementById('doc'),dr=d.getBoundingClientRect();"
             L"out.push('doc tf='+d.style.transform+' rect='+Math.round(dr.left)+','+Math.round(dr.width));"
             L"var bl='';for(const [i,m] of V.big)bl+=i+':'+m.lines+',';"
+            L"var ims=[].map.call(document.querySelectorAll('img'),function(t){"
+            L"return (t.getAttribute('src')||'-').slice(0,72)+'|nw='+t.naturalWidth;});"
+            L"out.push('imgs='+ims.join(' ; '));"
+            L"var b5=document.querySelector('.blk[data-i=\"5\"]');"
+            L"out.push('blk5='+String(b5&&b5.innerHTML).slice(0,240));"
             L"out.push('bigmap='+bl+' heights='+Array.from(V.heights.slice(0,4)).join(',')"
             L"+' default='+Math.round(V.defaultH)+' lastVis='+V.lastVisible);"
             L"window.chrome.webview.postMessage('event|dump|'+out.join(' ; '));})();";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kConsentTimerId) {
+        ::KillTimer(hwnd, kConsentTimerId);
+        const wchar_t* script =
+            L"(function(){var b=document.querySelector('.net-consent:not([hidden])');"
+            L"var shown=!!b;"
+            L"if(b){var a=b.querySelector('[data-act=\"allow\"]');if(a)a.click();}"
+            L"setTimeout(function(){var imgs=[].map.call("
+            L"document.querySelectorAll('img[data-mdv-src]'),function(i){"
+            L"return 'nw='+i.naturalWidth+'@'+String(i.getAttribute('src')).slice(0,48);});"
+            L"window.chrome.webview.postMessage('event|consent|shown='+(shown?1:0)"
+            L"+' imgs='+imgs.join(' ; '));},4000);})();";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kSeamTimerId) {
         ::KillTimer(hwnd, kSeamTimerId);
@@ -322,6 +341,7 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"settings")) g_settings = true;
   if (*p && wcsstr(p, L"dump")) g_dump = true;
   if (*p && wcsstr(p, L"seam")) g_seam = true;
+  if (*p && wcsstr(p, L"consent")) g_consent = true;
 
   wchar_t szTemp[MAX_PATH];
   const DWORD n = ::GetTempPathW(MAX_PATH, szTemp);
@@ -383,6 +403,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_seam) {
     ::SetTimer(g_hwndMain, kSeamTimerId, kDumpAfterMs, nullptr);
+  }
+  if (g_consent) {
+    ::SetTimer(g_hwndMain, kConsentTimerId, 5000, nullptr);
   }
 
   if (g_szShot[0]) {
