@@ -298,6 +298,7 @@ void OpenDoc(ViewerState* st) {
   PushIndex(st);
   MaybePushIndexFull(st);
   SetStatus(st, L"%s — %llu B", UtilLeafName(st->szFile), st->ullFileSize);
+  ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
 }
 
 // ---- 宿主事件（由宿主线程 PostMessage 过来，运行在查看器自己的线程上） ----
@@ -306,6 +307,7 @@ void OnHostReady(ViewerState* st) {
   PushChrome(st);
   if (st->docOpened) PushIndex(st);
   MaybePushIndexFull(st);
+  ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
 }
 
 void OnHostMessage(ViewerState* st, const std::wstring& frame) {
@@ -514,6 +516,22 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
         ::SetTextColor(hdc, ::GetSysColor(COLOR_GRAYTEXT));
         ::SetBkMode(hdc, TRANSPARENT);
         ::DrawTextW(hdc, L"预览正显示在另一个查看器窗口中", -1, &rc,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      } else if (!WebHostIsReady() && st->szFile[0]) {
+        // 冷启动/重建时 WebView2 要两三秒才出画面，先把文件名和状态画出来。
+        ::FillRect(hdc, &rc, ::GetSysColorBrush(COLOR_WINDOW));
+        ::SetBkMode(hdc, TRANSPARENT);
+
+        RECT rcName = rc;
+        rcName.bottom = (rc.top + rc.bottom) / 2;
+        ::SetTextColor(hdc, ::GetSysColor(COLOR_WINDOWTEXT));
+        ::DrawTextW(hdc, UtilLeafName(st->szFile), -1, &rcName,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        RECT rcHint = rc;
+        rcHint.top = rcName.bottom;
+        ::SetTextColor(hdc, ::GetSysColor(COLOR_GRAYTEXT));
+        ::DrawTextW(hdc, L"正在加载预览…", -1, &rcHint,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
       }
       ::EndPaint(hwnd, &ps);
