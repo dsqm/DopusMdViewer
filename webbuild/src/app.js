@@ -1794,9 +1794,19 @@ async function renderMermaidBlocks(root, generation) {
     const srcEl = el.querySelector('code')
     const src = srcEl ? srcEl.textContent : ''
     const id = 'mdv-mermaid-' + (++mermaidSeq)
+
+    // mermaid 默认把渲染用的临时节点插到 document.body（预览左上角），量完才移除，
+    // 短图会闪一下。给它一个屏外容器，临时节点只活在那里。
+    const host = document.createElement('div')
+    host.setAttribute('aria-hidden', 'true')
+    host.style.cssText =
+      'position:fixed;left:-100000px;top:0;overflow:hidden;pointer-events:none'
+    host.style.width = Math.max(200, el.clientWidth || 600) + 'px'
+    document.body.appendChild(host)
+
     try {
       const out = await Promise.race([
-        api.render(id, src),
+        api.render(id, src, host),
         new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000)),
       ])
       if (generation !== renderGeneration) return
@@ -1817,6 +1827,8 @@ async function renderMermaidBlocks(root, generation) {
         if (!n.closest('.mermaid-block')) n.remove()
       })
       el.setAttribute('data-mermaid', 'failed')
+    } finally {
+      host.remove()
     }
   }
 }
