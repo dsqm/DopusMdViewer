@@ -45,7 +45,6 @@ const UINT_PTR kSlugTimerId = 18;
 const UINT_PTR kDropCloseTimerId = 19;
 const UINT_PTR kCopyTimerId = 20;
 const UINT_PTR kCopyCheckTimerId = 21;
-const UINT_PTR kSelectAllTimerId = 22;
 const UINT_PTR kPinTimerId = 23;
 const UINT_PTR kCopyEarlyTimerId = 24;
 const UINT_PTR kCopyEarlyCheckTimerId = 25;
@@ -372,18 +371,22 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       } else if (wParam == kCopyTimerId) {
         ::KillTimer(hwnd, kCopyTimerId);
         const wchar_t* script =
+            L"(function(){var V=window.__mdv.V;"
+            L"function rep(tag){var s=window.getSelection();"
+            L"window.chrome.webview.postMessage('event|copy|'+tag"
+            L"+' pinned='+V.pinned.size+' collapsed='+(s.isCollapsed?1:0)"
+            L"+' ranges='+s.rangeCount);}"
             L"window.dispatchEvent(new KeyboardEvent('keydown',{key:'a',ctrlKey:true,"
-            L"bubbles:true,cancelable:true}));";
+            L"bubbles:true,cancelable:true}));"
+            L"setTimeout(function(){rep('selected');"
+            L"window.dispatchEvent(new KeyboardEvent('keydown',{key:'c',ctrlKey:true,"
+            L"bubbles:true,cancelable:true}));},400);})();";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kCopyCheckTimerId) {
         ::KillTimer(hwnd, kCopyCheckTimerId);
-        LogClipboard(L"Ctrl+A");
-        // 再走一遍 Opus 菜单「全选」的 SELECTALL 消息路径
+        LogClipboard(L"Ctrl+C");
+        // 再走一遍 Opus 菜单「全选」的 SELECTALL 消息路径（只选中，不复制）
         if (g_viewer) ::PostMessageW(g_viewer, DVPLUGINMSG_SELECTALL, 0, 0);
-        ::SetTimer(hwnd, kSelectAllTimerId, 2000, nullptr);
-      } else if (wParam == kSelectAllTimerId) {
-        ::KillTimer(hwnd, kSelectAllTimerId);
-        LogClipboard(L"SELECTALL");
       } else if (wParam == kPrintTimerId) {
         ::KillTimer(hwnd, kPrintTimerId);
         const wchar_t* script =
@@ -673,7 +676,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   if (g_copy) {
     ::SetTimer(g_hwndMain, kCopyTimerId, 5000, nullptr);
     ::SetTimer(g_hwndMain, kCopyCheckTimerId, 7000, nullptr);
-    ::SetTimer(g_hwndMain, kSelectAllTimerId, 9000, nullptr);
   }
   if (g_pin) {
     ::SetTimer(g_hwndMain, kPinTimerId, 5000, nullptr);

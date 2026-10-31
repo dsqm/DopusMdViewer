@@ -1485,6 +1485,7 @@ function resetVirtual() {
   SLUG.byBlock.clear()
   V.pinned.clear()
   V.pinsDirty = false
+  SEL.all = false
   onSelUp()
   cleanupPrint()
   resetNetConsent()
@@ -1656,7 +1657,13 @@ function onKeyDown(e) {
   if (!V.active) return
   if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'a' || e.key === 'A')) {
     if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
-    // 全文不在 DOM 里，全选交给宿主按索引拼纯文本（票 05 第 5.2 节）
+    e.preventDefault()
+    selectAllText()
+    return
+  }
+  if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'c' || e.key === 'C')) {
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
+    if (!SEL.all) return  // 普通选区交给浏览器原生复制
     e.preventDefault()
     postRaw('copyall')
     return
@@ -1750,7 +1757,7 @@ function onThumbUp(e) {
    块会随视口换出，选区一旦跨到被换出的块就会塌陷。选区覆盖的常驻块钉住不换，
    拖到视口边缘时按帧滚动并用 caretRangeFromPoint 把选区延伸过去。 */
 
-const SEL = { down: false, x: 0, y: 0, raf: 0, warned: false }
+const SEL = { down: false, x: 0, y: 0, raf: 0, warned: false, all: false, allLo: 0, allHi: 0 }
 
 function blockIndexOfNode(node) {
   if (!node) return null
@@ -1787,6 +1794,8 @@ function refreshPins() {
   const a = blockIndexOfNode(range.startContainer)
   const b = blockIndexOfNode(range.endContainer)
   if (a === null || b === null) return
+  // 键盘改了选区（端点不再是 Ctrl+A 留下的那两块）就不再算全选
+  if (SEL.all && (Math.min(a, b) !== SEL.allLo || Math.max(a, b) !== SEL.allHi)) SEL.all = false
 
   const lo = Math.min(a, b)
   const hi = Math.max(a, b)
@@ -1860,6 +1869,7 @@ function armSelScroll() {
 function onSelDown(e) {
   if (!V.active || e.button !== 0) return
   if (e.target && e.target.closest && e.target.closest('.mdv-ui')) return
+  SEL.all = false
   SEL.down = true
   SEL.x = e.clientX
   SEL.y = e.clientY
@@ -1877,6 +1887,33 @@ function onSelUp() {
   SEL.warned = false
   if (SEL.raf) cancelAnimationFrame(SEL.raf)
   SEL.raf = 0
+}
+
+// Ctrl+A：全文不在 DOM 里，视觉上只能选中已载入的块；同时记下“全选”，
+// 让接下来的 Ctrl+C 走宿主复制完整全文（票 05 第 5.2 节的复制路径）。
+function selectAllText() {
+  if (!V.active) return
+  let lo = -1
+  let hi = -1
+  for (const [i, rec] of V.resident) {
+    if (!rec.el) continue
+    if (lo < 0 || i < lo) lo = i
+    if (i > hi) hi = i
+  }
+  if (lo >= 0) {
+    const first = V.resident.get(lo).el
+    const last = V.resident.get(hi).el
+    const range = document.createRange()
+    range.setStart(first, 0)
+    range.setEnd(last, last.childNodes.length)
+    const sel = window.getSelection()
+    sel.removeAllRanges()
+    sel.addRange(range)
+  }
+  SEL.all = lo >= 0
+  SEL.allLo = lo
+  SEL.allHi = hi
+  postRaw('status|已全选全文，Ctrl+C 复制')
 }
 
 /* ---------------- 搜索与大纲（M6） ---------------- */
@@ -2779,6 +2816,11 @@ function onHostMessage(event) {
   if (type === 'index-full') {
     const f = rest.split('|')
     applyIndexFull(parseInt(f[0], 10) || 0, parseInt(f[1], 10) || 0)
+    return
+  }
+
+  if (type === 'selectall') {
+    selectAllText()
     return
   }
 
