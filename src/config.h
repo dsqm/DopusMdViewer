@@ -24,6 +24,8 @@ struct FontSettings {
 struct Config {
   std::wstring skin;  // 皮肤 id（文件名去扩展名）
   FontSettings font;
+  // 网络图片的确认粒度：0 = 不确认直接加载，1 = 每主机每文档确认，2 = 每文档确认。
+  int netImageMode;
 };
 
 // config.json 的绝对路径：<数据目录>\config.json
@@ -34,3 +36,9 @@ const Config& ConfigLoad(void);
 
 // 当前生效的配置（未调用 ConfigLoad 时先加载）。
 const Config& ConfigGet(void);
+
+// 网络图片确认粒度（线程安全）。设置对话框改它，查看器线程读它。
+int ConfigNetImageMode(void);
+
+// 写盘并更新内存中的值；原子写（.tmp + MoveFileEx）。
+bool ConfigSetNetImageMode(int mode);

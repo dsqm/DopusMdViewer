@@ -81,6 +81,10 @@ std::wstring MakeIndexFull(uint32_t blockCount) {
   return Join({L"index-full", std::to_wstring(blockCount)});
 }
 
+std::wstring MakeNetImageReply(const std::wstring& origin, bool allow) {
+  return Join({allow ? L"netimg-allow" : L"netimg-deny", origin});
+}
+
 std::wstring MakeClear(void) { return L"clear"; }
 
 bool SplitType(const std::wstring& frame, std::wstring* type, std::wstring* rest) {

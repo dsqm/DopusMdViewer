@@ -16,6 +16,7 @@
 #include <viewer plugins.h>  // 在 ..\SDK\Headers，走 INCLUDE
 
 #include "../../src/viewer_window.h"
+#include "../../src/settings_dlg.h"
 #include "../../src/webhost.h"
 
 namespace {
@@ -27,10 +28,12 @@ const UINT_PTR kCycleTimerId = 3;
 const UINT_PTR kTwoTimerId = 4;
 const UINT_PTR kTwoCloseTimerId = 5;
 const UINT_PTR kScrollTimerId = 6;
+const UINT_PTR kSettingsTimerId = 7;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
 const UINT kScrollAfterMs = 5000;
+const UINT kSettingsAfterMs = 3000;
 const UINT kQuitAfterMs = 40000;
 const UINT kShotAfterDefaultMs = 5000;
 
@@ -40,6 +43,7 @@ UINT g_shotAfterMs = kShotAfterDefaultMs;
 bool g_cycle = false;  // 中途销毁查看器再建一个，复现"切走再切回"
 bool g_twoThreads = false;  // 第二个查看器开在另一个线程上，复现预览窗格 + 独立查看器
 bool g_scroll = false;      // 5 秒后滚动到底，验虚拟滚动与滚动条
+bool g_settings = false;    // 3 秒后打开设置窗口，验 DVP_Configure 与 config 写盘
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
 HINSTANCE g_hInst = nullptr;
@@ -206,6 +210,9 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         if (g_threadCtx && g_threadCtx->frame) {
           ::PostMessageW(g_threadCtx->frame, WM_CLOSE, 0, 0);
         }
+      } else if (wParam == kSettingsTimerId) {
+        ::KillTimer(hwnd, kSettingsTimerId);
+        SettingsShow(g_hwndMain);
       } else if (wParam == kScrollTimerId) {
         // 通过页面脚本走一遍 wheel 路径：更新 target、收敛动画、重新摆位、取块。
         ::KillTimer(hwnd, kScrollTimerId);
@@ -276,6 +283,7 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"cycle")) g_cycle = true;
   if (*p && wcsstr(p, L"two")) g_twoThreads = true;
   if (*p && wcsstr(p, L"scroll")) g_scroll = true;
+  if (*p && wcsstr(p, L"settings")) g_settings = true;
 
   wchar_t szTemp[MAX_PATH];
   const DWORD n = ::GetTempPathW(MAX_PATH, szTemp);
@@ -328,6 +336,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_scroll) {
     ::SetTimer(g_hwndMain, kScrollTimerId, kScrollAfterMs, nullptr);
+  }
+  if (g_settings) {
+    ::SetTimer(g_hwndMain, kSettingsTimerId, kSettingsAfterMs, nullptr);
   }
 
   if (g_szShot[0]) {

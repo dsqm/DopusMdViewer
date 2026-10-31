@@ -11,3 +11,4 @@ EXPORTS
     DVP_IdentifyW
     DVP_IdentifyFileW
     DVP_CreateViewer
+    DVP_Configure

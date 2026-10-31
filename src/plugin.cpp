@@ -8,6 +8,7 @@
 #include <objidl.h>  // LPSTREAM，"viewer plugins.h" 需要（WIN32_LEAN_AND_MEAN 会藏掉）
 #include <strsafe.h>
 
+#include "settings_dlg.h"
 #include "log.h"
 #include "viewer_window.h"
 #include "viewer plugins.h"
@@ -149,7 +150,7 @@ extern "C" BOOL DVP_IdentifyW(LPVIEWERPLUGININFOW lpVPInfo) {
   if (!lpVPInfo) return FALSE;
 
   lpVPInfo->cbSize = VIEWERPLUGININFOW_V4_SIZE;
-  lpVPInfo->dwFlags = DVPFIF_ExtensionsOnly;
+  lpVPInfo->dwFlags = DVPFIF_ExtensionsOnly | DVPFIF_CanConfigure;
   lpVPInfo->dwVersionHigh = 0;
   lpVPInfo->dwVersionLow = 1;
 
@@ -200,6 +201,13 @@ extern "C" BOOL DVP_IdentifyFileW(HWND hWnd, LPWSTR lpszName, LPVIEWERPLUGINFILE
   }
 
   return bMatch ? TRUE : FALSE;
+}
+
+extern "C" HWND DVP_Configure(HWND hWndParent, HWND hWndNotify, DWORD dwNotifyData) {
+  (void)hWndNotify;
+  (void)dwNotifyData;
+  LogLine(L"DVP_Configure parent=%p", hWndParent);
+  return SettingsShow(hWndParent);
 }
 
 extern "C" HWND DVP_CreateViewer(HWND hWndParent, LPRECT lpRc, DWORD dwFlags) {

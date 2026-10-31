@@ -29,6 +29,9 @@ std::wstring MakeIndex(const std::wstring& docBase, uint32_t prefixBlocks,
 // index-full|<blockCount>：后台全文索引完成。
 std::wstring MakeIndexFull(uint32_t blockCount);
 
+// netimg-allow|<origin> / netimg-deny|<origin>
+std::wstring MakeNetImageReply(const std::wstring& origin, bool allow);
+
 // clear|
 std::wstring MakeClear();
 

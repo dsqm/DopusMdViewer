@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <exception>
+#include <mutex>
 
 #include <json/json.hpp>  // build.bat 把 %PROJ%third_party 放进 INCLUDE
 
@@ -18,6 +19,7 @@ const size_t kMaxConfigBytes = 256 * 1024;
 
 Config g_config;
 bool g_loaded = false;
+std::mutex g_modeMutex;
 
 FontStack DefaultUi() {
   return {L"Segoe UI", L"Microsoft YaHei UI", L"system-ui", L"sans-serif"};
@@ -35,6 +37,7 @@ void SetDefaults(Config* c) {
   c->font.sizePx = 15;
   c->font.lineHeight = 1.65;
   c->font.measureEm = 40;
+  c->netImageMode = 1;  // 每主机每文档确认
 }
 
 int ClampInt(int v, int lo, int hi, int fallback) {
@@ -61,6 +64,17 @@ FontStack ReadStack(const nlohmann::json& obj, const char* key, const FontStack&
 }
 
 void ApplyJson(const nlohmann::json& root, Config* c) {
+  if (root.contains("netImageConfirm") && root["netImageConfirm"].is_string()) {
+    const std::string v = root["netImageConfirm"].get<std::string>();
+    if (v == "off") {
+      c->netImageMode = 0;
+    } else if (v == "doc") {
+      c->netImageMode = 2;
+    } else {
+      c->netImageMode = 1;
+    }
+  }
+
   if (root.contains("skin") && root["skin"].is_string()) {
     const std::string id = root["skin"].get<std::string>();
     if (!id.empty()) c->skin.assign(id.begin(), id.end());
@@ -83,6 +97,43 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
     const int m = font["measure"].get<int>();
     c->font.measureEm = (m == 0) ? 0 : ClampInt(m, 20, 200, 40);
   }
+}
+
+std::string WideToUtf8(const std::wstring& s) {
+  if (s.empty()) return std::string();
+  const int n = ::WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
+                                      nullptr, 0, nullptr, nullptr);
+  if (n <= 0) return std::string();
+  std::string out(static_cast<size_t>(n), '\0');
+  ::WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), &out[0], n, nullptr,
+                        nullptr);
+  return out;
+}
+
+nlohmann::json StackToJson(const FontStack& stack) {
+  nlohmann::json arr = nlohmann::json::array();
+  for (const std::wstring& name : stack) arr.push_back(WideToUtf8(name));
+  return arr;
+}
+
+bool WriteConfigAtomically(const wchar_t* path, const std::string& bytes) {
+  const std::wstring tmp = std::wstring(path) + L".tmp";
+  HANDLE h = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const BOOL ok = ::WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written,
+                              nullptr);
+  ::CloseHandle(h);
+  if (!ok || written != bytes.size()) {
+    ::DeleteFileW(tmp.c_str());
+    return false;
+  }
+  if (!::MoveFileExW(tmp.c_str(), path, MOVEFILE_REPLACE_EXISTING)) {
+    ::DeleteFileW(tmp.c_str());
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -134,4 +185,57 @@ const Config& ConfigLoad(void) {
 const Config& ConfigGet(void) {
   if (!g_loaded) return ConfigLoad();
   return g_config;
+}
+
+int ConfigNetImageMode(void) {
+  if (!g_loaded) ConfigLoad();
+  std::lock_guard<std::mutex> lock(g_modeMutex);
+  return g_config.netImageMode;
+}
+
+bool ConfigSetNetImageMode(int mode) {
+  if (mode < 0 || mode > 2) return false;
+  const wchar_t* path = ConfigPath();
+  if (!path || !*path) {
+    LogLine(L"CONFIG: 数据目录不可用，无法写盘");
+    return false;
+  }
+  if (!g_loaded) ConfigLoad();
+
+  {
+    std::lock_guard<std::mutex> lock(g_modeMutex);
+    g_config.netImageMode = mode;
+  }
+
+  // 读旧文件并保留未知键，避免设置一次就把将来的配置项抹掉
+  nlohmann::json root = nlohmann::json::object();
+  std::string existing;
+  if (UtilReadFileBytes(path, kMaxConfigBytes, &existing)) {
+    try {
+      nlohmann::json parsed = nlohmann::json::parse(existing);
+      if (parsed.is_object()) root = std::move(parsed);
+    } catch (const std::exception&) {
+      // 旧文件坏了就按已知字段重写
+    }
+  }
+
+  root["skin"] = WideToUtf8(g_config.skin);
+  nlohmann::json font;
+  font["ui"] = StackToJson(g_config.font.ui);
+  font["body"] = StackToJson(g_config.font.body);
+  font["mono"] = StackToJson(g_config.font.mono);
+  font["size"] = g_config.font.sizePx;
+  font["lineHeight"] = g_config.font.lineHeight;
+  font["measure"] = g_config.font.measureEm;
+  root["font"] = font;
+  root["netImageConfirm"] = mode == 0 ? "off" : (mode == 2 ? "doc" : "host");
+
+  const std::string bytes = root.dump(2);
+  if (!WriteConfigAtomically(path, bytes)) {
+    LogLine(L"CONFIG: 写入失败 %s", path);
+    return false;
+  }
+  LogLine(L"CONFIG: 已写入 %s netImageConfirm=%hs", path,
+          mode == 0 ? "off" : (mode == 2 ? "doc" : "host"));
+  return true;
 }

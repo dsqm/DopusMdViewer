@@ -137,12 +137,59 @@ md.renderer.rules.fence = (tokens, idx) => {
 
 /* ---------------- 清洗与 URL 改写 ---------------- */
 
+const TRANSPARENT_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+
+// 网络图片的确认状态（每文档重置）。origin -> Promise / 已允许 / 已拒绝。
+const netAllowed = new Set()
+const netDenied = new Set()
+const netPending = new Map()
+const netResolvers = new Map()
+
+function isRemoteUrl(raw) {
+  return /^(?:https?:)?\/\//i.test(raw || '')
+}
+
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  // 远程背景图 / 视频封面 / SVG 引用会绕过 <img> 的确认，直接去掉。
+  if (node.hasAttribute && node.hasAttribute('style')) {
+    const style = node.getAttribute('style')
+    if (/url\(\s*['"]?(?:https?:)?\/\//i.test(style)) node.removeAttribute('style')
+  }
+  if (node.hasAttribute && node.hasAttribute('background')) {
+    if (isRemoteUrl(node.getAttribute('background'))) node.removeAttribute('background')
+  }
+  if (node.tagName === 'VIDEO' && node.hasAttribute('poster')) {
+    if (isRemoteUrl(node.getAttribute('poster'))) node.removeAttribute('poster')
+  }
+  if (node.tagName === 'image' || node.tagName === 'IMAGE' || node.tagName === 'use') {
+    for (const attr of ['href', 'xlink:href']) {
+      if (node.hasAttribute && node.hasAttribute(attr) && isRemoteUrl(node.getAttribute(attr))) {
+        node.removeAttribute(attr)
+      }
+    }
+  }
+  if (node.tagName === 'INPUT' && (node.getAttribute('type') || '').toLowerCase() === 'image') {
+    if (isRemoteUrl(node.getAttribute('src'))) node.removeAttribute('src')
+  }
+
   if (node.tagName === 'IMG') {
     const src = node.getAttribute('src')
-    if (src) node.setAttribute('src', resolveImageUrl(src))
+    if (!src) return
+    if (isRemoteUrl(src)) {
+      let absolute = null
+      try { absolute = new URL(src, location.href) } catch { absolute = null }
+      if (absolute && absolute.protocol === 'https:') {
+        // 先放透明占位，宿主确认后再设真 src；CSP 只放行 https:
+        node.setAttribute('data-mdv-src', absolute.href)
+        node.setAttribute('src', TRANSPARENT_IMG)
+      } else {
+        node.removeAttribute('src')  // http / 其他协议：不发起请求，只留 alt
+      }
+      return
+    }
     // 不设 loading=lazy：块级虚拟化已经只保留视口附近的块，原生懒加载在
     // translate3d 的虚拟滚动里判定不准，会让图片一直不发起请求。
+    node.setAttribute('src', resolveImageUrl(src))
     return
   }
   if (node.tagName === 'A') {
@@ -385,6 +432,57 @@ function acquireEl() {
   return fresh
 }
 
+function ensureNetConsent(origin) {
+  if (netAllowed.has(origin)) return Promise.resolve(true)
+  if (netDenied.has(origin)) return Promise.resolve(false)
+  if (netPending.has(origin)) return netPending.get(origin)
+  const host = window.chrome && window.chrome.webview
+  if (!host) return Promise.resolve(true)  // 开发模式没有宿主，交给 CSP
+  const p = new Promise((resolve) => {
+    netResolvers.set(origin, resolve)
+    postRaw('netimg|' + origin)
+  })
+  netPending.set(origin, p)
+  return p
+}
+
+function resolveNetConsent(origin, allow) {
+  const resolve = netResolvers.get(origin)
+  if (!resolve) return
+  netResolvers.delete(origin)
+  netPending.delete(origin)
+  if (allow) netAllowed.add(origin)
+  else netDenied.add(origin)
+  resolve(allow)
+}
+
+function resetNetConsent() {
+  for (const resolve of netResolvers.values()) resolve(false)
+  netResolvers.clear()
+  netPending.clear()
+  netAllowed.clear()
+  netDenied.clear()
+}
+
+function processNetImages(root) {
+  const imgs = root.querySelectorAll('img[data-mdv-src]')
+  for (const img of imgs) {
+    if (img.dataset.mdvNet === '1') continue
+    img.dataset.mdvNet = '1'
+    let origin = ''
+    try { origin = new URL(img.dataset.mdvSrc).origin } catch { continue }
+    ensureNetConsent(origin).then((allow) => {
+      if (!img.isConnected) return
+      if (allow) {
+        img.src = img.dataset.mdvSrc
+      } else {
+        img.removeAttribute('src')
+        img.title = '网络图片未加载'
+      }
+    })
+  }
+}
+
 function renderItem(item) {
   const i = item.i
   if (!V.active || i >= V.blockCount || item.docId !== V.docId) return
@@ -413,6 +511,7 @@ function renderItem(item) {
   rec.el.style.top = (pos(i) - V.stageBase) + 'px'
   V.topsDirty = true
   rec.el.innerHTML = renderBlockHtml(item.text, item.flags)
+  processNetImages(rec.el)
   setHeight(i, rec.el.offsetHeight)
   queueMermaid(rec.el, V.docId)
 }
@@ -676,6 +775,7 @@ function resetVirtual() {
   if (sbEl) sbEl.hidden = true
   V.initializing = false
   V.anchorSet = false
+  resetNetConsent()
 }
 
 function applyIndex(base, prefix, est, fileSize, enc) {
@@ -1103,6 +1203,7 @@ function renderDocument(source, docBase) {
   const body = stripFrontMatter(source)
   const html = sanitize(md.render(body, { docBase: state.docBase }))
   docEl.innerHTML = html
+  processNetImages(docEl)
 
   const ms = performance.now() - t0
   renderMermaidBlocks(docEl, state.generation)
@@ -1167,6 +1268,11 @@ function onHostMessage(event) {
 
   if (type === 'clear') {
     resetVirtual()
+    return
+  }
+
+  if (type === 'netimg-allow' || type === 'netimg-deny') {
+    resolveNetConsent(rest, type === 'netimg-allow')
     return
   }
 

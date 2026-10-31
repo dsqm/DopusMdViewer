@@ -7,6 +7,7 @@
 
 #include <cstdarg>
 #include <new>
+#include <vector>
 #include <objidl.h>  // LPSTREAM，"viewer plugins.h" 需要（WIN32_LEAN_AND_MEAN 会藏掉）
 #include <psapi.h>
 #include <shellapi.h>
@@ -41,6 +42,10 @@ struct ViewerState {
   LONGLONG qpcLoad;  // LOADW 起点，用于端到端耗时
   bool docOpened;    // doc_source 归本窗口
   bool indexFullPending;  // 全文索引已就绪但页面还没收到 index-full
+  bool netDocDecided;     // 每文档确认模式：本文件已经问过
+  bool netDocAllowed;     // 每文档确认模式：用户的选择
+  std::vector<std::wstring> netApproved;  // 每主机模式：已允许的来源
+  std::vector<std::wstring> netDenied;    // 每主机模式：已拒绝的来源
   bool chromePushed;
   bool webFailed;
   bool hasHost;  // 宿主此刻是否在本窗口（单宿主，被别的窗口借走时没有画面）
@@ -260,10 +265,79 @@ void OnHostReady(ViewerState* st) {
   MaybePushIndexFull(st);
 }
 
+bool ListHas(const std::vector<std::wstring>& list, const std::wstring& value) {
+  for (const std::wstring& item : list) {
+    if (item == value) return true;
+  }
+  return false;
+}
+
+void ReplyNetImage(ViewerState* st, const std::wstring& origin, bool allow) {
+  if (!st->hasHost || !WebHostIsReady()) return;
+  WebHostPost(st->hwndSelf, msg::MakeNetImageReply(origin, allow));
+}
+
+// 网络图片的二次确认。确认框在查看器线程上模态弹出；页面收到答复后再设 src。
+void HandleNetImageConsent(ViewerState* st, const std::wstring& origin) {
+  if (origin.empty() || origin.size() > 512) {
+    ReplyNetImage(st, origin, false);
+    return;
+  }
+  const int mode = ConfigNetImageMode();
+  if (mode == 0) {
+    ReplyNetImage(st, origin, true);
+    return;
+  }
+
+  const HWND owner = ::GetAncestor(st->hwndSelf, GA_ROOT);
+  const int flags = MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2;
+
+  if (mode == 2) {
+    if (!st->netDocDecided) {
+      const std::wstring text =
+          L"此文档要加载来自 " + origin +
+          L" 的网络图片。\n\n允许本文档加载网络图片吗？\n\n可在插件设置里调整此行为。";
+      const int r = ::MessageBoxW(owner, text.c_str(), L"DopusMdViewer", flags);
+      st->netDocDecided = true;
+      st->netDocAllowed = (r == IDYES);
+      LogLine(L"VIEWER: 网络图片（每文档）%s -> %s", origin.c_str(),
+              st->netDocAllowed ? L"允许" : L"拒绝");
+    }
+    ReplyNetImage(st, origin, st->netDocAllowed);
+    return;
+  }
+
+  if (ListHas(st->netApproved, origin)) {
+    ReplyNetImage(st, origin, true);
+    return;
+  }
+  if (ListHas(st->netDenied, origin)) {
+    ReplyNetImage(st, origin, false);
+    return;
+  }
+
+  const std::wstring text = L"允许加载来自 " + origin +
+                            L" 的网络图片吗？\n\n只影响当前文档；可在插件设置里调整此行为。";
+  const int r = ::MessageBoxW(owner, text.c_str(), L"DopusMdViewer", flags);
+  const bool allow = (r == IDYES);
+  if (allow) {
+    st->netApproved.push_back(origin);
+  } else {
+    st->netDenied.push_back(origin);
+  }
+  LogLine(L"VIEWER: 网络图片（每主机）%s -> %s", origin.c_str(), allow ? L"允许" : L"拒绝");
+  ReplyNetImage(st, origin, allow);
+}
+
 void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   std::wstring type;
   std::wstring rest;
   if (!msg::SplitType(frame, &type, &rest)) return;
+
+  if (type == L"netimg") {
+    HandleNetImageConsent(st, rest);
+    return;
+  }
 
   if (type == L"event") {
     const std::wstring kind = msg::SecondField(rest);
@@ -336,6 +410,10 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
   st->qpcLoad = tLoad.QuadPart;
 
   st->docOpened = false;
+  st->netDocDecided = false;
+  st->netDocAllowed = false;
+  st->netApproved.clear();
+  st->netDenied.clear();
   docsrc::CloseIfOwner(st->hwndSelf);
 
   if (!st->hasHost) {
@@ -355,6 +433,10 @@ void HandleClear(ViewerState* st) {
   st->ullFileSize = 0;
   st->docOpened = false;
   st->indexFullPending = false;
+  st->netDocDecided = false;
+  st->netDocAllowed = false;
+  st->netApproved.clear();
+  st->netDenied.clear();
   docsrc::CloseIfOwner(st->hwndSelf);
 
   if (st->hasHost && WebHostIsReady()) {
@@ -607,6 +689,8 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->qpcLoad = 0;
   st->docOpened = false;
   st->indexFullPending = false;
+  st->netDocDecided = false;
+  st->netDocAllowed = false;
   st->chromePushed = false;
   st->webFailed = false;
   st->hasHost = false;
