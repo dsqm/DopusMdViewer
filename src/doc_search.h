@@ -20,10 +20,12 @@ struct SearchHits {
 
 // threads <= 0 时用 4。命中上限 10000（票 04）。
 // caseSensitive=false 时只折叠 ASCII 字母，多字节编码（UTF-8/GB18030）按原字节比较。
+// wholeWord=true 时要求命中前后都不是 ASCII 词字符（字母、数字、下划线）；
+// 对中文这类没有词边界的文字不生效，查询本身就等于整段。
 // cancel 非空且置位时尽快返回（每读 1 MB 查一次），结果只保证是前缀。
 SearchHits SearchFileBytes(const std::wstring& path, const std::string& needle,
                            int threads, std::wstring* error = nullptr,
-                           bool caseSensitive = true,
+                           bool caseSensitive = true, bool wholeWord = false,
                            const std::atomic<bool>* cancel = nullptr);
 
 }  // namespace doc

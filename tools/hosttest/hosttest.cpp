@@ -77,6 +77,7 @@ bool g_seam = false;        // 5 秒后滚到第 10 万行（第一段与第二�
 bool g_consent = false;     // 5 秒后点页内网络图确认面板的“允许”，4 秒后回流图片状态
 bool g_reload = false;      // 6.5 秒后重新 LOADW 同一个文件，验进程内记忆跨文件保留
 bool g_find = false;        // 5 秒后打开搜索、查 g_findQuery、翻到下一个，回流计数与 mark
+bool g_findWord = false;    // 配合 find：先打开整词匹配
 bool g_findRace = false;    // 5 秒后连打两个查询：验证旧扫描被取消、后一问生效
 bool g_prewarm = false;     // 先预热，7 秒后再建查看器，验首开耗时
 bool g_release = false;     // 5 秒后销毁主窗口，验 DO 窗口关闭后实例释放
@@ -343,10 +344,12 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       } else if (wParam == kFindTimerId) {
         ::KillTimer(hwnd, kFindTimerId);
         wchar_t script[4096];
+        const wchar_t* wordBtn =
+            g_findWord ? L"var wb=document.getElementById('find-word');if(wb)wb.click();" : L"";
         ::StringCchPrintfW(
             script, ARRAYSIZE(script),
             L"(function(){var b=document.querySelector('[data-act=\"find\"]');if(b)b.click();"
-            L"var inp=document.getElementById('find-input');inp.value='%s';"
+            L"%svar inp=document.getElementById('find-input');inp.value='%s';"
             L"inp.dispatchEvent(new Event('input',{bubbles:true}));"
             L"function rep(tag){var m=[].map.call(document.querySelectorAll('mark.hit'),"
             L"function(x){return x.textContent;});"
@@ -357,7 +360,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"if(n)n.click();setTimeout(function(){rep('next');},700);},1500);"
             L"setTimeout(function(){var c=document.getElementById('find-case');if(c)c.click();"
             L"setTimeout(function(){rep('case');},1200);},3200);})();",
-            g_findQuery);
+            wordBtn, g_findQuery);
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
         // 搜索期间向宿主线程要一次执行：同步扫描会把这条消息堵住几百毫秒。
         ::SetTimer(hwnd, kFindPingTimerId, 600, nullptr);
@@ -580,6 +583,10 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"consent")) g_consent = true;
   if (*p && wcsstr(p, L"reload")) g_reload = true;
   if (*p && wcsstr(p, L"find")) g_find = true;
+  if (*p && wcsstr(p, L"findww")) {
+    g_find = false;
+    g_findWord = true;
+  }
   if (*p && wcsstr(p, L"findrace")) {
     g_find = false;
     g_findRace = true;
@@ -690,7 +697,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   if (g_reload) {
     ::SetTimer(g_hwndMain, kReloadTimerId, 6500, nullptr);
   }
-  if (g_find) {
+  if (g_find || g_findWord) {
     ::SetTimer(g_hwndMain, kFindTimerId, 5000, nullptr);
   }
   if (g_findRace) {

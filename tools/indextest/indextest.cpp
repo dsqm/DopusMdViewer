@@ -324,17 +324,20 @@ int ModeBlockAt(const std::wstring& path, uint64_t off) {
   return 0;
 }
 
-int ModeSearch(const std::wstring& path, const std::string& pattern) {
+int ModeSearch(const std::wstring& path, const std::string& pattern, bool caseSensitive,
+               bool wholeWord) {
   LARGE_INTEGER t0;
   LARGE_INTEGER t1;
   ::QueryPerformanceCounter(&t0);
   std::wstring err;
-  const doc::SearchHits hits = doc::SearchFileBytes(path, pattern, 4, &err);
+  const doc::SearchHits hits =
+      doc::SearchFileBytes(path, pattern, 4, &err, caseSensitive, wholeWord);
   ::QueryPerformanceCounter(&t1);
-  wprintf(L"search \"%hs\": total=%llu kept=%zu truncated=%d %.1f ms %s\n", pattern.c_str(),
+  wprintf(L"search \"%hs\" cs=%d ww=%d: total=%llu kept=%zu truncated=%d %.1f ms %s\n",
+          pattern.c_str(), caseSensitive ? 1 : 0, wholeWord ? 1 : 0,
           static_cast<unsigned long long>(hits.total), hits.offsets.size(),
           hits.truncated ? 1 : 0, QpcMs(t0.QuadPart, t1.QuadPart), err.c_str());
-  for (size_t i = 0; i < std::min<size_t>(hits.offsets.size(), 10); ++i) {
+  for (size_t i = 0; i < std::min<size_t>(hits.offsets.size(), 40); ++i) {
     wprintf(L"  #%zu @%llu\n", i, static_cast<unsigned long long>(hits.offsets[i]));
   }
   return 0;
@@ -381,7 +384,9 @@ int wmain(int argc, wchar_t** argv) {
     if (n > 1) {
       ::WideCharToMultiByte(CP_UTF8, 0, wp.c_str(), -1, &pattern[0], n, nullptr, nullptr);
     }
-    return ModeSearch(path, pattern);
+    const std::wstring flags = argc >= 5 ? argv[4] : L"";
+    return ModeSearch(path, pattern, flags.find(L"cs") != std::wstring::npos,
+                      flags.find(L"ww") != std::wstring::npos);
   }
 
   wprintf(L"unknown mode %s\n", mode.c_str());

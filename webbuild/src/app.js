@@ -413,6 +413,7 @@ const FIND = {
   open: false,
   query: '',
   cs: false,
+  ww: false,
   results: [],
   index: -1,
   total: 0,
@@ -459,6 +460,7 @@ let findEl = null
 let findInput = null
 let findCount = null
 let findCaseBtn = null
+let findWordBtn = null
 let outlineEl = null
 let outlineList = null
 
@@ -471,6 +473,7 @@ function bindDom() {
   findInput = document.getElementById('find-input')
   findCount = document.getElementById('find-count')
   findCaseBtn = document.getElementById('find-case')
+  findWordBtn = document.getElementById('find-word')
   outlineEl = document.getElementById('outline')
   outlineList = document.getElementById('outline-list')
 }
@@ -2095,7 +2098,7 @@ function foldAscii(text) {
   return text.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32))
 }
 
-function findOccurrences(text, query, caseSensitive) {
+function findOccurrences(text, query, caseSensitive, wholeWord) {
   if (!query) return []
   const hay = caseSensitive ? text : foldAscii(text)
   const needle = caseSensitive ? query : foldAscii(query)
@@ -2104,11 +2107,20 @@ function findOccurrences(text, query, caseSensitive) {
   for (;;) {
     p = hay.indexOf(needle, p)
     if (p < 0) break
-    out.push(p)
+    if (!wholeWord || (!isWordCharAt(hay, p - 1) && !isWordCharAt(hay, p + needle.length))) {
+      out.push(p)
+    }
     p += Math.max(1, needle.length)
     if (out.length >= 500) break
   }
   return out
+}
+
+// 与 C++ 一致：整词边界只认 ASCII 字母、数字、下划线。
+function isWordCharAt(text, i) {
+  if (i < 0 || i >= text.length) return false
+  const c = text.charCodeAt(i)
+  return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95
 }
 
 function clearHitMarks() {
@@ -2234,6 +2246,7 @@ function runSearch() {
 
   const url = SEARCH_URL + '?q=' + encodeURIComponent(FIND.query)
     + (FIND.cs ? '&cs=1' : '')
+    + (FIND.ww ? '&ww=1' : '')
   fetch(url, { cache: 'no-store' })
     .then((res) => {
       if (!res.ok) throw new Error('HTTP ' + res.status)
@@ -2303,7 +2316,7 @@ function applyHitMark(el, unitOff, center = true) {
   clearHitMarks()
   const query = FIND.query
   if (!query) return
-  const occurrences = findOccurrences(el.textContent || '', query, FIND.cs)
+  const occurrences = findOccurrences(el.textContent || '', query, FIND.cs, FIND.ww)
   if (!occurrences.length) return
 
   let best = occurrences[0]
@@ -2538,6 +2551,15 @@ function bindFindUi() {
   findCaseBtn.addEventListener('click', () => {
     FIND.cs = !FIND.cs
     findCaseBtn.classList.toggle('on', FIND.cs)
+    if (FIND.query) {
+      FIND.busy = true
+      updateFindCount()
+      runSearch()
+    }
+  })
+  findWordBtn.addEventListener('click', () => {
+    FIND.ww = !FIND.ww
+    findWordBtn.classList.toggle('on', FIND.ww)
     if (FIND.query) {
       FIND.busy = true
       updateFindCount()

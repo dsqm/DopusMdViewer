@@ -380,10 +380,15 @@ std::string WideToMbcs(const std::wstring& s, UINT cp) {
   return out;
 }
 
+inline bool IsAsciiWordUnit(int c) {
+  return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') ||
+         c == L'_';
+}
+
 // UTF-16 源文件上的宽字符搜索：单线程顺序读，返回源字节偏移。
 // 只折叠 ASCII 字母；UTF-16 文档通常不大，不为此再拆线程。
 doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& needle,
-                               bool caseSensitive, bool bigEndian,
+                               bool caseSensitive, bool bigEndian, bool wholeWord,
                                const std::atomic<bool>* cancel) {
   doc::SearchHits result;
   const size_t m = needle.size();
@@ -393,6 +398,10 @@ doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& nee
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                            OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
   if (h == INVALID_HANDLE_VALUE) return result;
+
+  LARGE_INTEGER fsize = {};
+  ::GetFileSizeEx(h, &fsize);
+  const uint64_t fileUnits = static_cast<uint64_t>(fsize.QuadPart) / 2;
 
   auto fold = [caseSensitive](wchar_t c) -> wchar_t {
     if (!caseSensitive && c >= L'A' && c <= L'Z') return static_cast<wchar_t>(c + 32);
@@ -410,6 +419,7 @@ doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& nee
   uint64_t bufStartUnit = 0;
   uint64_t nextUnit = 0;
   std::vector<wchar_t> carry;
+  int prevUnit = -1;  // 缓冲区起点前一个单元；文件开头没有
 
   for (;;) {
     if (cancel && cancel->load(std::memory_order_relaxed)) break;
@@ -429,6 +439,22 @@ doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& nee
     const uint64_t startUnit = nextUnit - carryLen;
     bufStartUnit = startUnit;
 
+    // 整词匹配要看命中后一个单元：它在下一个读块里，用偏移读一次（不动顺序指针）。
+    int nextAfter = -1;
+    const bool moreData = nextUnit + units < fileUnits;
+    if (wholeWord && moreData) {
+      OVERLAPPED ov = {};
+      const uint64_t off = (nextUnit + units) * 2;
+      ov.Offset = static_cast<DWORD>(off);
+      ov.OffsetHigh = static_cast<DWORD>(off >> 32);
+      unsigned char pair[2] = {};
+      DWORD got2 = 0;
+      if (::ReadFile(h, pair, 2, &got2, &ov) && got2 == 2) {
+        nextAfter = bigEndian ? static_cast<int>((pair[0] << 8) | pair[1])
+                              : static_cast<int>(pair[0] | (pair[1] << 8));
+      }
+    }
+
     size_t k = m - 1;
     while (k < buf.size()) {
       const wchar_t c = fold(buf[k]);
@@ -441,9 +467,18 @@ doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& nee
           }
         }
         if (match) {
-          ++result.total;
-          if (result.offsets.size() < 10000) {
-            result.offsets.push_back((bufStartUnit + k - (m - 1)) * 2);
+          bool whole = true;
+          if (wholeWord) {
+            const int pb = (k == m - 1) ? prevUnit : static_cast<uint16_t>(buf[k - m]);
+            const int nb = (k + 1 < buf.size()) ? static_cast<uint16_t>(buf[k + 1])
+                                                : nextAfter;
+            whole = !IsAsciiWordUnit(pb) && !IsAsciiWordUnit(nb);
+          }
+          if (whole) {
+            ++result.total;
+            if (result.offsets.size() < 10000) {
+              result.offsets.push_back((bufStartUnit + k - (m - 1)) * 2);
+            }
           }
         }
         ++k;
@@ -453,8 +488,11 @@ doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& nee
     }
 
     nextUnit += units;
-    carry.assign(buf.end() - static_cast<ptrdiff_t>(std::min<size_t>(m - 1, buf.size())),
-                 buf.end());
+    const size_t keep = std::min<size_t>(m - 1, buf.size());
+    if (wholeWord && keep < buf.size()) {
+      prevUnit = static_cast<uint16_t>(buf[buf.size() - keep - 1]);
+    }
+    carry.assign(buf.end() - static_cast<ptrdiff_t>(keep), buf.end());
   }
   ::CloseHandle(h);
   result.truncated = result.total > result.offsets.size();
@@ -1067,6 +1105,7 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
   }
   if (needle.empty()) return true;
   const bool caseSensitive = QueryU32(query, L"cs", 0) != 0;
+  const bool wholeWord = QueryU32(query, L"ww", 0) != 0;
 
   std::shared_ptr<const Snapshot> snap;
   {
@@ -1081,13 +1120,14 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
   doc::SearchHits hits;
   if (wide) {
     hits = SearchWideFile(snap->path, needle, caseSensitive,
-                          snap->enc.encoding == doc::Encoding::Utf16BE, cancel);
+                          snap->enc.encoding == doc::Encoding::Utf16BE, wholeWord, cancel);
   } else {
     const std::string bytes = snap->enc.encoding == doc::Encoding::Gb18030
                                   ? WideToMbcs(needle, 54936)
                                   : WideToUtf8String(needle);
     if (!bytes.empty()) {
-      hits = doc::SearchFileBytes(snap->path, bytes, 4, nullptr, caseSensitive, cancel);
+      hits = doc::SearchFileBytes(snap->path, bytes, 4, nullptr, caseSensitive, wholeWord,
+                                  cancel);
     }
   }
 

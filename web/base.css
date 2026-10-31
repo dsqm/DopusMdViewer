@@ -576,7 +576,7 @@ pre.mermaid-src {
 
 #find button { padding: 1px 6px; }
 
-#find-case.tog.on {
+#find .tog.on {
   border-color: var(--md-link);
   color: var(--md-link);
 }
