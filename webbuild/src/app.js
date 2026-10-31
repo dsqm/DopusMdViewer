@@ -1,5 +1,4 @@
 import MarkdownIt from 'markdown-it'
-import footnote from 'markdown-it-footnote'
 import deflist from 'markdown-it-deflist'
 import taskLists from 'markdown-it-task-lists'
 import sub from 'markdown-it-sub'
@@ -44,6 +43,7 @@ const DOC_BASE_DEFAULT = 'https://mddoc.local/'
 const DOC_HOST = 'https://mddoc.local/'
 const BLOCKS_URL = 'https://mdblocks.local/__blocks'
 const LINES_URL = 'https://mdblocks.local/__lines'
+const DEFS_URL = 'https://mdblocks.local/__defs'
 
 const OVERSCAN = 120          // 视口上下各留多少块
 const MAX_FETCH_BLOCKS = 100  // 单次请求块数（票 03：50–200）
@@ -63,6 +63,20 @@ const LANGUAGES = {
 
 for (const [name, lang] of Object.entries(LANGUAGES)) hljs.registerLanguage(name, lang)
 
+/* 跨块语义（票 05）：链接引用定义与脚注定义散在别的块里，逐块渲染时拿不到。
+   C++ 把隐藏块原文一次性送过来，这里先建 references，再按定义顺序给脚注编号。
+   脚注角标自己实现，不用 markdown-it-footnote 的全局状态。 */
+const REF = { references: null }
+const FOOT = { defs: [], nums: new Map(), html: '' }
+
+function normLabel(s) {
+  return String(s).trim().replace(/\s+/g, ' ').toUpperCase()
+}
+
+function blockEnv() {
+  return REF.references ? { references: REF.references } : {}
+}
+
 /* ---------------- 渲染管线 ---------------- */
 
 const md = new MarkdownIt({
@@ -73,8 +87,7 @@ const md = new MarkdownIt({
   highlight: null,
 })
 
-md.use(footnote)
-  .use(deflist)
+md.use(deflist)
   .use(taskLists, { enabled: false, label: false })
   .use(sub)
   .use(sup)
@@ -89,6 +102,24 @@ md.use(footnote)
       output: 'htmlAndMathml',
     },
   })
+
+// [^label] → 上标角标。编号由文末脚注区的定义顺序给定；定义还没到时留原文。
+md.inline.ruler.before('link', 'mdv_footnote_ref', (state, silent) => {
+  const src = state.src
+  const start = state.pos
+  if (src.charCodeAt(start) !== 0x5b || src.charCodeAt(start + 1) !== 0x5e) return false
+  const end = src.indexOf(']', start + 2)
+  if (end < 0) return false
+  const num = FOOT.nums.get(normLabel(src.slice(start + 2, end)))
+  if (!num) return false
+  if (!silent) {
+    const token = state.push('html_inline', '', 0)
+    token.content = '<sup class="footnote-ref"><a href="#fn' + num + '" id="fnref' + num +
+      '">[' + num + ']</a></sup>'
+  }
+  state.pos = end + 1
+  return true
+})
 
 const escapeHtml = md.utils.escapeHtml
 
@@ -253,6 +284,7 @@ const V = {
   blockCount: 0,
   prefixCount: 0,
   estTotal: 0,
+  lastVisible: 0,   // 最后一个非隐藏块：脚注区挂在它后面
   fileSize: 0,
   enc: 0,
   heights: null,
@@ -422,7 +454,7 @@ let mermaidChain = Promise.resolve()
 let resizeObserver = null
 
 function renderLoose(text) {
-  const env = {}
+  const env = blockEnv()
   const tokens = md.parse(text, env)
   for (const t of tokens) {
     if (t.type === 'paragraph_open' || t.type === 'paragraph_close') t.hidden = false
@@ -432,12 +464,106 @@ function renderLoose(text) {
 
 function renderBlockHtml(text, flags) {
   try {
-    const html = (flags & 0x10) ? renderLoose(text) : md.render(text, {})
+    const html = (flags & 0x10) ? renderLoose(text) : md.render(text, blockEnv())
     return sanitize(html)
   } catch (err) {
     report('render-error', String(err))
     return '<pre>' + escapeHtml(text) + '</pre>'
   }
+}
+
+/* ---------------- 跨块定义：链接引用与脚注 ---------------- */
+
+function stripDefIndent(raw) {
+  const lines = raw.split(/\r?\n/)
+  for (let i = 1; i < lines.length; i++) lines[i] = lines[i].replace(/^ {1,4}/, '')
+  return lines.join('\n')
+}
+
+function buildFootHtml() {
+  if (!FOOT.defs.length) return ''
+  const items = []
+  for (const d of FOOT.defs) {
+    const back = '<a class="footnote-backref" href="#fnref' + d.num + '">\u21a9</a>'
+    let body = ''
+    try {
+      body = sanitize(md.render(d.body, blockEnv()))
+    } catch {
+      body = '<p>' + escapeHtml(d.body) + '</p>'
+    }
+    // 回跳箭头塞进最后一段，别单独占一行
+    body = /<\/p>\s*$/.test(body) ? body.replace(/<\/p>\s*$/, ' ' + back + '</p>')
+                                     : body + back
+    items.push('<li id="fn' + d.num + '">' + body + '</li>')
+  }
+  return '<section class="footnotes"><ol>' + items.join('') + '</ol></section>'
+}
+
+// 隐藏块原文：先拼链接引用定义喂一次 markdown-it（归一化交给它），
+// 再按定义顺序给脚注编号。
+function applyDefs(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const refTexts = []
+  const footTexts = []
+  let o = 0
+  while (o + 8 <= bytes.byteLength) {
+    const flags = dv.getUint32(o, true); o += 4
+    const len = dv.getUint32(o, true); o += 4
+    if (o + len > bytes.byteLength) break
+    const text = decoder.decode(bytes.subarray(o, o + len)); o += len
+    if (flags & 0x40) footTexts.push(text)
+    else refTexts.push(text)
+  }
+
+  const env = {}
+  if (refTexts.length) {
+    try { md.parse(refTexts.join('\n\n'), env) } catch { /* 坏定义不影响正文 */ }
+  }
+  REF.references = env.references || null
+
+  FOOT.defs = []
+  FOOT.nums.clear()
+  for (const text of footTexts) {
+    const m = /^\s*\[\^([^\]]+)\]:[ \t]*/.exec(text)
+    if (!m) continue
+    const label = normLabel(m[1])
+    if (FOOT.nums.has(label)) continue
+    const num = FOOT.defs.length + 1
+    FOOT.defs.push({ label, num, body: stripDefIndent(text.slice(m[0].length)) })
+    FOOT.nums.set(label, num)
+  }
+  FOOT.html = buildFootHtml()
+
+  report('defs', 'refs=' + (REF.references ? Object.keys(REF.references).length : 0)
+    + ' foot=' + FOOT.defs.length)
+  rerenderResidents()
+}
+
+function loadDefs() {
+  const docId = V.docId
+  fetch(DEFS_URL, { cache: 'no-store' })
+    .then((res) => (res.ok ? res.arrayBuffer() : null))
+    .then((buf) => {
+      if (!buf || docId !== V.docId) return
+      applyDefs(new Uint8Array(buf))
+    })
+    .catch((err) => {
+      if (docId === V.docId) report('defs-error', String(err))
+    })
+}
+
+function rerenderResidents() {
+  if (!V.active) return
+  for (const [i, rec] of V.resident) {
+    if (rec.big || !rec.el || !rec.text) continue
+    let html = renderBlockHtml(rec.text, rec.flags)
+    if (i === V.lastVisible && FOOT.html) html += FOOT.html
+    rec.el.innerHTML = html
+    processNetImages(rec.el)
+    setHeight(i, rec.el.offsetHeight)
+    queueMermaid(rec.el, V.docId)
+  }
+  schedulePlace()
 }
 
 function queueMermaid(el, docId) {
@@ -558,7 +684,12 @@ function renderItem(item) {
   rec.el.className = 'blk blk--' + kind + (i === 0 ? ' blk--first' : '')
   rec.el.style.top = (pos(i) - V.stageBase) + 'px'
   V.topsDirty = true
-  rec.el.innerHTML = renderBlockHtml(item.text, item.flags)
+  rec.text = item.text
+  rec.flags = item.flags
+  let html = renderBlockHtml(item.text, item.flags)
+  // 脚注区挂在最后一个块上：没有独立块号，也不参与索引
+  if (i === V.lastVisible && FOOT.html) html += FOOT.html
+  rec.el.innerHTML = html
   processNetImages(rec.el)
   setHeight(i, rec.el.offsetHeight)
   queueMermaid(rec.el, V.docId)
@@ -1063,8 +1194,10 @@ function finishInit() {
 
   if (V.pendingFullCount) {
     const full = V.pendingFullCount
+    const last = V.pendingLastVisible
     V.pendingFullCount = 0
-    applyIndexFull(full)
+    V.pendingLastVisible = 0
+    applyIndexFull(full, last)
   }
 }
 
@@ -1100,10 +1233,15 @@ function resetVirtual() {
   V.anchorSet = false
   V.big = new Map()
   V.bigPending = null
+  V.lastVisible = 0
+  REF.references = null
+  FOOT.defs = []
+  FOOT.nums.clear()
+  FOOT.html = ''
   resetNetConsent()
 }
 
-function applyIndex(base, prefix, est, fileSize, enc) {
+function applyIndex(base, prefix, est, fileSize, enc, lastVisible) {
   resetVirtual()
   bindDom()
   document.body.classList.add('virtual')
@@ -1116,6 +1254,7 @@ function applyIndex(base, prefix, est, fileSize, enc) {
   V.docId++
   V.prefixCount = prefix
   V.estTotal = est
+  V.lastVisible = lastVisible || 0
   V.fileSize = fileSize
   V.enc = enc
   V.blockCount = Math.max(1, est || prefix || 1)
@@ -1138,27 +1277,38 @@ function applyIndex(base, prefix, est, fileSize, enc) {
   }
 
   requestBlocks(0, Math.min(30, Math.max(1, prefix || 1)), 'init')
+  loadDefs()
 }
 
-function applyIndexFull(count) {
+function applyIndexFull(count, lastVisible) {
   if (!V.active || !count) return
+  // 前缀只扫了 8 MB，后面可能还有引用/脚注定义；全文索引到了再取一次
+  loadDefs()
+  const lastChanged = lastVisible !== undefined && lastVisible !== V.lastVisible
+  if (lastVisible !== undefined) V.lastVisible = lastVisible
   if (V.initializing) {
     // 首屏还没收尾：等 finishInit 之后统一换数组，避免重入
     V.pendingFullCount = count
+    V.pendingLastVisible = V.lastVisible
     return
   }
   const oldCount = V.blockCount
-  if (count === oldCount) return
+  if (count === oldCount) {
+    if (lastChanged) rerenderResidents()
+    return
+  }
 
   if (count < oldCount) {
     // 估算偏大（常见）：Fenwick 多出来的尾巴不影响前 count 块的前缀和，
     // 只改计数与总高，避免 400 万项重建卡一帧。
     V.blockCount = count
+    if (V.lastVisible > count - 1) V.lastVisible = count - 1
     V.totalH = topPad() + fwSum(count) + bottomPad()
     const scrollable = Math.max(0, V.totalH - V.vh)
     V.off = Math.min(V.off, scrollable)
     V.target = Math.min(V.target, scrollable)
     refetchTruncatedPrefix()
+    if (lastChanged) rerenderResidents()
     schedulePlace()
     return
   }
@@ -1178,6 +1328,7 @@ function applyIndexFull(count) {
   rebuildFenwick()
 
   refetchTruncatedPrefix()
+  if (lastChanged) rerenderResidents()
   schedulePlace()
 }
 
@@ -1605,12 +1756,14 @@ function onHostMessage(event) {
       parseInt(f[1], 10) || 0,
       parseInt(f[2], 10) || 0,
       parseInt(f[3], 10) || 0,
-      parseInt(f[4], 10) || 0)
+      parseInt(f[4], 10) || 0,
+      parseInt(f[5], 10) || 0)
     return
   }
 
   if (type === 'index-full') {
-    applyIndexFull(parseInt(rest, 10) || 0)
+    const f = rest.split('|')
+    applyIndexFull(parseInt(f[0], 10) || 0, parseInt(f[1], 10) || 0)
     return
   }
 
@@ -1653,7 +1806,16 @@ document.addEventListener('click', (e) => {
   if (!a) return
   e.preventDefault()
   const href = a.getAttribute('data-external') || a.getAttribute('href')
-  if (href && href.charAt(0) !== '#') postRaw('open|' + href)
+  if (!href) return
+  if (href.charAt(0) === '#') {
+    // 脚注角标跳到文末脚注区；反向链接没有块号映射，先不处理
+    if (/^#fn\d/.test(href) && V.active) {
+      V.target = Math.max(0, V.totalH - V.vh)
+      kick()
+    }
+    return
+  }
+  postRaw('open|' + href)
 }, true)
 
 /* ---------------- 开发模式（只在 Edge 里用，线上走 postMessage） ---------------- */

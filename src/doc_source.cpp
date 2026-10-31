@@ -339,6 +339,20 @@ uint32_t QueryU32(const std::wstring& query, const wchar_t* key, uint32_t def) {
   return static_cast<uint32_t>(_wtoi(query.c_str() + p + k.size()));
 }
 
+std::string ToUtf8(doc::Encoding enc, std::string raw) {
+  switch (enc) {
+    case doc::Encoding::Utf8:
+      return raw;
+    case doc::Encoding::Gb18030:
+      return DecodeMbcs(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), 54936);
+    case doc::Encoding::Utf16LE:
+      return DecodeWide(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), false);
+    case doc::Encoding::Utf16BE:
+      return DecodeWide(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), true);
+  }
+  return raw;
+}
+
 std::shared_ptr<const Snapshot> MakeSnapshot(std::unique_ptr<doc::IndexBuilder> builder,
                                              const std::wstring& path, uint64_t fileSize) {  auto snap = std::make_shared<Snapshot>();
   snap->builder = std::move(builder);
@@ -396,6 +410,14 @@ bool Open(HWND owner, const std::wstring& path, DocumentInfo* info, std::wstring
   if (info) {
     info->prefixBlocks = prefixBlocks;
     info->estimatedBlocks = estimated;
+    info->lastVisible = 0;
+    const doc::BlockIndex& ix = snap->builder->index();
+    for (uint32_t i = ix.BlockCount(); i > 0; --i) {
+      if (!ix.IsHidden(i - 1)) {
+        info->lastVisible = i - 1;
+        break;
+      }
+    }
     info->fileSize = fileSize;
     info->encoding = static_cast<uint8_t>(snap->enc.encoding);
     info->complete = complete;
@@ -471,6 +493,16 @@ uint32_t PublishedBlockCount() {
   std::lock_guard<std::mutex> lock(g_mu);
   if (!g_snap) return 0;
   return g_snap->builder->index().BlockCount();
+}
+
+uint32_t LastVisible() {
+  std::lock_guard<std::mutex> lock(g_mu);
+  if (!g_snap) return 0;
+  const doc::BlockIndex& ix = g_snap->builder->index();
+  for (uint32_t i = ix.BlockCount(); i > 0; --i) {
+    if (!ix.IsHidden(i - 1)) return i - 1;
+  }
+  return 0;
 }
 
 int HexVal(wchar_t c) {
@@ -712,21 +744,7 @@ bool ServeLines(const std::wstring& uri, std::string* body, int* status) {
             from, count, static_cast<unsigned long long>(elapsed), c.scannedLines);
   }
 
-  std::string utf8;
-  switch (snap->enc.encoding) {
-    case doc::Encoding::Utf8:
-      utf8 = std::move(raw);
-      break;
-    case doc::Encoding::Gb18030:
-      utf8 = DecodeMbcs(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), 54936);
-      break;
-    case doc::Encoding::Utf16LE:
-      utf8 = DecodeWide(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), false);
-      break;
-    case doc::Encoding::Utf16BE:
-      utf8 = DecodeWide(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), true);
-      break;
-  }
+  std::string utf8 = ToUtf8(snap->enc.encoding, std::move(raw));
 
   AppendU32(body, block);
   AppendU32(body, from);
@@ -756,6 +774,65 @@ void BigTable(std::string* out) {
     out->push_back(':');
     out->append(std::to_string(lines[k]));
   }
+}
+
+bool ServeDefs(const std::wstring& uri, std::string* body, int* status) {
+  if (!body || !status) return false;
+  body->clear();
+  *status = 404;
+
+  static const wchar_t kBase[] = L"https://mdblocks.local/__defs";
+  const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
+  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
+
+  std::shared_ptr<const Snapshot> snap;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    snap = g_snap;
+  }
+  *status = 200;
+  if (!snap) return true;
+
+  const doc::BlockIndex& ix = snap->builder->index();
+  const uint32_t total = ix.BlockCount();
+  constexpr uint64_t kMaxDefsBytes = 8ull << 20;
+  constexpr uint32_t kMaxDefBlocks = 20000;
+
+  HANDLE h = ::CreateFileW(snap->path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    LogLine(L"DOCSRC: __defs 打开失败 err=%lu", ::GetLastError());
+    *status = 404;
+    return true;
+  }
+
+  std::vector<unsigned char> buf(64 * 1024);
+  uint32_t blocks = 0;
+  for (uint32_t i = 0; i < total && body->size() < kMaxDefsBytes && blocks < kMaxDefBlocks; ++i) {
+    const uint8_t flags = ix.KindFlags(i);
+    if ((flags & doc::kFlagHidden) == 0) continue;
+    if (ix.KindOf(i) == doc::Kind::FrontMatter) continue;
+
+    const uint64_t bs = ix.Start(i);
+    const uint64_t be = ix.End(i);
+    if (be <= bs) continue;
+
+    const uint64_t want = std::min<uint64_t>(be - bs, kMaxDefsBytes - body->size());
+    if (want == 0) break;
+    if (want > buf.size()) continue;  // 单个定义超过 64 KB：跳过（极不常见）
+    size_t got = 0;
+    if (!ReadAt(h, bs, static_cast<size_t>(want), &buf, &got)) break;
+    const std::string utf8 = ToUtf8(snap->enc.encoding,
+                                    std::string(reinterpret_cast<const char*>(buf.data()), got));
+    AppendU32(body, static_cast<uint32_t>(flags));
+    AppendU32(body, static_cast<uint32_t>(utf8.size()));
+    body->append(utf8);
+    ++blocks;
+  }
+  ::CloseHandle(h);
+  LogLine(L"DOCSRC: __defs %u 个隐藏块 / %zu B", blocks, body->size());
+  return true;
 }
 
 bool Serve(const std::wstring& uri, std::string* body, int* status) {

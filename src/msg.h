@@ -22,12 +22,13 @@ std::wstring MakeSkin(const std::wstring& id, const std::wstring& css);
 // fx|<ui>|<body>|<mono>|<size>|<lineHeight>|<measureEm>
 std::wstring MakeFx(const FontSettings& font);
 
-// index|<docBase>|<prefixBlocks>|<estTotal>|<fileSize>|<encoding>
+// index|<docBase>|<prefixBlocks>|<estTotal>|<fileSize>|<encoding>|<lastVisible>
 std::wstring MakeIndex(const std::wstring& docBase, uint32_t prefixBlocks,
-                       uint32_t estTotal, uint64_t fileSize, int encoding);
+                       uint32_t estTotal, uint64_t fileSize, int encoding,
+                       uint32_t lastVisible);
 
-// index-full|<blockCount>：后台全文索引完成。
-std::wstring MakeIndexFull(uint32_t blockCount);
+// index-full|<blockCount>|<lastVisible>：后台全文索引完成。
+std::wstring MakeIndexFull(uint32_t blockCount, uint32_t lastVisible);
 
 // big|<i>:<lines>,<i>:<lines>…：巨型块行数表（只有 > 2000 行的块）。
 std::wstring MakeBig(const std::string& table);

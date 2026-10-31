@@ -273,6 +273,7 @@ void CreateController() {
                       if (!docsrc::ServeAsset(uri, &body, &status, &contentType)) {
                         status = 404;
                         if (!docsrc::ServeLines(uri, &body, &status) &&
+                            !docsrc::ServeDefs(uri, &body, &status) &&
                             !docsrc::Serve(uri, &body, &status)) {
                           return S_OK;
                         }

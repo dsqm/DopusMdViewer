@@ -19,6 +19,7 @@ namespace docsrc {
 struct DocumentInfo {
   uint32_t prefixBlocks = 0;
   uint32_t estimatedBlocks = 0;
+  uint32_t lastVisible = 0;  // 最后一个非隐藏块（脚注区挂在它后面）
   uint64_t fileSize = 0;
   uint8_t encoding = 0;  // doc::Encoding
   bool complete = false;  // 前缀已覆盖全文，没有后台扫描
@@ -44,11 +45,17 @@ bool ServeLines(const std::wstring& uri, std::string* body, int* status);
 // 巨型块表："块号:行数,块号:行数…"（只含 > 2000 行的块，最多 4096 项）。
 void BigTable(std::string* out);
 
+// 响应 https://mdblocks.local/__defs：所有隐藏块（front matter 除外）的原文。
+// 帧：u32 flags | u32 len | UTF-8 字节。链接引用定义与脚注定义都由前端消费，
+// 总量上限 8 MB（超出就截断，定义极多的文档会丢尾部引用）。
+bool ServeDefs(const std::wstring& uri, std::string* body, int* status);
+
 // 响应 https://mdblocks.local/__asset?p=<相对路径>：读当前文档目录下的图片等资源。
 // 只允许文档目录内的相对路径，任何绝对路径、盘符或 .. 段都拒绝。
 bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
                 std::wstring* contentType);
 
 uint32_t PublishedBlockCount();
+uint32_t LastVisible();
 
 }  // namespace docsrc

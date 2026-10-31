@@ -38,6 +38,7 @@ struct ViewerState {
   ULONGLONG ullFileSize;
   uint32_t prefixBlocks;
   uint32_t estBlocks;
+  uint32_t lastVisible;  // 最后一个非隐藏块（脚注区挂它后面）
   int encoding;
   LONGLONG qpcLoad;  // LOADW 起点，用于端到端耗时
   bool docOpened;    // doc_source 归本窗口
@@ -223,9 +224,10 @@ void PushIndex(ViewerState* st) {
 
   const bool ok = WebHostPost(
       st->hwndSelf,
-      msg::MakeIndex(kDocBase, st->prefixBlocks, st->estBlocks, st->ullFileSize, st->encoding));
-  LogLine(L"VIEWER: 推送索引 %u/%u 块 -> %s", st->prefixBlocks, st->estBlocks,
-          ok ? L"成功" : L"失败");
+      msg::MakeIndex(kDocBase, st->prefixBlocks, st->estBlocks, st->ullFileSize, st->encoding,
+                     st->lastVisible));
+  LogLine(L"VIEWER: 推送索引 %u/%u 块（末可见块 %u）-> %s", st->prefixBlocks, st->estBlocks,
+          st->lastVisible, ok ? L"成功" : L"失败");
   // 索引先到（页面会重置状态），巨型块表随后到，按块号生效
   PushBigTable(st);
 }
@@ -233,10 +235,11 @@ void PushIndex(ViewerState* st) {
 void MaybePushIndexFull(ViewerState* st) {
   if (!st->indexFullPending || !st->docOpened || !st->hasHost || !WebHostIsReady()) return;
   const uint32_t count = docsrc::PublishedBlockCount();
-  if (!WebHostPost(st->hwndSelf, msg::MakeIndexFull(count))) return;
+  st->lastVisible = docsrc::LastVisible();
+  if (!WebHostPost(st->hwndSelf, msg::MakeIndexFull(count, st->lastVisible))) return;
   PushBigTable(st);
   st->indexFullPending = false;
-  LogLine(L"VIEWER: 已通知前端全文索引 %u 块", count);
+  LogLine(L"VIEWER: 已通知前端全文索引 %u 块（末可见块 %u）", count, st->lastVisible);
 }
 
 void OpenDoc(ViewerState* st) {
@@ -260,6 +263,7 @@ void OpenDoc(ViewerState* st) {
       !info.complete && docsrc::PublishedBlockCount() > info.prefixBlocks;
   st->prefixBlocks = info.prefixBlocks;
   st->estBlocks = info.estimatedBlocks;
+  st->lastVisible = info.lastVisible;
   st->encoding = info.encoding;
   st->ullFileSize = info.fileSize;
 
@@ -701,6 +705,7 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->ullFileSize = 0;
   st->prefixBlocks = 0;
   st->estBlocks = 0;
+  st->lastVisible = 0;
   st->encoding = 0;
   st->qpcLoad = 0;
   st->docOpened = false;

@@ -72,13 +72,15 @@ std::wstring MakeFx(const FontSettings& font) {
 }
 
 std::wstring MakeIndex(const std::wstring& docBase, uint32_t prefixBlocks,
-                       uint32_t estTotal, uint64_t fileSize, int encoding) {
+                       uint32_t estTotal, uint64_t fileSize, int encoding,
+                       uint32_t lastVisible) {
   return Join({L"index", docBase, std::to_wstring(prefixBlocks), std::to_wstring(estTotal),
-               std::to_wstring(fileSize), std::to_wstring(encoding)});
+               std::to_wstring(fileSize), std::to_wstring(encoding),
+               std::to_wstring(lastVisible)});
 }
 
-std::wstring MakeIndexFull(uint32_t blockCount) {
-  return Join({L"index-full", std::to_wstring(blockCount)});
+std::wstring MakeIndexFull(uint32_t blockCount, uint32_t lastVisible) {
+  return Join({L"index-full", std::to_wstring(blockCount), std::to_wstring(lastVisible)});
 }
 
 std::wstring MakeBig(const std::string& table) {
