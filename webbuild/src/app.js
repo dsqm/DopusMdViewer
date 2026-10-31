@@ -60,6 +60,11 @@ const SEL_EDGE = 42           // 拖选到离视口边缘多少 px 开始自动�
 const PRINT_MAX_FILE = 2 * 1024 * 1024
 const PRINT_BATCH = 200
 
+// 全选复制：复制的是渲染后的文本（不是 Markdown 源文本）。整篇提取有成本，
+// 超过这个字符数就截断并提示；1M 级文档可以完整复制，再大只复制前缀。
+const COPY_MAX_CHARS = 1200000
+const COPY_BATCH = 200
+
 // 巨型块（>2000 行）的块内行窗口：按 64 行 checkpoint 对齐，最少 128 行、
 // 最多 512 行。窗口放在视口上下各一屏之外，滚动时不至于看到空白带。
 const LINE_ALIGN = 64
@@ -357,6 +362,7 @@ const V = {
   blockCount: 0,
   prefixCount: 0,
   estTotal: 0,
+  fullIndex: false,
   lastVisible: 0,   // 最后一个非隐藏块：脚注区挂在它后面
   fileSize: 0,
   enc: 0,
@@ -424,6 +430,8 @@ const PRINT = {
   docId: 0,
   timer: 0,
 }
+
+const COPY = { busy: false }
 
 const OUT = {
   items: [],
@@ -1491,7 +1499,7 @@ function resetVirtual() {
   resetNetConsent()
 }
 
-function applyIndex(base, prefix, est, fileSize, enc, lastVisible) {
+function applyIndex(base, prefix, est, fileSize, enc, lastVisible, complete) {
   resetVirtual()
   bindDom()
   document.body.classList.add('virtual')
@@ -1504,6 +1512,7 @@ function applyIndex(base, prefix, est, fileSize, enc, lastVisible) {
   V.docId++
   V.prefixCount = prefix
   V.estTotal = est
+  V.fullIndex = !!complete
   V.lastVisible = lastVisible || 0
   V.fileSize = fileSize
   V.enc = enc
@@ -1534,6 +1543,7 @@ function applyIndex(base, prefix, est, fileSize, enc, lastVisible) {
 
 function applyIndexFull(count, lastVisible) {
   if (!V.active || !count) return
+  V.fullIndex = true
   // 前缀只扫了 8 MB，后面可能还有引用/脚注定义；全文索引到了再取一次
   loadDefs()
   loadOutline()
@@ -1665,7 +1675,7 @@ function onKeyDown(e) {
     if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
     if (!SEL.all) return  // 普通选区交给浏览器原生复制
     e.preventDefault()
-    postRaw('copyall')
+    copyRendered()
     return
   }
   if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'f' || e.key === 'F')) {
@@ -1914,6 +1924,133 @@ function selectAllText() {
   SEL.allLo = lo
   SEL.allHi = hi
   postRaw('status|已全选全文，Ctrl+C 复制')
+}
+
+// 渲染后的纯文本：直接用 markdown-it 的 token 取，不生成 DOM、不渲染 KaTeX/高亮。
+// 块之间空行，表格行换行/单元格制表符，<br> 换行，图片跳过，脚注编号保留。
+function htmlPlain(raw) {
+  return String(raw || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+}
+
+function inlineText(children) {
+  let s = ''
+  for (const t of children || []) {
+    if (t.type === 'text' || t.type === 'code_inline') s += t.content
+    else if (t.type === 'softbreak') s += ' '
+    else if (t.type === 'hardbreak') s += '\n'
+    else if (t.type === 'html_inline') s += htmlPlain(t.content)
+    else if (t.type === 'image') continue
+    else if (t.type === 'math_inline' || t.type === 'math_inline_double' ||
+             t.type === 'math_block' || t.type === 'math_block_eqno') s += t.content
+    else if (t.children) s += inlineText(t.children)
+  }
+  return s
+}
+
+function blockText(src) {
+  let tokens
+  try { tokens = md.parse(src, blockEnv()) } catch { return src }
+  let out = ''
+  let cells = 0
+  const line = () => { if (out && !out.endsWith('\n')) out += '\n' }
+  for (const t of tokens) {
+    switch (t.type) {
+      case 'inline':
+        out += inlineText(t.children)
+        break
+      case 'fence':
+      case 'code_block':
+      case 'math_block':
+      case 'math_block_eqno':
+        out += t.content
+        line()
+        break
+      case 'html_block':
+        out += htmlPlain(t.content)
+        line()
+        break
+      case 'tr_open': cells = 0; line(); break
+      case 'tr_close': line(); break
+      case 'th_open':
+      case 'td_open':
+        if (cells++) out += '\t'
+        break
+      case 'paragraph_close':
+      case 'heading_close':
+      case 'blockquote_close':
+      case 'list_item_close':
+        line()
+        break
+      case 'hr':
+        line()
+        break
+      default:
+        break
+    }
+  }
+  return out.trim()
+}
+
+// 按块提取文本；索引没覆盖全文或超过字符上限时带截断原因。
+async function buildRenderedCopy() {
+  const docId = V.docId
+  const total = V.blockCount
+  const parts = []
+  let chars = 0
+  let reason = 0
+  for (let from = 0; from < total; from += COPY_BATCH) {
+    if (docId !== V.docId) throw new Error('文档已切换')
+    const count = Math.min(COPY_BATCH, total - from)
+    const res = await fetch(BLOCKS_URL + '?from=' + from + '&count=' + count, { cache: 'no-store' })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const items = parseFrames(await res.arrayBuffer())
+    for (const it of items) {
+      if (it.flags & 0x20) continue
+      if (it.flags & 0x80) reason = 1
+      if (chars > 0 && chars + it.text.length > COPY_MAX_CHARS) {
+        reason = 1
+        break
+      }
+      const piece = blockText(it.text)
+      if (piece) parts.push(piece)
+      chars += it.text.length
+    }
+    if (reason) break
+    if (items.length < count) {
+      reason = 2
+      break
+    }
+  }
+  if (!reason && !V.fullIndex) reason = 2
+
+  let text = parts.join('\n\n')
+  if (FOOT.defs.length) {
+    const notes = []
+    for (const d of FOOT.defs) notes.push('[' + d.num + '] ' + blockText(d.body))
+    text += '\n\n' + notes.join('\n\n')
+  }
+  return { text, reason }
+}
+
+async function copyRendered() {
+  if (!V.active || COPY.busy) return
+  COPY.busy = true
+  postRaw('status|正在准备复制…')
+  const t0 = performance.now()
+  try {
+    const result = await buildRenderedCopy()
+    if (!V.active) return
+    report('copy-text', result.text.length + '|' + result.reason + '|'
+      + (performance.now() - t0).toFixed(0))
+    postRaw('copyset|' + result.reason + '|' + result.text)
+  } catch (err) {
+    postRaw('status|复制失败：' + String((err && err.message) || err))
+    report('copy-error', String(err))
+  } finally {
+    COPY.busy = false
+  }
 }
 
 /* ---------------- 搜索与大纲（M6） ---------------- */
@@ -2809,7 +2946,8 @@ function onHostMessage(event) {
       parseInt(f[2], 10) || 0,
       parseInt(f[3], 10) || 0,
       parseInt(f[4], 10) || 0,
-      parseInt(f[5], 10) || 0)
+      parseInt(f[5], 10) || 0,
+      f[6] === '1')
     return
   }
 

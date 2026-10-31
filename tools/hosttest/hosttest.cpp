@@ -46,9 +46,8 @@ const UINT_PTR kDropCloseTimerId = 19;
 const UINT_PTR kCopyTimerId = 20;
 const UINT_PTR kCopyCheckTimerId = 21;
 const UINT_PTR kPinTimerId = 23;
-const UINT_PTR kCopyEarlyTimerId = 24;
-const UINT_PTR kCopyEarlyCheckTimerId = 25;
 const UINT_PTR kPrintTimerId = 26;
+const UINT_PTR kCopyLateTimerId = 27;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -84,7 +83,6 @@ bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条�
 bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，回流映射与滚动位置
 bool g_copy = false;        // 5 秒后按 Ctrl+A，7 秒读剪贴板，9 秒再走 SELECTALL 消息
 bool g_pin = false;         // 5 秒后选区钉块 + 拖边滚动，滚到底验钉块没被换出
-bool g_copyEarly = false;   // 索引未完成时先复制前缀，全文索引到达后自动补全
 bool g_print = false;       // 5 秒后准备打印容器（不弹对话框），回流块数/图表/图片
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
@@ -387,6 +385,10 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         LogClipboard(L"Ctrl+C");
         // 再走一遍 Opus 菜单「全选」的 SELECTALL 消息路径（只选中，不复制）
         if (g_viewer) ::PostMessageW(g_viewer, DVPLUGINMSG_SELECTALL, 0, 0);
+        ::SetTimer(hwnd, kCopyLateTimerId, 25000, nullptr);
+      } else if (wParam == kCopyLateTimerId) {
+        ::KillTimer(hwnd, kCopyLateTimerId);
+        LogClipboard(L"Ctrl+C-late");
       } else if (wParam == kPrintTimerId) {
         ::KillTimer(hwnd, kPrintTimerId);
         const wchar_t* script =
@@ -395,12 +397,6 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L".catch(function(e){window.chrome.webview.postMessage('event|print|err='"
             L"+(e&&e.message||e));});";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
-      } else if (wParam == kCopyEarlyTimerId) {
-        ::KillTimer(hwnd, kCopyEarlyTimerId);
-        if (g_viewer) ::PostMessageW(g_viewer, DVPLUGINMSG_SELECTALL, 0, 0);
-      } else if (wParam == kCopyEarlyCheckTimerId) {
-        ::KillTimer(hwnd, kCopyEarlyCheckTimerId);
-        LogClipboard(L"copyearly");
       } else if (wParam == kPinTimerId) {
         ::KillTimer(hwnd, kPinTimerId);
         const wchar_t* script =
@@ -559,8 +555,7 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"find")) g_find = true;
   if (*p && wcsstr(p, L"outline")) g_outline = true;
   if (*p && wcsstr(p, L"slug")) g_slug = true;
-  if (*p && wcsstr(p, L"copyearly")) g_copyEarly = true;
-  else if (*p && wcsstr(p, L"copy")) g_copy = true;
+  if (*p && wcsstr(p, L"copy")) g_copy = true;
   if (*p && wcsstr(p, L"pin")) g_pin = true;
   if (*p && wcsstr(p, L"print")) g_print = true;
   if (*p && wcsstr(p, L"prewarm")) g_prewarm = true;
@@ -679,10 +674,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_pin) {
     ::SetTimer(g_hwndMain, kPinTimerId, 5000, nullptr);
-  }
-  if (g_copyEarly) {
-    ::SetTimer(g_hwndMain, kCopyEarlyTimerId, 300, nullptr);
-    ::SetTimer(g_hwndMain, kCopyEarlyCheckTimerId, 3000, nullptr);
   }
   if (g_print) {
     ::SetTimer(g_hwndMain, kPrintTimerId, 5000, nullptr);

@@ -22,10 +22,10 @@ std::wstring MakeSkin(const std::wstring& id, const std::wstring& css);
 // fx|<ui>|<body>|<mono>|<size>|<lineHeight>|<measureEm>
 std::wstring MakeFx(const FontSettings& font);
 
-// index|<docBase>|<prefixBlocks>|<estTotal>|<fileSize>|<encoding>|<lastVisible>
+// index|<docBase>|<prefixBlocks>|<estTotal>|<fileSize>|<encoding>|<lastVisible>|<complete>
 std::wstring MakeIndex(const std::wstring& docBase, uint32_t prefixBlocks,
                        uint32_t estTotal, uint64_t fileSize, int encoding,
-                       uint32_t lastVisible);
+                       uint32_t lastVisible, bool complete);
 
 // index-full|<blockCount>|<lastVisible>：后台全文索引完成。
 std::wstring MakeIndexFull(uint32_t blockCount, uint32_t lastVisible);
