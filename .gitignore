@@ -26,3 +26,5 @@ webbuild/node_modules/
 # —— 基线样本：脚本生成，不入库 ——
 samples/big-*.md
 
+# —— 手动验收的大样本：samples/manual-test/gen.py 生成，不入库 ——
+samples/manual-test/big-*

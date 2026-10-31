@@ -251,6 +251,9 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"  out.push('blk'+i+' rect='+Math.round(r.top)+','+Math.round(r.left)+','+Math.round(r.width)+'x'+Math.round(r.height));}}"
             L"var d=document.getElementById('doc'),dr=d.getBoundingClientRect();"
             L"out.push('doc tf='+d.style.transform+' rect='+Math.round(dr.left)+','+Math.round(dr.width));"
+            L"var bl='';for(const [i,m] of V.big)bl+=i+':'+m.lines+',';"
+            L"out.push('bigmap='+bl+' heights='+Array.from(V.heights.slice(0,4)).join(',')"
+            L"+' default='+Math.round(V.defaultH)+' lastVis='+V.lastVisible);"
             L"window.chrome.webview.postMessage('event|dump|'+out.join(' ; '));})();";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kSeamTimerId) {
