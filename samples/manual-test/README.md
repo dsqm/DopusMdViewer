@@ -9,6 +9,7 @@
 | 03-images.md | 本地图（同目录/子目录）、`../` 与绝对路径默认被拒、data URI、网络图页内确认 |
 | 04-math-mermaid.md | KaTeX 行内/独立公式、Mermaid 两种图、未知图降级 |
 | 05/06/07-encoding-*.md | GB18030 / UTF-16LE / UTF-8 BOM 三种编码同一内容 |
+| gen-enc.py → `%TEMP%\encsamples\` | 多编码判定样本（日/韩/繁/俄/西欧、无 BOM UTF-16、UTF-32 BOM、8 MB 探测边界）；用 `bin\encdetect.exe` 批跑。不入库，`very-late-sjis.md` 约 10 MB |
 | 08-outside-images.md | 设置开关前后的目录外图片（`../` 与绝对路径） |
 | big-mixed-3000.md | 普通块与 3000 行围栏混排，进出巨型块的滚动衔接 |
 | big-fence-120000.md | 12 万行单围栏：窗口化滚动、第 10 万行处的分段接缝 |

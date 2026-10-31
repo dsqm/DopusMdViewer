@@ -8,6 +8,9 @@
 # vendored 的 WebView2 SDK 保持字节一致，不让 git 改行尾
 sdk/** -text
 
+# vendored 第三方源码同样保持字节一致（third_party/compact_enc_det 的 VENDOR.md 声明与上游一致）
+third_party/compact_enc_det/** -text
+
 # 二进制
 *.dll   binary
 *.lib   binary
