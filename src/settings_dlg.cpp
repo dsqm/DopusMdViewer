@@ -1,4 +1,4 @@
-// settings_dlg.cpp - 非模态设置窗口（票 09：外观 / 字体 / 渲染 / 高级四页）。
+﻿// settings_dlg.cpp - 非模态设置窗口（票 09：外观 / 字体 / 渲染 / 高级四页）。
 //
 // 四页共用一个窗口，靠控件的 ShowWindow 切换，不建子对话框；改动只进 staged
 // 副本，点“应用/确定”才写 config.json 并通知查看器。
@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "config.h"
+#include "localize.h"
 #include "log.h"
 #include "skin.h"
 #include "util.h"
@@ -90,6 +91,7 @@ struct DialogState {
   int slot = 0;  // 0 界面 / 1 正文 / 2 等宽
   bool previewMissing = false;
   std::vector<HWND> pageCtrls[kPages];
+  std::vector<std::pair<HWND, WNDPROC>> subs;  // 装过键盘 subclass 的控件
 
   HWND hSkin = nullptr;
   HWND hSize = nullptr;
@@ -130,6 +132,142 @@ void ApplyFont(HWND hwnd, HFONT font) {
   if (hwnd && font) ::SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
 }
 
+/* ---------------- 键盘导航 ----------------
+   这是非模态的自建窗口，跑在宿主的消息循环里，拿不到对话框那套 IsDialogMessage
+   行为（Tab 换焦点、Enter 走默认按钮、Esc 走取消）。所以自己实现：Tab 的消息先到
+   焦点的子控件，因此给每个子控件装一个 subclass，在它之前把这些键截下来。
+   顺序取子窗口的创建顺序（GW_CHILD 是 z 序，新的在前，取完要反过来）。 */
+
+LRESULT CALLBACK ControlProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+void MoveFocus(DialogState* st, int dir);
+void FocusFirst(DialogState* st);
+void ShowPage(DialogState* st, int page);
+bool ApplySettings(DialogState* st);
+bool HandleDialogKey(DialogState* st, HWND focus, WPARAM vk);
+
+DialogState* StateOfParent(HWND hwnd) {
+  HWND parent = ::GetParent(hwnd);
+  if (!parent) return nullptr;
+  return reinterpret_cast<DialogState*>(::GetWindowLongPtrW(parent, GWLP_USERDATA));
+}
+
+WNDPROC OriginalProc(DialogState* st, HWND hwnd) {
+  if (!st) return nullptr;
+  for (const std::pair<HWND, WNDPROC>& s : st->subs) {
+    if (s.first == hwnd) return s.second;
+  }
+  return nullptr;
+}
+
+void SubclassControl(DialogState* st, HWND hwnd) {
+  if (!st || !hwnd) return;
+  if (OriginalProc(st, hwnd)) return;
+  WNDPROC old = reinterpret_cast<WNDPROC>(
+      ::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&ControlProc)));
+  if (!old || old == &ControlProc) return;
+  st->subs.push_back(std::make_pair(hwnd, old));
+}
+
+std::vector<HWND> TabStops(DialogState* st) {
+  std::vector<HWND> out;
+  if (!st || !st->hwnd) return out;
+  // GW_CHILD 的顺序就是创建顺序（这些子窗口不重叠、谁也不改 z 序），
+  // 正好是 Tab 该走的顺序：页签 → 当页控件 → 底部按钮。
+  for (HWND h = ::GetWindow(st->hwnd, GW_CHILD); h; h = ::GetWindow(h, GW_HWNDNEXT)) {
+    if (!(::GetWindowLongPtrW(h, GWL_STYLE) & WS_TABSTOP)) continue;
+    if (!::IsWindowVisible(h) || !::IsWindowEnabled(h)) continue;
+    out.push_back(h);
+  }
+  return out;
+}
+
+// 焦点移到下一个/上一个 tab stop；顺带把编辑框内容全选，省得用户先按 Ctrl+A。
+void MoveFocus(DialogState* st, int dir) {
+  std::vector<HWND> stops = TabStops(st);
+  if (stops.empty()) return;
+  HWND cur = ::GetFocus();
+  const int n = static_cast<int>(stops.size());
+  int idx = -1;
+  for (int i = 0; i < n; ++i) {
+    if (stops[static_cast<size_t>(i)] == cur) idx = i;
+  }
+  int next = idx < 0 ? (dir > 0 ? 0 : n - 1) : ((idx + dir) % n + n) % n;
+  HWND target = stops[static_cast<size_t>(next)];
+  ::SetFocus(target);
+  wchar_t cls[32] = {};
+  ::GetClassNameW(target, cls, ARRAYSIZE(cls));
+  if (::lstrcmpiW(cls, L"Edit") == 0) ::SendMessageW(target, EM_SETSEL, 0, -1);
+  LogLine(L"SETTINGS: 焦点 → 控件 %d（%s）", ::GetDlgCtrlID(target), cls);
+}
+
+void FocusFirst(DialogState* st) {
+  std::vector<HWND> stops = TabStops(st);
+  if (stops.empty()) return;
+  ::SetFocus(stops.front());
+  if (::GetFocus() != stops.front()) LogLine(L"SETTINGS: 第一个可聚焦控件没拿到焦点");
+}
+
+bool IsPageTab(HWND hwnd) {
+  const int id = ::GetDlgCtrlID(hwnd);
+  return id >= kIdTabAppearance && id <= kIdTabAdvanced;
+}
+
+bool ComboDropped(DialogState* st) {
+  if (!st) return false;
+  const HWND focus = ::GetFocus();
+  wchar_t cls[32] = {};
+  if (!focus || !::GetClassNameW(focus, cls, ARRAYSIZE(cls))) return false;
+  if (::lstrcmpiW(cls, L"ComboBox") != 0) return false;
+  return ::SendMessageW(focus, CB_GETDROPPEDSTATE, 0, 0) != 0;
+}
+
+// 对话框键：子控件上按下时由 ControlProc 送来，焦点在窗口本身时由 SettingsProc 送来。
+// 返回 true 表示已处理，调用方不再把消息往下传。
+bool HandleDialogKey(DialogState* st, HWND hwnd, WPARAM vk) {
+  if (!st) return false;
+  const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+  switch (vk) {
+    case VK_TAB:
+      MoveFocus(st, shift ? -1 : 1);
+      return true;
+    case VK_ESCAPE:
+      // 下拉展开时先把下拉收起来，别顺手关窗
+      if (ComboDropped(st)) return false;
+      ::DestroyWindow(st->hwnd);
+      return true;
+    case VK_RETURN:
+      // 下拉展开时 Enter 是“选中当前项”，其余一律等同“确定”。
+      if (ComboDropped(st)) return false;
+      if (ApplySettings(st)) ::DestroyWindow(st->hwnd);
+      return true;
+    case VK_LEFT:
+    case VK_RIGHT:
+      if (!IsPageTab(hwnd)) return false;
+      {
+        const int page = (vk == VK_LEFT) ? st->page - 1 : st->page + 1;
+        if (page < 0 || page >= kPages) return true;  // 到头了就别wrap
+        ShowPage(st, page);
+        ::SetFocus(::GetDlgItem(st->hwnd, kIdTabAppearance + page));
+      }
+      return true;
+    default:
+      return false;
+  }
+}
+
+LRESULT CALLBACK ControlProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  DialogState* st = StateOfParent(hwnd);
+  WNDPROC orig = OriginalProc(st, hwnd);
+  if (!orig) return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+
+  if (uMsg == WM_KEYDOWN && HandleDialogKey(st, hwnd, wParam)) return 0;
+  // 让下拉/编辑框把 Tab 与方向键交出来（有对话框管理器时才有意义，留着无害）
+  if (uMsg == WM_GETDLGCODE) {
+    return ::CallWindowProcW(orig, hwnd, uMsg, wParam, lParam) | DLGC_WANTTAB;
+  }
+  return ::CallWindowProcW(orig, hwnd, uMsg, wParam, lParam);
+}
+
 HWND AddControl(DialogState* st, int page, const wchar_t* cls, const wchar_t* text,
                 DWORD style, int x, int y, int cx, int cy, int id, DWORD exStyle = 0) {
   HWND h = ::CreateWindowExW(
@@ -140,6 +278,7 @@ HWND AddControl(DialogState* st, int page, const wchar_t* cls, const wchar_t* te
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), ModuleHandle(), nullptr);
   ApplyFont(h, st->font);
   if (h && page >= 0) st->pageCtrls[page].push_back(h);
+  if (h) SubclassControl(st, h);
   return h;
 }
 
@@ -150,6 +289,10 @@ void ShowPage(DialogState* st, int page) {
     for (HWND h : st->pageCtrls[p]) ::ShowWindow(h, p == page ? SW_SHOW : SW_HIDE);
   }
   ::CheckRadioButton(st->hwnd, kIdTabAppearance, kIdTabAdvanced, kIdTabAppearance + page);
+  LogLine(L"SETTINGS: 切到第 %d 页", page + 1);
+  // 切页后焦点若落在刚藏起来的控件上，挪到本页第一个可聚焦控件
+  HWND focus = ::GetFocus();
+  if (!focus || !::IsWindowVisible(focus)) FocusFirst(st);
 }
 
 std::wstring Trimmed(const wchar_t* text) {
@@ -396,7 +539,7 @@ void ReadUiIntoStaged(DialogState* st) {
 bool ApplySettings(DialogState* st) {
   ReadUiIntoStaged(st);
   if (!ConfigSave(st->staged)) {
-    ::MessageBoxW(st->hwnd, L"写入 config.json 失败，详见日志。", L"DopusMdViewer",
+    ::MessageBoxW(st->hwnd, loc::T(loc::Str::SaveFailed), L"DopusMdViewer",
                   MB_OK | MB_ICONERROR);
     return false;
   }
@@ -411,13 +554,14 @@ bool ApplySettings(DialogState* st) {
 
 void OpenFolder(HWND owner, const std::wstring& dir) {
   if (dir.empty()) {
-    ::MessageBoxW(owner, L"目录路径不可用。", L"DopusMdViewer", MB_OK | MB_ICONERROR);
+    ::MessageBoxW(owner, loc::T(loc::Str::NoFolder), L"DopusMdViewer", MB_OK | MB_ICONERROR);
     return;
   }
   UtilEnsureDir(dir);
   const HINSTANCE r = ::ShellExecuteW(owner, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
   if (reinterpret_cast<INT_PTR>(r) <= 32) {
-    ::MessageBoxW(owner, L"打开目录失败。", L"DopusMdViewer", MB_OK | MB_ICONERROR);
+    ::MessageBoxW(owner, loc::T(loc::Str::OpenFolderFailed), L"DopusMdViewer",
+                  MB_OK | MB_ICONERROR);
   }
 }
 
@@ -463,11 +607,13 @@ void BuildUi(DialogState* st) {
     int id;
     const wchar_t* text;
   };
-  const TabDef tabs[] = {{kIdTabAppearance, L"外观"},
-                         {kIdTabFont, L"字体"},
-                         {kIdTabRender, L"渲染"},
-                         {kIdTabAdvanced, L"高级"}};
+  const TabDef tabs[] = {{kIdTabAppearance, loc::T(loc::Str::TabAppearance)},
+                         {kIdTabFont, loc::T(loc::Str::TabFont)},
+                         {kIdTabRender, loc::T(loc::Str::TabRender)},
+                         {kIdTabAdvanced, loc::T(loc::Str::TabAdvanced)}};
   for (int i = 0; i < 4; ++i) {
+    // 四个页签是一个单选组：Windows 只给组里第一个留 WS_TABSTOP（其余建好就被清掉，
+    // 这是对话框的既有约定），所以整组只有一个 Tab 站位，换页靠左右方向键。
     AddControl(st, -1, L"BUTTON", tabs[i].text,
                BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_TABSTOP | (i == 0 ? WS_GROUP : 0),
                12 + i * 90, 10, 84, 26, tabs[i].id);
@@ -475,13 +621,13 @@ void BuildUi(DialogState* st) {
 
   // ---------------- 外观 ----------------
   int y = 54;
-  AddControl(st, 0, L"STATIC", L"皮肤", SS_LEFT, 16, y + 3, 70, 20, 0);
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::Skin), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hSkin = AddControl(st, 0, L"COMBOBOX", L"",
                          CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 100, y,
                          430, 200, kIdSkin);
 
   y = 92;
-  AddControl(st, 0, L"STATIC", L"字号", SS_LEFT, 16, y + 3, 70, 20, 0);
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::FontSize), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hSize = AddControl(st, 0, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 100, y, 70, 24,
                          kIdSize, WS_EX_CLIENTEDGE);
   st->hSizeSpin = AddControl(st, 0, UPDOWN_CLASSW, L"",
@@ -489,20 +635,20 @@ void BuildUi(DialogState* st) {
                              0, 0, 0, 0, kIdSizeSpin);
   ::SendMessageW(st->hSizeSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(st->hSize), 0);
   ::SendMessageW(st->hSizeSpin, UDM_SETRANGE32, 8, 48);
-  AddControl(st, 0, L"STATIC", L"px（8–48）", SS_LEFT, 180, y + 3, 180, 20, 0);
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::FontSizeUnit), SS_LEFT, 180, y + 3, 180, 20, 0);
 
   y = 126;
-  AddControl(st, 0, L"STATIC", L"行高", SS_LEFT, 16, y + 3, 70, 20, 0);
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::LineHeight), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hLh = AddControl(st, 0, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 100, y, 70, 24, kIdLh,
                        WS_EX_CLIENTEDGE);
   st->hLhSpin = AddControl(st, 0, UPDOWN_CLASSW, L"", UDS_ALIGNRIGHT | UDS_ARROWKEYS, 0, 0, 0, 0,
                            kIdLhSpin);
   ::SendMessageW(st->hLhSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(st->hLh), 0);
   ::SendMessageW(st->hLhSpin, UDM_SETRANGE32, 120, 220);
-  AddControl(st, 0, L"STATIC", L"倍（1.20–2.20，步进 0.05）", SS_LEFT, 180, y + 3, 260, 20, 0);
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::LineHeightUnit), SS_LEFT, 180, y + 3, 260, 20, 0);
 
   y = 160;
-  AddControl(st, 0, L"STATIC", L"行宽", SS_LEFT, 16, y + 3, 70, 20, 0);
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::Measure), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hMeasure = AddControl(st, 0, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 100, y, 70, 24,
                             kIdMeasure, WS_EX_CLIENTEDGE);
   st->hMeasureSpin = AddControl(st, 0, UPDOWN_CLASSW, L"",
@@ -511,60 +657,62 @@ void BuildUi(DialogState* st) {
                                 0, 0, 0, 0, kIdMeasureSpin);
   ::SendMessageW(st->hMeasureSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(st->hMeasure), 0);
   ::SendMessageW(st->hMeasureSpin, UDM_SETRANGE32, 8, 80);
-  AddControl(st, 0, L"STATIC", L"em（8–80）", SS_LEFT, 180, y + 3, 120, 20, 0);
-  st->hUnlimited = AddControl(st, 0, L"BUTTON", L"不限宽", BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP,
-                              300, y, 120, 24, kIdUnlimited);
-  AddControl(st, 0, L"STATIC", L"行高与字号改变后，预览按当前锚点恢复位置。", SS_LEFT, 16, 210,
-             520, 20, 0);
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::MeasureUnit), SS_LEFT, 180, y + 3, 120, 20, 0);
+  st->hUnlimited = AddControl(st, 0, L"BUTTON", loc::T(loc::Str::Unlimited),
+                              BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 300, y, 120, 24,
+                              kIdUnlimited);
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::MeasureHint), SS_LEFT, 16, 210, 520, 20, 0);
 
   // ---------------- 字体 ----------------
   y = 48;
-  AddControl(st, 1, L"STATIC", L"槽位", SS_LEFT, 16, y + 3, 70, 20, 0);
-  st->hSlot[0] = AddControl(st, 1, L"BUTTON", L"界面",
+  AddControl(st, 1, L"STATIC", loc::T(loc::Str::Slot), SS_LEFT, 16, y + 3, 70, 20, 0);
+  st->hSlot[0] = AddControl(st, 1, L"BUTTON", loc::T(loc::Str::SlotUi),
                             BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP, 100, y, 70, 24, kIdSlotUi);
-  st->hSlot[1] = AddControl(st, 1, L"BUTTON", L"正文",
+  st->hSlot[1] = AddControl(st, 1, L"BUTTON", loc::T(loc::Str::SlotBody),
                             BS_AUTORADIOBUTTON | WS_TABSTOP, 176, y, 70, 24, kIdSlotBody);
-  st->hSlot[2] = AddControl(st, 1, L"BUTTON", L"等宽",
+  st->hSlot[2] = AddControl(st, 1, L"BUTTON", loc::T(loc::Str::SlotMono),
                             BS_AUTORADIOBUTTON | WS_TABSTOP, 252, y, 70, 24, kIdSlotMono);
 
   y = 82;
-  AddControl(st, 1, L"STATIC", L"字体", SS_LEFT, 16, y + 3, 70, 20, 0);
+  AddControl(st, 1, L"STATIC", loc::T(loc::Str::Family), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hFamily = AddControl(st, 1, L"COMBOBOX", L"",
                            CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_HASSTRINGS | WS_VSCROLL |
                                WS_TABSTOP,
                            100, y, 330, 240, kIdFamily);
-  AddControl(st, 1, L"BUTTON", L"添加", BS_PUSHBUTTON | WS_TABSTOP, 436, y, 60, 24, kIdFamilyAdd);
+  AddControl(st, 1, L"BUTTON", loc::T(loc::Str::FamilyAdd), BS_PUSHBUTTON | WS_TABSTOP, 436, y,
+             60, 24, kIdFamilyAdd);
 
   y = 118;
-  AddControl(st, 1, L"STATIC", L"回退链", SS_LEFT, 16, y + 3, 70, 20, 0);
+  AddControl(st, 1, L"STATIC", loc::T(loc::Str::Chain), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hChainList = AddControl(st, 1, L"LISTBOX", L"",
                               LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_BORDER |
                                   WS_TABSTOP,
                               100, y, 330, 116, kIdFamilyList);
-  AddControl(st, 1, L"BUTTON", L"上移", BS_PUSHBUTTON | WS_TABSTOP, 436, y, 60, 24, kIdChainUp);
-  AddControl(st, 1, L"BUTTON", L"下移", BS_PUSHBUTTON | WS_TABSTOP, 436, y + 30, 60, 24,
-             kIdChainDown);
-  AddControl(st, 1, L"BUTTON", L"删除", BS_PUSHBUTTON | WS_TABSTOP, 436, y + 60, 60, 24,
-             kIdChainDel);
+  AddControl(st, 1, L"BUTTON", loc::T(loc::Str::ChainUp), BS_PUSHBUTTON | WS_TABSTOP, 436, y, 60,
+             24, kIdChainUp);
+  AddControl(st, 1, L"BUTTON", loc::T(loc::Str::ChainDown), BS_PUSHBUTTON | WS_TABSTOP, 436,
+             y + 30, 60, 24, kIdChainDown);
+  AddControl(st, 1, L"BUTTON", loc::T(loc::Str::ChainDel), BS_PUSHBUTTON | WS_TABSTOP, 436,
+             y + 60, 60, 24, kIdChainDel);
 
   y = 246;
-  AddControl(st, 1, L"STATIC", L"预览", SS_LEFT, 16, y + 3, 70, 20, 0);
+  AddControl(st, 1, L"STATIC", loc::T(loc::Str::Preview), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hPreview = AddControl(st, 1, L"STATIC", L"", SS_LEFT | SS_CENTERIMAGE, 100, y, 430, 26, kIdPreview);
   st->hPreviewNote = AddControl(st, 1, L"STATIC", L"", SS_LEFT, 100, y + 30, 430, 20,
                                 kIdPreviewNote);
-  AddControl(st, 1, L"BUTTON", L"刷新字体列表", BS_PUSHBUTTON | WS_TABSTOP, 100, y + 58, 110, 24,
-             kIdRefreshFonts);
+  AddControl(st, 1, L"BUTTON", loc::T(loc::Str::RefreshFonts), BS_PUSHBUTTON | WS_TABSTOP, 100,
+             y + 58, 110, 24, kIdRefreshFonts);
 
   // ---------------- 渲染 ----------------
   struct RenderDef {
     int id;
     const wchar_t* text;
   };
-  const RenderDef renders[] = {{kIdRenderMermaid, L"Mermaid 图表"},
-                               {kIdRenderKatex, L"KaTeX 公式"},
-                               {kIdRenderHighlight, L"代码语法高亮"},
-                               {kIdRenderHtml, L"内联原始 HTML"},
-                               {kIdRenderLocal, L"本地相对图片"}};
+  const RenderDef renders[] = {{kIdRenderMermaid, loc::T(loc::Str::RenderMermaid)},
+                               {kIdRenderKatex, loc::T(loc::Str::RenderKatex)},
+                               {kIdRenderHighlight, loc::T(loc::Str::RenderHighlight)},
+                               {kIdRenderHtml, loc::T(loc::Str::RenderHtml)},
+                               {kIdRenderLocal, loc::T(loc::Str::RenderLocal)}};
   y = 48;
   for (int i = 0; i < 5; ++i) {
     st->hRender[i] = AddControl(st, 2, L"BUTTON", renders[i].text, BS_AUTOCHECKBOX | WS_TABSTOP,
@@ -572,44 +720,45 @@ void BuildUi(DialogState* st) {
   }
 
   y = 190;
-  AddControl(st, 2, L"STATIC", L"网络图片加载前：", SS_LEFT, 16, y, 300, 20, 0);
-  st->hNetDoc = AddControl(st, 2, L"BUTTON", L"每文档询问一次",
+  AddControl(st, 2, L"STATIC", loc::T(loc::Str::NetAskWhen), SS_LEFT, 16, y, 300, 20, 0);
+  st->hNetDoc = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::NetPerDoc),
                            BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP, 28, y + 24, 300, 24,
                            kIdNetDoc);
-  st->hNetHost = AddControl(st, 2, L"BUTTON", L"每主机询问一次（DO 运行期间记住）",
+  st->hNetHost = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::NetPerHost),
                             BS_AUTORADIOBUTTON | WS_TABSTOP, 28, y + 50, 360, 24, kIdNetHost);
-  st->hNetOff = AddControl(st, 2, L"BUTTON", L"不询问，直接加载", BS_AUTORADIOBUTTON | WS_TABSTOP,
-                           28, y + 76, 300, 24, kIdNetOff);
-  st->hOutside = AddControl(st, 2, L"BUTTON", L"允许图片引用文档目录外的路径（../ 与绝对路径）",
+  st->hNetOff = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::NetNever),
+                           BS_AUTORADIOBUTTON | WS_TABSTOP, 28, y + 76, 300, 24, kIdNetOff);
+  st->hOutside = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::OutsideImages),
                             BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 16, y + 108, 480, 24,
                             kIdOutside);
 
   // ---------------- 高级 ----------------
   std::wstring version = UtilModuleVersion();
-  if (version.empty()) version = L"未知";
+  if (version.empty()) version = loc::T(loc::Str::Unknown);
   std::wstring runtime = WebHostRuntimeVersion();
-  if (runtime.empty()) runtime = L"未安装或不可用";
+  if (runtime.empty()) runtime = loc::T(loc::Str::RuntimeMissing);
 
   y = 50;
-  AddControl(st, 3, L"STATIC", L"版本", SS_LEFT, 16, y + 2, 90, 20, 0);
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::Version), SS_LEFT, 16, y + 2, 90, 20, 0);
   AddControl(st, 3, L"STATIC", version.c_str(), SS_LEFT, 110, y + 2, 300, 20, kIdVersion);
   y = 78;
   AddControl(st, 3, L"STATIC", L"WebView2", SS_LEFT, 16, y + 2, 90, 20, 0);
   AddControl(st, 3, L"STATIC", runtime.c_str(), SS_LEFT, 110, y + 2, 420, 20, kIdWebView);
   y = 108;
-  AddControl(st, 3, L"STATIC", L"巨型块", SS_LEFT, 16, y + 2, 90, 20, 0);
-  AddControl(st, 3, L"STATIC", L"超过 2000 行或 256 KiB 时按纯文本窗口化", SS_LEFT, 110, y + 2,
-             420, 20, kIdGiant);
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::GiantBlock), SS_LEFT, 16, y + 2, 90, 20, 0);
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::GiantBlockNote), SS_LEFT, 110, y + 2, 420, 20,
+             kIdGiant);
   y = 136;
-  AddControl(st, 3, L"STATIC", L"常驻窗口", SS_LEFT, 16, y + 2, 90, 20, 0);
-  AddControl(st, 3, L"STATIC", L"视口上下各 120 块", SS_LEFT, 110, y + 2, 420, 20, kIdResident);
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::ResidentWindow), SS_LEFT, 16, y + 2, 90, 20, 0);
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::ResidentNote), SS_LEFT, 110, y + 2, 420, 20,
+             kIdResident);
 
   y = 166;
-  st->hPrewarm = AddControl(st, 3, L"BUTTON", L"启动时预热预览引擎（Opus 窗口关闭时释放）",
+  st->hPrewarm = AddControl(st, 3, L"BUTTON", loc::T(loc::Str::Prewarm),
                             BS_AUTOCHECKBOX | WS_TABSTOP, 16, y, 480, 24, kIdPrewarm);
 
   y = 196;
-  AddControl(st, 3, L"STATIC", L"关闭预热后空闲释放", SS_LEFT, 16, y + 3, 120, 20, 0);
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleRelease), SS_LEFT, 16, y + 3, 120, 20, 0);
   st->hIdle = AddControl(st, 3, L"EDIT", L"",
                          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 140, y, 70, 24, kIdIdle,
                          WS_EX_CLIENTEDGE);
@@ -618,23 +767,25 @@ void BuildUi(DialogState* st) {
                              0, 0, 0, 0, kIdIdleSpin);
   ::SendMessageW(st->hIdleSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(st->hIdle), 0);
   ::SendMessageW(st->hIdleSpin, UDM_SETRANGE32, 0, 1440);
-  AddControl(st, 3, L"STATIC", L"分钟（0 = 不释放）", SS_LEFT, 220, y + 3, 220, 20, 0);
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleUnit), SS_LEFT, 220, y + 3, 220, 20, 0);
 
   y = 234;
-  AddControl(st, 3, L"BUTTON", L"打开日志目录", BS_PUSHBUTTON | WS_TABSTOP, 16, y, 130, 26,
-             kIdOpenLog);
-  AddControl(st, 3, L"BUTTON", L"打开配置根目录", BS_PUSHBUTTON | WS_TABSTOP, 154, y, 140, 26,
-             kIdOpenConfig);
-  AddControl(st, 3, L"BUTTON", L"打开皮肤目录", BS_PUSHBUTTON | WS_TABSTOP, 302, y, 130, 26,
-             kIdOpenSkins);
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenLog), BS_PUSHBUTTON | WS_TABSTOP, 16, y, 130,
+             26, kIdOpenLog);
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenConfig), BS_PUSHBUTTON | WS_TABSTOP, 154, y,
+             140, 26, kIdOpenConfig);
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 302, y,
+             130, 26, kIdOpenSkins);
 
   // 底部按钮
-  AddControl(st, -1, L"BUTTON", L"恢复默认", BS_PUSHBUTTON | WS_TABSTOP, 16, 392, 100, 28,
-             kIdRestore);
-  st->hApply = AddControl(st, -1, L"BUTTON", L"应用",
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 16, 392,
+             100, 28, kIdRestore);
+  st->hApply = AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Apply),
                           BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, 322, 392, 70, 28, kIdApply);
-  AddControl(st, -1, L"BUTTON", L"确定", BS_DEFPUSHBUTTON | WS_TABSTOP, 400, 392, 70, 28, kIdOk);
-  AddControl(st, -1, L"BUTTON", L"取消", BS_PUSHBUTTON | WS_TABSTOP, 478, 392, 70, 28, kIdCancel);
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Ok), BS_DEFPUSHBUTTON | WS_TABSTOP, 400,
+             392, 70, 28, kIdOk);
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Cancel), BS_PUSHBUTTON | WS_TABSTOP, 478, 392,
+             70, 28, kIdCancel);
 
   ShowPage(st, 0);
 }
@@ -771,7 +922,9 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         st->hwnd = hwnd;
         ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
       }
-      return TRUE;
+      // 标题是 DefWindowProc 在 WM_NCCREATE 里存下的：不转给它，CreateWindowExW 的
+      // lpszName 就丢了（窗口标题恒为空）。
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
     }
 
     case WM_CREATE:
@@ -785,6 +938,11 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     case WM_COMMAND:
       if (st) OnCommand(st, LOWORD(wParam), HIWORD(wParam));
       return 0;
+
+    case WM_KEYDOWN:
+      // 焦点落在窗口本身（还没 Tab 进任何控件）时，键消息只会到这里
+      if (st && HandleDialogKey(st, hwnd, wParam)) return 0;
+      break;
 
     case WM_NOTIFY: {
       const NMHDR* hdr = reinterpret_cast<const NMHDR*>(lParam);
@@ -921,8 +1079,8 @@ HWND SettingsShow(HWND parent) {
     }
   }
 
-  HWND hwnd = ::CreateWindowExW(0, kClass, L"Markdown 查看器设置", style, x, y, w, h, parent,
-                                nullptr, ModuleHandle(), st);
+  HWND hwnd = ::CreateWindowExW(0, kClass, loc::T(loc::Str::SettingsTitle), style, x, y, w, h,
+                                parent, nullptr, ModuleHandle(), st);
   if (!hwnd) {
     if (st->font) ::DeleteObject(st->font);
     delete st;
@@ -931,9 +1089,9 @@ HWND SettingsShow(HWND parent) {
   }
 
   g_hwnd = hwnd;
-  ::SetWindowTextW(hwnd, L"Markdown 查看器设置");
   ::ShowWindow(hwnd, SW_SHOW);
   ::SetForegroundWindow(hwnd);
+  FocusFirst(st);
   LogLine(L"SETTINGS: 已打开设置窗口 %p（%u dpi）", hwnd, st->dpi);
   return hwnd;
 }
