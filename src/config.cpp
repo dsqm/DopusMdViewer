@@ -110,10 +110,10 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
   c->font.body = ReadStack(font, "body", FontStack());  // 空数组就是"继承界面"
 
   if (font.contains("size") && font["size"].is_number_integer()) {
-    c->font.sizePx = ClampInt(font["size"].get<int>(), 9, 48, 15);
+    c->font.sizePx = ClampInt(font["size"].get<int>(), 8, 48, 15);
   }
   if (font.contains("lineHeight") && font["lineHeight"].is_number()) {
-    c->font.lineHeight = ClampDouble(font["lineHeight"].get<double>(), 1.0, 3.0, 1.65);
+    c->font.lineHeight = ClampDouble(font["lineHeight"].get<double>(), 1.2, 2.2, 1.65);
   }
   if (font.contains("measure") && font["measure"].is_number_integer()) {
     const int m = font["measure"].get<int>();
