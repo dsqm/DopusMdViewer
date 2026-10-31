@@ -4,7 +4,7 @@
 
 | 文件 | 看什么 |
 |---|---|
-| 01-syntax.md | GFM 排版、代码高亮、任务列表、定义列表、内联 HTML、front matter 隐藏 |
+| 01-syntax.md | GFM 排版、代码高亮、任务列表、定义列表、内联 HTML、front matter 隐藏；页内锚点（`#重复标题-1` 指向第二个重名标题） |
 | 02-refs-footnotes.md | 跨块引用 `[x][ref]`、脚注角标与文末脚注区、未定义项保持原文 |
 | 03-images.md | 本地图（同目录/子目录）、`../` 与绝对路径默认被拒、data URI、网络图页内确认 |
 | 04-math-mermaid.md | KaTeX 行内/独立公式、Mermaid 两种图、未知图降级 |

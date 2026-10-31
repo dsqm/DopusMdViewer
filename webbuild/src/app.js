@@ -416,6 +416,15 @@ const OUT = {
   seq: 0,
 }
 
+/* 标题 slug（票 05）：GitHub 风格、按出现顺序去重，重名追加 -1 / -2。
+   清单来自 __outline 的前 1 万条，超过这个数的标题没有锚点——与大纲同一条上限。 */
+const SLUG = {
+  bySlug: new Map(),   // slug -> 块号
+  byBlock: new Map(),  // 块号 -> slug
+}
+const SLUG_TAG = /<[!\/a-z].*?>/gi
+const SLUG_DROP = /[\u2000-\u206F\u2E00-\u2E7F\\'!"#$%&()*+,./:;<=>?@[\]^`{|}~]/g
+
 let docEl = null
 let sbEl = null
 let thumbEl = null
@@ -558,19 +567,28 @@ function setHeight(i, h) {
 let mermaidChain = Promise.resolve()
 let resizeObserver = null
 
-function renderLoose(text) {
-  const env = blockEnv()
-  const tokens = md.parse(text, env)
-  for (const t of tokens) {
-    if (t.type === 'paragraph_open' || t.type === 'paragraph_close') t.hidden = false
-  }
-  return md.renderer.render(tokens, md.options, env)
-}
-
-function renderBlockHtml(text, flags) {
+function renderBlockHtml(text, flags, i) {
   try {
-    const html = (flags & 0x10) ? renderLoose(text) : md.render(text, blockEnv())
-    return sanitize(html)
+    const env = blockEnv()
+    const slug = SLUG.byBlock.get(i)
+    if ((flags & 0x10) || slug) {
+      const tokens = md.parse(text, env)
+      if (flags & 0x10) {
+        for (const t of tokens) {
+          if (t.type === 'paragraph_open' || t.type === 'paragraph_close') t.hidden = false
+        }
+      }
+      if (slug) {
+        for (const t of tokens) {
+          if (t.type === 'heading_open') {
+            t.attrSet('id', slug)
+            break
+          }
+        }
+      }
+      return sanitize(md.renderer.render(tokens, md.options, env))
+    }
+    return sanitize(md.render(text, env))
   } catch (err) {
     report('render-error', String(err))
     return '<pre>' + escapeHtml(text) + '</pre>'
@@ -661,7 +679,7 @@ function rerenderResidents() {
   if (!V.active) return
   for (const [i, rec] of V.resident) {
     if (rec.big || !rec.el || !rec.text) continue
-    let html = renderBlockHtml(rec.text, rec.flags)
+    let html = renderBlockHtml(rec.text, rec.flags, i)
     if (i === V.lastVisible && FOOT.html) html += FOOT.html
     rec.el.innerHTML = html
     processNetImages(rec.el)
@@ -878,7 +896,7 @@ function renderItem(item) {
   V.topsDirty = true
   rec.text = item.text
   rec.flags = item.flags
-  let html = renderBlockHtml(item.text, item.flags)
+  let html = renderBlockHtml(item.text, item.flags, i)
   // 脚注区挂在最后一个块上：没有独立块号，也不参与索引
   if (i === V.lastVisible && FOOT.html) html += FOOT.html
   rec.el.innerHTML = html
@@ -1443,6 +1461,8 @@ function resetVirtual() {
   FOOT.defs = []
   FOOT.nums.clear()
   FOOT.html = ''
+  SLUG.bySlug.clear()
+  SLUG.byBlock.clear()
   resetNetConsent()
 }
 
@@ -1942,6 +1962,60 @@ function resetFind() {
   FIND.query = ''
 }
 
+// 标题的渲染文本（去掉 ** / 链接语法与 HTML 标签），slug 按它算而不是按源文本，
+// `# **Foo**` 的锚点才和 GitHub 一致。
+function headingText(src) {
+  let tokens
+  try { tokens = md.parseInline(src, {}) } catch { return src }
+  const out = []
+  const walk = (list) => {
+    for (const t of list || []) {
+      if (t.type === 'text' || t.type === 'code_inline') out.push(t.content)
+      else if (t.type === 'image') out.push(t.content || '')
+      else if (t.children) walk(t.children)
+    }
+  }
+  walk(tokens.length ? tokens[0].children : null)
+  return out.join('')
+}
+
+function slugify(text) {
+  return String(text || '')
+    .toLowerCase()
+    .trim()
+    .replace(SLUG_TAG, '')
+    .replace(SLUG_DROP, '')
+    .replace(/\s/g, '-')
+}
+
+function applySlugIds() {
+  if (!V.active) return
+  for (const [i, rec] of V.resident) {
+    if (!rec.el) continue
+    const h = rec.el.querySelector('h1,h2,h3,h4,h5,h6')
+    if (!h) continue
+    const slug = SLUG.byBlock.get(i)
+    if (slug) h.id = slug
+    else h.removeAttribute('id')
+  }
+}
+
+function buildSlugs(items) {
+  SLUG.bySlug.clear()
+  SLUG.byBlock.clear()
+  for (const item of items) {
+    const base = slugify(headingText(item.text || ''))
+    if (!base) continue
+    let slug = base
+    let n = 1
+    while (SLUG.bySlug.has(slug)) slug = base + '-' + (n++)
+    SLUG.bySlug.set(slug, item.block)
+    SLUG.byBlock.set(item.block, slug)
+  }
+  report('slugs', SLUG.bySlug.size + '/' + items.length)
+  applySlugIds()
+}
+
 function loadOutline() {
   if (!V.active) return
   const docId = V.docId
@@ -1986,6 +2060,7 @@ function loadOutline() {
       OUT.truncated = (flags & 1) !== 0
       OUT.loaded = true
       OUT.loading = false
+      buildSlugs(items)
       if (!outlineEl.hidden) renderOutline()
     })
     .catch((err) => {
@@ -2494,11 +2569,20 @@ document.addEventListener('click', (e) => {
   const href = a.getAttribute('data-external') || a.getAttribute('href')
   if (!href) return
   if (href.charAt(0) === '#') {
+    if (!V.active) return
+    const frag = href.slice(1)
     // 脚注角标跳到文末脚注区；反向链接没有块号映射，先不处理
-    if (/^#fn\d/.test(href) && V.active) {
+    if (/^fn\d/.test(frag)) {
       V.target = Math.max(0, V.totalH - V.vh)
       kick()
+      return
     }
+    if (/^fnref\d/.test(frag)) return
+    let slug = frag
+    try { slug = decodeURIComponent(frag) } catch { /* 保留原文 */ }
+    const block = SLUG.bySlug.get(slug)
+    if (block !== undefined) jumpToOffset(pos(block) - V.vh * 0.1)
+    else report('anchor-missing', slug)
     return
   }
   postRaw('open|' + href)
@@ -2579,4 +2663,4 @@ if (window.chrome && window.chrome.webview) {
   }
 }
 
-window.__mdv = { md, renderDocument, applySkin, applyFx, state, resolveDocUrl, DOC_HOST, V }
+window.__mdv = { md, renderDocument, applySkin, applyFx, state, resolveDocUrl, DOC_HOST, V, SLUG }

@@ -40,6 +40,7 @@ const UINT_PTR kPrewarmTimerId = 14;
 const UINT_PTR kReleaseCloseTimerId = 15;
 const UINT_PTR kReleaseQuitTimerId = 16;
 const UINT_PTR kReleaseReopenTimerId = 17;
+const UINT_PTR kSlugTimerId = 18;
 const UINT_PTR kDropCloseTimerId = 19;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
@@ -73,6 +74,7 @@ bool g_idle = false;        // 配合 prewarm：只预热、不建查看器，�
 bool g_drop = false;        // 关预热、设 1 分钟空闲释放；5 秒后只销毁查看器，验空闲回收
 wchar_t g_findQuery[128] = L"中文";
 bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条目数与滚动位置
+bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，回流映射与滚动位置
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
 HWND g_hwndTimer = nullptr;  // release 模式：主窗口销毁后用它继续跑计时器
@@ -336,6 +338,24 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"+' text='+t+' off='+Math.round(window.__mdv.V.off)"
             L"+' open='+(document.getElementById('outline').hidden?0:1));},700);},400);})();";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kSlugTimerId) {
+        ::KillTimer(hwnd, kSlugTimerId);
+        const wchar_t* script =
+            L"(function(){var out;try{"
+            L"var S=window.__mdv.SLUG,V=window.__mdv.V;"
+            L"var ids=[];for(const [s,b] of S.bySlug)ids.push(s+'@'+b);"
+            L"var hid=[].map.call(document.querySelectorAll('h1,h2,h3'),function(h){"
+            L"return (h.id||'-')+'='+h.textContent.slice(0,8);});"
+            L"var a=document.createElement('a');"
+            L"a.href='#%E9%87%8D%E5%A4%8D%E6%A0%87%E9%A2%98-1';a.textContent='x';"
+            L"document.getElementById('doc').appendChild(a);a.click();a.remove();"
+            L"var r=document.querySelector('.blk[data-i=\"34\"]');"
+            L"out='map='+ids.join(',')+' ids='+hid.join(',')+' off='+Math.round(V.off)"
+            L"+' target='+Math.round(V.target)+' blk34='+(r?Math.round(r.getBoundingClientRect().top):-1)"
+            L"+' vh='+V.vh;"
+            L"}catch(e){out='err='+(e&&e.stack||e);}"
+            L"window.chrome.webview.postMessage('event|slug|'+out);})();";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kSeamTimerId) {
         ::KillTimer(hwnd, kSeamTimerId);
         // 段边界 10 万行：把视口对到接缝上，肉眼查边框是否连续
@@ -440,6 +460,7 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"reload")) g_reload = true;
   if (*p && wcsstr(p, L"find")) g_find = true;
   if (*p && wcsstr(p, L"outline")) g_outline = true;
+  if (*p && wcsstr(p, L"slug")) g_slug = true;
   if (*p && wcsstr(p, L"prewarm")) g_prewarm = true;
   if (*p && wcsstr(p, L"release")) g_release = true;
   if (*p && wcsstr(p, L"idle")) g_idle = true;
@@ -546,6 +567,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_outline) {
     ::SetTimer(g_hwndMain, kOutlineTimerId, 5000, nullptr);
+  }
+  if (g_slug) {
+    ::SetTimer(g_hwndMain, kSlugTimerId, 5000, nullptr);
   }
 
   if (g_drop) {
