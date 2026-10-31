@@ -47,6 +47,13 @@ struct ViewerState {
   bool chromePushed;
   bool webFailed;
   bool hasHost;  // 宿主此刻是否在本窗口（单宿主，被别的窗口借走时没有画面）
+  // 加载占位的自绘字体：按 DPI 缩放 + ClearType，避免默认位图字体的锯齿。
+  HFONT fontName;
+  HFONT fontHint;
+  UINT fontDpi;
+  int fontNamePx;
+  int fontHintPx;
+  wchar_t fontFace[LF_FACESIZE];
   // DVPNMSTATUSTEXT 的指针在查看器销毁前一直有效，文本要活得比调用长。
   wchar_t szStatus[512];
 };
@@ -183,8 +190,7 @@ void SendStatusText(ViewerState* st, const wchar_t* pszText) {
   ::SendMessageW(st->hwndParent, WM_NOTIFY, nmt.hdr.idFrom, reinterpret_cast<LPARAM>(&nmt));
 }
 
-void SetStatus(ViewerState* st, const wchar_t* pszFormat, ...) {
-  va_list args;
+void SetStatus(ViewerState* st, const wchar_t* pszFormat, ...) {  va_list args;
   va_start(args, pszFormat);
   ::StringCchVPrintfW(st->szStatus, ARRAYSIZE(st->szStatus), pszFormat, args);
   va_end(args);
@@ -195,6 +201,50 @@ RECT ClientRectOf(HWND hwnd) {
   RECT rc = {0, 0, 0, 0};
   ::GetClientRect(hwnd, &rc);
   return rc;
+}
+
+// 占位文字不能用默认的 System 位图字体：175% 缩放下又小又锯齿。这里按窗口 DPI
+// 和当前字号设置生成 ClearType 字体，系统 UI 字体负责中文字形。
+void EnsurePlaceholderFonts(ViewerState* st, HWND hwnd) {
+  UINT dpi = ::GetDpiForWindow(hwnd);
+  if (dpi == 0) dpi = 96;
+
+  wchar_t face[LF_FACESIZE] = L"Microsoft YaHei UI";
+  NONCLIENTMETRICSW ncm = {};
+  ncm.cbSize = sizeof(ncm);
+  if (::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0) &&
+      ncm.lfMessageFont.lfFaceName[0]) {
+    ::StringCchCopyW(face, ARRAYSIZE(face), ncm.lfMessageFont.lfFaceName);
+  }
+
+  const int sizePx = ConfigSnapshot().font.sizePx;
+  const int namePx = ::MulDiv(sizePx + 3, static_cast<int>(dpi), 96);
+  const int hintPx = ::MulDiv(sizePx, static_cast<int>(dpi), 96);
+
+  if (st->fontDpi == dpi && st->fontNamePx == namePx && st->fontHintPx == hintPx &&
+      _wcsicmp(st->fontFace, face) == 0) {
+    return;
+  }
+
+  if (st->fontName) ::DeleteObject(st->fontName);
+  if (st->fontHint) ::DeleteObject(st->fontHint);
+
+  LOGFONTW lf = {};
+  lf.lfWeight = FW_NORMAL;
+  lf.lfCharSet = DEFAULT_CHARSET;
+  lf.lfQuality = CLEARTYPE_QUALITY;
+  lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
+  ::StringCchCopyW(lf.lfFaceName, ARRAYSIZE(lf.lfFaceName), face);
+
+  lf.lfHeight = -namePx;
+  st->fontName = ::CreateFontIndirectW(&lf);
+  lf.lfHeight = -hintPx;
+  st->fontHint = ::CreateFontIndirectW(&lf);
+
+  st->fontDpi = dpi;
+  st->fontNamePx = namePx;
+  st->fontHintPx = hintPx;
+  ::StringCchCopyW(st->fontFace, ARRAYSIZE(st->fontFace), face);
 }
 
 // 皮肤与字体永远成对推送：先皮肤，再 fx（fx 最后注入且写全量槽位，压住皮肤）。
@@ -504,35 +554,61 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       HDC hdc = ::BeginPaint(hwnd, &ps);
       RECT rc;
       ::GetClientRect(hwnd, &rc);
-      if (st->webFailed) {
+
+      const bool loading = !st->webFailed && st->hasHost && !WebHostIsReady() && st->szFile[0];
+      if (st->webFailed || !st->hasHost || loading) {
+        EnsurePlaceholderFonts(st, hwnd);
         ::FillRect(hdc, &rc, ::GetSysColorBrush(COLOR_WINDOW));
+        // ClearType 需要知道背景色；文字画在刚刷白的底色上。
+        ::SetBkMode(hdc, OPAQUE);
+        ::SetBkColor(hdc, ::GetSysColor(COLOR_WINDOW));
+      }
+
+      if (st->webFailed) {
+        HGDIOBJ oldFont = ::SelectObject(
+            hdc, st->fontHint ? st->fontHint : ::GetStockObject(DEFAULT_GUI_FONT));
         ::SetTextColor(hdc, ::GetSysColor(COLOR_WINDOWTEXT));
-        ::SetBkMode(hdc, TRANSPARENT);
         ::DrawTextW(hdc, L"WebView2 不可用，无法预览 Markdown。详见日志。", -1, &rc,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        ::SelectObject(hdc, oldFont);
       } else if (!st->hasHost) {
         // 宿主在另一个查看器手里：给一行说明，别留一片白。
-        ::FillRect(hdc, &rc, ::GetSysColorBrush(COLOR_WINDOW));
+        HGDIOBJ oldFont = ::SelectObject(
+            hdc, st->fontHint ? st->fontHint : ::GetStockObject(DEFAULT_GUI_FONT));
         ::SetTextColor(hdc, ::GetSysColor(COLOR_GRAYTEXT));
-        ::SetBkMode(hdc, TRANSPARENT);
         ::DrawTextW(hdc, L"预览正显示在另一个查看器窗口中", -1, &rc,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-      } else if (!WebHostIsReady() && st->szFile[0]) {
-        // 冷启动/重建时 WebView2 要两三秒才出画面，先把文件名和状态画出来。
-        ::FillRect(hdc, &rc, ::GetSysColorBrush(COLOR_WINDOW));
-        ::SetBkMode(hdc, TRANSPARENT);
+        ::SelectObject(hdc, oldFont);
+      } else if (loading) {
+        // 冷启动/重建时 WebView2 要一会儿才出画面，先把文件名和状态画出来。
+        const UINT dpi = st->fontDpi ? st->fontDpi : 96;
+        HGDIOBJ oldFont = ::SelectObject(
+            hdc, st->fontName ? st->fontName : ::GetStockObject(DEFAULT_GUI_FONT));
+        TEXTMETRICW tmName = {};
+        ::GetTextMetricsW(hdc, &tmName);
+        ::SelectObject(hdc, st->fontHint ? st->fontHint : ::GetStockObject(DEFAULT_GUI_FONT));
+        TEXTMETRICW tmHint = {};
+        ::GetTextMetricsW(hdc, &tmHint);
 
-        RECT rcName = rc;
-        rcName.bottom = (rc.top + rc.bottom) / 2;
+        const int gap = ::MulDiv(6, static_cast<int>(dpi), 96);
+        const int pad = ::MulDiv(16, static_cast<int>(dpi), 96);
+        const int total = tmName.tmHeight + gap + tmHint.tmHeight;
+        int top = rc.top + ((rc.bottom - rc.top) - total) / 2;
+        if (top < rc.top + pad) top = rc.top + pad;
+
+        RECT rcName = {rc.left + pad, top, rc.right - pad, top + tmName.tmHeight};
+        RECT rcHint = {rc.left + pad, top + tmName.tmHeight + gap, rc.right - pad,
+                       top + tmName.tmHeight + gap + tmHint.tmHeight};
+
+        ::SelectObject(hdc, st->fontName ? st->fontName : ::GetStockObject(DEFAULT_GUI_FONT));
         ::SetTextColor(hdc, ::GetSysColor(COLOR_WINDOWTEXT));
         ::DrawTextW(hdc, UtilLeafName(st->szFile), -1, &rcName,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-        RECT rcHint = rc;
-        rcHint.top = rcName.bottom;
+        ::SelectObject(hdc, st->fontHint ? st->fontHint : ::GetStockObject(DEFAULT_GUI_FONT));
         ::SetTextColor(hdc, ::GetSysColor(COLOR_GRAYTEXT));
         ::DrawTextW(hdc, L"正在加载预览…", -1, &rcHint,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        ::SelectObject(hdc, oldFont);
       }
       ::EndPaint(hwnd, &ps);
       return 0;
@@ -609,6 +685,8 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
     UnregisterViewer(hwnd);
     if (st) {
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+      if (st->fontName) ::DeleteObject(st->fontName);
+      if (st->fontHint) ::DeleteObject(st->fontHint);
       LogLine(L"WND %p WM_NCDESTROY 释放状态（共 %u 条消息）", hwnd, st->uMsgSeq);
       delete st;
     }
@@ -684,6 +762,12 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->chromePushed = false;
   st->webFailed = false;
   st->hasHost = false;
+  st->fontName = nullptr;
+  st->fontHint = nullptr;
+  st->fontDpi = 0;
+  st->fontNamePx = 0;
+  st->fontHintPx = 0;
+  st->fontFace[0] = L'\0';
   st->szStatus[0] = L'\0';
 
   const int cx = rc.right - rc.left;
