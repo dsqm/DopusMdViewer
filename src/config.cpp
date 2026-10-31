@@ -44,7 +44,7 @@ void SetDefaults(Config* c) {
   c->renderHighlight = true;
   c->renderInlineHtml = true;
   c->renderLocalImages = true;
-  c->prewarm = true;
+  c->prewarm = false;
 }
 
 int ClampInt(int v, int lo, int hi, int fallback) {

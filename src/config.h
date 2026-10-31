@@ -34,7 +34,7 @@ struct Config {
   bool renderHighlight;
   bool renderInlineHtml;
   bool renderLocalImages;
-  // 启动后在后台预热 WebView2（Opus 窗口关闭时释放）。默认开启。
+  // 启动后在后台预热 WebView2（Opus 窗口关闭时释放）。默认关闭。
   bool prewarm;
 };
 
