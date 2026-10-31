@@ -39,6 +39,9 @@ enum class Str : int {
   ChainDel,
   Preview,
   RefreshFonts,
+  PreviewSample,
+  PreviewMissing,   // 带一个 %s：字体名
+  PreviewInherited,
 
   // 渲染
   RenderMermaid,

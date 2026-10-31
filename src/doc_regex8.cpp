@@ -128,7 +128,9 @@ bool RegexScanUtf8(const std::wstring& path, uint64_t startOffset, const std::st
       if (rc == PCRE2_ERROR_NOMATCH) break;
       if (rc < 0) {
         if (IsResourceLimit(rc)) {
+          // 触上限就整篇停下：只跳出这一块的话，后面每块都会再撞一次，白烧 CPU。
           out->limited = true;
+          canceled = true;
         } else if (!validated && error) {
           *error = L"文件含无效的 UTF-8 序列（偏移 " +
                    std::to_wstring(static_cast<unsigned long long>(chunkStart + start)) + L"）";

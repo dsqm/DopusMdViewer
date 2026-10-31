@@ -1114,6 +1114,11 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 DWORD WINAPI HostThreadProc(LPVOID param) {
   HANDLE readyEvent = static_cast<HANDLE>(param);
 
+  // 宿主线程可能重建（插件重新加载）：搜索线程的启停标志要跟着复位，
+  // 否则 g_searchStarted 还是 1，__search 请求就永远没人接、deferral 也不会收尾。
+  g_searchQuit = false;
+  ::InterlockedExchange(&g_searchStarted, 0);
+
   // Opus 的 UI 线程多半已是 STA；这里在自己的线程上重新初始化一次。
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 

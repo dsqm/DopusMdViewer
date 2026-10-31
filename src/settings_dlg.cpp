@@ -1,4 +1,4 @@
-﻿// settings_dlg.cpp - 非模态设置窗口（票 09：外观 / 字体 / 渲染 / 高级四页）。
+// settings_dlg.cpp - 非模态设置窗口（票 09：外观 / 字体 / 渲染 / 高级四页）。
 //
 // 四页共用一个窗口，靠控件的 ShowWindow 切换，不建子对话框；改动只进 staged
 // 副本，点“应用/确定”才写 config.json 并通知查看器。
@@ -136,7 +136,7 @@ void ApplyFont(HWND hwnd, HFONT font) {
    这是非模态的自建窗口，跑在宿主的消息循环里，拿不到对话框那套 IsDialogMessage
    行为（Tab 换焦点、Enter 走默认按钮、Esc 走取消）。所以自己实现：Tab 的消息先到
    焦点的子控件，因此给每个子控件装一个 subclass，在它之前把这些键截下来。
-   顺序取子窗口的创建顺序（GW_CHILD 是 z 序，新的在前，取完要反过来）。 */
+   Tab 顺序取子窗口的创建顺序（GW_CHILD），见 TabStops。 */
 
 LRESULT CALLBACK ControlProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 void MoveFocus(DialogState* st, int dir);
@@ -205,6 +205,19 @@ void FocusFirst(DialogState* st) {
   if (stops.empty()) return;
   ::SetFocus(stops.front());
   if (::GetFocus() != stops.front()) LogLine(L"SETTINGS: 第一个可聚焦控件没拿到焦点");
+}
+
+// 切页后把焦点落到本页第一个控件上：跳过顶部那排页签，否则换页后焦点还停在页签上，
+// 用户按空格会又点一次页签。本页没有可聚焦控件时才退回整窗第一个。
+void FocusPageFirst(DialogState* st) {
+  std::vector<HWND> stops = TabStops(st);
+  for (HWND h : stops) {
+    const int id = ::GetDlgCtrlID(h);
+    if (id >= kIdTabAppearance && id <= kIdTabAdvanced) continue;
+    ::SetFocus(h);
+    return;
+  }
+  FocusFirst(st);
 }
 
 bool IsPageTab(HWND hwnd) {
@@ -290,9 +303,9 @@ void ShowPage(DialogState* st, int page) {
   }
   ::CheckRadioButton(st->hwnd, kIdTabAppearance, kIdTabAdvanced, kIdTabAppearance + page);
   LogLine(L"SETTINGS: 切到第 %d 页", page + 1);
-  // 切页后焦点若落在刚藏起来的控件上，挪到本页第一个可聚焦控件
+  // 切页后焦点若落在刚藏起来的控件上，挪到本页第一个控件
   HWND focus = ::GetFocus();
-  if (!focus || !::IsWindowVisible(focus)) FocusFirst(st);
+  if (!focus || !::IsWindowVisible(focus)) FocusPageFirst(st);
 }
 
 std::wstring Trimmed(const wchar_t* text) {
@@ -359,14 +372,16 @@ void UpdatePreview(DialogState* st) {
     ApplyFont(st->hPreview, created);
   }
 
-  ::SetWindowTextW(st->hPreview, L"中文 English 123 — 字体预览");
-  std::wstring note;
+  ::SetWindowTextW(st->hPreview, loc::T(loc::Str::PreviewSample));
   if (st->previewMissing) {
-    note = L"未找到：" + face + L"（仍可保存，系统会回退）";
+    wchar_t note[LF_FACESIZE * 2 + 64] = {};
+    ::StringCchPrintfW(note, ARRAYSIZE(note), loc::T(loc::Str::PreviewMissing), face.c_str());
+    ::SetWindowTextW(st->hPreviewNote, note);
   } else if (inherited && st->staged.font.body.empty()) {
-    note = L"正文未设置，跟随界面字体";
+    ::SetWindowTextW(st->hPreviewNote, loc::T(loc::Str::PreviewInherited));
+  } else {
+    ::SetWindowTextW(st->hPreviewNote, L"");
   }
-  ::SetWindowTextW(st->hPreviewNote, note.c_str());
   ::InvalidateRect(st->hPreview, nullptr, TRUE);
   ::InvalidateRect(st->hPreviewNote, nullptr, TRUE);
 }
@@ -612,10 +627,11 @@ void BuildUi(DialogState* st) {
                          {kIdTabRender, loc::T(loc::Str::TabRender)},
                          {kIdTabAdvanced, loc::T(loc::Str::TabAdvanced)}};
   for (int i = 0; i < 4; ++i) {
-    // 四个页签是一个单选组：Windows 只给组里第一个留 WS_TABSTOP（其余建好就被清掉，
-    // 这是对话框的既有约定），所以整组只有一个 Tab 站位，换页靠左右方向键。
+    // 四个页签是一个单选组：只给组里第一个 WS_TABSTOP，整组占一个 Tab 站位
+    //（Windows 对同组单选按钮也会把其余的清掉，这里写明白就不靠它）。
+    // 换页用左右方向键，也照旧能点。
     AddControl(st, -1, L"BUTTON", tabs[i].text,
-               BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_TABSTOP | (i == 0 ? WS_GROUP : 0),
+               BS_AUTORADIOBUTTON | BS_PUSHLIKE | (i == 0 ? (WS_TABSTOP | WS_GROUP) : 0),
                12 + i * 90, 10, 84, 26, tabs[i].id);
   }
 

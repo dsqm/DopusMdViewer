@@ -710,8 +710,13 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       return 0;
 
     case DVPLUGINMSG_SELECTALL:
-      // Opus 菜单里的「全选」只做选中；随后的「复制」由页面 Ctrl+C 走渲染复制
+      // Opus 菜单里的「全选」只做选中；随后的「复制」走下一分支
       if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"selectall|");
+      return 0;
+
+    case DVPLUGINMSG_COPYSELECTION:
+      // Opus 菜单/命令里的「复制」：有选区就复制选区文本，没有就把全文渲染文本放进剪贴板。
+      if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"copy|");
       return 0;
 
     case DVPLUGINMSG_RESIZE: {

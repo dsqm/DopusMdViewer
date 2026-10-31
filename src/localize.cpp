@@ -37,6 +37,9 @@ const wchar_t* const kZh[kCount] = {
     /* ChainDel         */ L"删除",
     /* Preview          */ L"预览",
     /* RefreshFonts     */ L"刷新字体列表",
+    /* PreviewSample    */ L"中文 English 123 — 字体预览",
+    /* PreviewMissing   */ L"未找到：%s（仍可保存，系统会回退）",
+    /* PreviewInherited */ L"正文未设置，跟随界面字体",
 
     /* RenderMermaid    */ L"Mermaid 图表",
     /* RenderKatex      */ L"KaTeX 公式",

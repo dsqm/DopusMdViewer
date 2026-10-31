@@ -51,7 +51,9 @@ void BigTable(std::string* out);
 // offUnits 是命中在块内解码文本里的 UTF-16 单元偏移（与 JS 字符串下标一致）；
 // line 是块内行号（0 起，与 __lines 的 from 同口径），**只对巨型块有意义**，
 // 普通块恒 0——前端只在巨型块上用它定位命中行。
-// flags bit0 = 命中被截断（只返回导航上限内的条目）。
+// flags bit0 = 命中被截断（只返回导航上限内的条目）；
+//       bit1 = 正则出错，帧尾跟一条 u32 长度 + UTF-8 消息（此时 returned=0）；
+//       bit2 = 触发过 PCRE2 的匹配/深度上限，计数可能偏小（UI 在计数字尾显示 ?）。
 // **SearchBody 要读整个文件，必须放在后台线程上跑**：WebResourceRequested 在宿主
 // 线程上串行回调，直接扫 1 GB 会把输入与窗口消息一起卡住（webhost 只在拿不到
 // deferral 的罕见情况下同步兜底）。

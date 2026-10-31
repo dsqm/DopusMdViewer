@@ -416,8 +416,10 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       } else if (wParam == kCopyCheckTimerId) {
         ::KillTimer(hwnd, kCopyCheckTimerId);
         LogClipboard(L"Ctrl+C");
-        // 再走一遍 Opus 菜单「全选」的 SELECTALL 消息路径（只选中，不复制）
+        // 再走一遍 Opus 菜单「全选」→「复制」的消息路径：全选只选中，
+        // 复制由 COPYSELECTION 让页面把选区（或全文）交给宿主写剪贴板。
         if (g_viewer) ::PostMessageW(g_viewer, DVPLUGINMSG_SELECTALL, 0, 0);
+        if (g_viewer) ::PostMessageW(g_viewer, DVPLUGINMSG_COPYSELECTION, 0, 0);
         ::SetTimer(hwnd, kCopyLateTimerId, 25000, nullptr);
       } else if (wParam == kCopyLateTimerId) {
         ::KillTimer(hwnd, kCopyLateTimerId);

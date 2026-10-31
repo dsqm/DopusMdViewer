@@ -1181,7 +1181,7 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
       AppendU32(body, 0);
       AppendU32(body, 0);
       AppendU32(body, 2);
-      const std::string msg = WideToUtf8String(reError);
+      const std::string msg = WideToUtf8String(std::wstring(L"正则无效：") + reError);
       AppendU32(body, static_cast<uint32_t>(msg.size()));
       body->append(msg);
       LogLine(L"DOCSRC: __search re \"%s\" 失败: %s ms=%llu", needle.c_str(),

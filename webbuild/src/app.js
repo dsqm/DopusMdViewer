@@ -2207,7 +2207,8 @@ function updateFindCount() {
     } else if (FIND.error) {
       text = FIND.error.length > 28 ? FIND.error.slice(0, 28) + '\u2026' : FIND.error
     } else if (!FIND.results.length) {
-      text = '无结果'
+      // 命中可能全在隐藏块（脚注定义、引用定义）里：计数有，但没有能跳过去的目标
+      text = FIND.total > 0 ? FIND.total + ' 处（不可跳转）' : '无结果'
     } else {
       text = (FIND.index >= 0 ? FIND.index + 1 : 0) + '/' + FIND.total
         + (FIND.truncated ? '+' : '') + (FIND.limited ? '?' : '')
@@ -3186,6 +3187,14 @@ function onHostMessage(event) {
 
   if (type === 'selectall') {
     selectAllText()
+    return
+  }
+
+  if (type === 'copy') {
+    // Opus 菜单的「复制」：有选区就只复制选区，没有就整篇渲染文本
+    const picked = String(window.getSelection() || '')
+    if (picked) postRaw('copyset|0|' + picked)
+    else copyRendered()
     return
   }
 

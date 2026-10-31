@@ -182,7 +182,9 @@ bool RegexScanUtf16(const std::wstring& path, uint64_t startOffset, bool bigEndi
       if (rc == PCRE2_ERROR_NOMATCH) break;
       if (rc < 0) {
         if (IsResourceLimit(rc)) {
+          // 触上限就整篇停下（同 8 位实现）。
           out->limited = true;
+          canceled = true;
         } else if (!validated && error) {
           *error = L"文件含无效的 UTF-16 序列（偏移 " +
                    std::to_wstring(static_cast<unsigned long long>(chunkStart + start * 2)) +
@@ -323,7 +325,10 @@ bool RegexScanGb18030(const std::wstring& path, uint64_t startOffset,
                                  flags | PCRE2_NO_UTF_CHECK, md, mctx);
       if (rc == PCRE2_ERROR_NOMATCH) break;
       if (rc < 0) {
-        if (IsResourceLimit(rc)) out->limited = true;
+        if (IsResourceLimit(rc)) {
+          out->limited = true;
+          canceled = true;
+        }
         break;
       }
       const PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
