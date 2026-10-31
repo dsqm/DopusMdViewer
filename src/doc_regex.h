@@ -29,4 +29,16 @@ bool RegexSearchFile(const std::wstring& path, Encoding encoding, uint32_t bomBy
                      const std::atomic<bool>* cancel, RegexHits* out,
                      std::wstring* error);
 
+// 字面量搜索的 Unicode 大小写折叠：needle 里存在有大／小写变体的非 ASCII 字符时返回 true。
+// 字节扫描器（doc_search）与宽扫描器只折叠 ASCII，只有这种情况必须走 PCRE2 才正确；
+// 纯 ASCII 或纯中日韩（无大小写）的 needle 一律返回 false，继续用快路径。
+bool LiteralNeedsUnicodeFold(const std::wstring& needle);
+
+// 大小写不敏感的字面量搜索：内部拼成 \Q…\E（wholeWord 再补 ASCII 词边界断言）交给
+// RegexSearchFile(caseSensitive=false)。偏移与编码处理与正则完全一致，只在
+// LiteralNeedsUnicodeFold 为真时使用。
+bool LiteralSearchFile(const std::wstring& path, Encoding encoding, uint32_t bomBytes,
+                       const std::wstring& needle, bool wholeWord,
+                       const std::atomic<bool>* cancel, RegexHits* out, std::wstring* error);
+
 }  // namespace doc

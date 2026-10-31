@@ -7,6 +7,7 @@
 //   indextest outline <file> [max]
 //   indextest dump <file> [max]
 //   indextest search <file> <pattern>
+//   indextest literal <file> <pattern> [cs|ww 组合] [utf8|gb18030|utf16le|utf16be]
 //   indextest regex <file> <pattern> [cs] [utf8|gb18030|utf16le|utf16be]
 //   indextest blockat <file> <offset>
 
@@ -345,6 +346,61 @@ int ModeSearch(const std::wstring& path, const std::string& pattern, bool caseSe
   return 0;
 }
 
+// 字面量搜索的完整路由，判定与 doc_source 的 __search 一致：大小写不敏感且 needle
+// 含带大小写变体的非 ASCII 字符时交给 PCRE2，其余走字节扫描器。
+int ModeLiteral(const std::wstring& path, const std::wstring& needle, bool caseSensitive,
+                bool wholeWord, doc::Encoding enc, uint32_t bomBytes) {
+  LARGE_INTEGER t0;
+  LARGE_INTEGER t1;
+  ::QueryPerformanceCounter(&t0);
+
+  std::vector<uint64_t> offsets;
+  uint64_t total = 0;
+  int truncated = 0;
+  const bool pcre = !caseSensitive && doc::LiteralNeedsUnicodeFold(needle);
+  std::wstring errw;
+
+  if (pcre) {
+    doc::RegexHits rh;
+    if (!doc::LiteralSearchFile(path, enc, bomBytes, needle, wholeWord, nullptr, &rh, &errw)) {
+      wprintf(L"literal failed: %s\n", errw.c_str());
+      return 1;
+    }
+    total = rh.total;
+    offsets = rh.offsets;
+    truncated = rh.truncated ? 1 : 0;
+  } else {
+    if (enc == doc::Encoding::Utf16LE || enc == doc::Encoding::Utf16BE) {
+      wprintf(L"literal: utf16 走宽扫描器（indextest 未覆盖），请用 cs 排除折叠路径\n");
+      return 2;
+    }
+    const UINT cp = enc == doc::Encoding::Gb18030 ? 54936 : CP_UTF8;
+    const int n = ::WideCharToMultiByte(cp, 0, needle.c_str(), static_cast<int>(needle.size()),
+                                        nullptr, 0, nullptr, nullptr);
+    std::string bytes(static_cast<size_t>(n > 0 ? n : 0), '\0');
+    if (n > 0) {
+      ::WideCharToMultiByte(cp, 0, needle.c_str(), static_cast<int>(needle.size()), &bytes[0], n,
+                            nullptr, nullptr);
+    }
+    std::wstring err;
+    const doc::SearchHits h =
+        doc::SearchFileBytes(path, bytes, 4, &err, caseSensitive, wholeWord);
+    total = h.total;
+    offsets = h.offsets;
+    truncated = h.truncated ? 1 : 0;
+  }
+
+  ::QueryPerformanceCounter(&t1);
+  wprintf(L"literal \"%s\" cs=%d ww=%d route=%s total=%llu kept=%zu truncated=%d %.1f ms\n",
+          needle.c_str(), caseSensitive ? 1 : 0, wholeWord ? 1 : 0, pcre ? L"pcre" : L"bytes",
+          static_cast<unsigned long long>(total), offsets.size(), truncated,
+          QpcMs(t0.QuadPart, t1.QuadPart));
+  for (size_t i = 0; i < std::min<size_t>(offsets.size(), 40); ++i) {
+    wprintf(L"  #%zu @%llu\n", i, static_cast<unsigned long long>(offsets[i]));
+  }
+  return 0;
+}
+
 doc::EncodingInfo DetectFileEncoding(const std::wstring& path) {
   HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -381,7 +437,7 @@ int ModeRegex(const std::wstring& path, const std::wstring& pattern, bool caseSe
 
 int wmain(int argc, wchar_t** argv) {
   if (argc < 3) {
-    wprintf(L"usage: indextest scanmulti|prefix|stats|outline|dump|blockat|search ...\n");
+    wprintf(L"usage: indextest scanmulti|prefix|stats|outline|dump|blockat|search|literal|regex ...\n");
     return 2;
   }
   const std::wstring mode = argv[1];
@@ -421,6 +477,25 @@ int wmain(int argc, wchar_t** argv) {
     const std::wstring flags = argc >= 5 ? argv[4] : L"";
     return ModeSearch(path, pattern, flags.find(L"cs") != std::wstring::npos,
                       flags.find(L"ww") != std::wstring::npos);
+  }
+
+  if (mode == L"literal") {
+    if (argc < 4) {
+      wprintf(L"literal needs a pattern\n");
+      return 2;
+    }
+    const std::wstring flags = argc >= 5 ? argv[4] : L"";
+    const doc::EncodingInfo info = DetectFileEncoding(path);
+    doc::Encoding enc = info.encoding;
+    if (argc >= 6) {
+      const std::wstring e = argv[5];
+      if (e == L"utf8") enc = doc::Encoding::Utf8;
+      else if (e == L"gb18030") enc = doc::Encoding::Gb18030;
+      else if (e == L"utf16le") enc = doc::Encoding::Utf16LE;
+      else if (e == L"utf16be") enc = doc::Encoding::Utf16BE;
+    }
+    return ModeLiteral(path, argv[3], flags.find(L"cs") != std::wstring::npos,
+                       flags.find(L"ww") != std::wstring::npos, enc, info.bomBytes);
   }
 
   if (mode == L"regex") {

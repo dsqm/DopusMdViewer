@@ -1122,6 +1122,7 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
                     snap->enc.encoding == doc::Encoding::Utf16BE;
   doc::SearchHits hits;
   bool limited = false;
+  const wchar_t* how = L"";
   if (regex) {
     doc::RegexHits rh;
     std::wstring reError;
@@ -1144,7 +1145,23 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
     hits.total = rh.total;
     hits.truncated = rh.truncated;
     limited = rh.limited;
+  } else if (!caseSensitive && doc::LiteralNeedsUnicodeFold(needle)) {
+    // 非 ASCII 的大小写折叠只有 PCRE2 有（字节与宽字符扫描器只折叠 ASCII）。
+    // 纯 ASCII 与无大小写的文字（中日韩）不会走到这里，快路径不受影响。
+    how = L" pcre";
+    doc::RegexHits rh;
+    std::wstring foldError;
+    if (doc::LiteralSearchFile(snap->path, snap->enc.encoding, snap->enc.bomBytes, needle,
+                               wholeWord, cancel, &rh, &foldError)) {
+      hits.offsets = std::move(rh.offsets);
+      hits.total = rh.total;
+      hits.truncated = rh.truncated;
+      limited = rh.limited;
+    } else {
+      LogLine(L"DOCSRC: __search \"%s\" 折叠路径失败: %s", needle.c_str(), foldError.c_str());
+    }
   } else if (wide) {
+    how = L" w16";
     hits = SearchWideFile(snap->path, needle, caseSensitive,
                           snap->enc.encoding == doc::Encoding::Utf16BE, wholeWord, cancel);
   } else {
@@ -1204,8 +1221,8 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
     AppendU32(body, e.units);
   }
 
-  LogLine(L"DOCSRC: __search%s \"%s\" hits=%llu visible=%llu added=%zu%s ms=%llu",
-          regex ? L" re" : L"", needle.c_str(),
+  LogLine(L"DOCSRC: __search%s%s \"%s\" hits=%llu visible=%llu added=%zu%s ms=%llu",
+          how, regex ? L" re" : L"", needle.c_str(),
           static_cast<unsigned long long>(hits.total),
           static_cast<unsigned long long>(visibleTotal), list.size(),
           limited ? L" limited" : L"",
