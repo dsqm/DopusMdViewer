@@ -85,9 +85,7 @@ DWORD g_threadId = 0;
 HWND g_threadHost = nullptr;
 
 std::wstring WebDir() {
-  const std::wstring moduleDir = UtilModuleDir();
-  if (moduleDir.empty()) return std::wstring();
-  return UtilJoin(moduleDir, L"web");
+  return UtilWebDir();
 }
 
 std::wstring UserDataDir() {

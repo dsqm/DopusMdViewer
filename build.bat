@@ -67,7 +67,7 @@ if errorlevel 1 goto :fail
 echo.
 echo [5/5] 同步 web 资源...
 rem robocopy 返回 0-7 都算成功（1 表示有文件被复制），只有 >=8 才是失败
-robocopy "%PROJ%web" "%PROJ%bin\web" /MIR /NFL /NDL /NJH /NJS /NP >nul
+robocopy "%PROJ%web" "%PROJ%bin\DopusMdViewer" /MIR /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 goto :fail
 
 popd

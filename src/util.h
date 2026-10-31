@@ -8,8 +8,12 @@
 
 #include <string>
 
-// DLL 所在目录，不带尾随反斜杠（web\ 就在它下面）。
+// DLL 所在目录，不带尾随反斜杠。
 std::wstring UtilModuleDir(void);
+
+// 前端资源目录（shell.html / app.js / skins / fonts）：DLL 同级、与插件同名，
+// 不用通用的 "web" 名字，免得和 Viewers 里别的插件抢目录。
+std::wstring UtilWebDir(void);
 
 // %APPDATA%\GPSoftware\Directory Opus\User Data\DopusMdViewer
 // 皮肤、config.json、logs、WebView2 用户数据同根（票 10、票 09）。

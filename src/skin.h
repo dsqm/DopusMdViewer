@@ -1,7 +1,7 @@
 // skin.h - 皮肤文件定位与读取（票 07：皮肤是一份完整 CSS）。
 //
 // 查找顺序：用户目录同名覆盖内置。
-//   <DLL 目录>\web\skins\<id>.css    内置，随插件分发
+//   <DLL 目录>\DopusMdViewer\skins\<id>.css    内置，随插件分发
 //   <数据目录>\skins\<id>.css         用户皮肤
 // 文件不存在就返回 false（不报错、不创建目录）。
 

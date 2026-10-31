@@ -21,9 +21,9 @@ std::wstring SanitizeId(const std::wstring& id) {
 }  // namespace
 
 std::wstring SkinBuiltinDir(void) {
-  const std::wstring moduleDir = UtilModuleDir();
-  if (moduleDir.empty()) return std::wstring();
-  return UtilJoin(UtilJoin(moduleDir, L"web"), L"skins");
+  const std::wstring webDir = UtilWebDir();
+  if (webDir.empty()) return std::wstring();
+  return UtilJoin(webDir, L"skins");
 }
 
 std::wstring SkinUserDir(void) {

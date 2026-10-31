@@ -41,6 +41,12 @@ std::wstring UtilModuleDir(void) {
   return dir;
 }
 
+std::wstring UtilWebDir(void) {
+  const std::wstring moduleDir = UtilModuleDir();
+  if (moduleDir.empty()) return std::wstring();
+  return UtilJoin(moduleDir, L"DopusMdViewer");
+}
+
 std::wstring UtilDataDir(void) {
   wchar_t szAppData[MAX_PATH];
   const DWORD n = ::GetEnvironmentVariableW(L"APPDATA", szAppData, ARRAYSIZE(szAppData));
