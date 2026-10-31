@@ -292,6 +292,7 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
 
     const uint64_t chunkStart = pos;
     size_t i = 0;
+    size_t lineStart = 0;  // 最后一段没有换行的字节从 buf 的哪里开始
     bool stop = false;
     while (i + unit <= n) {
       const size_t nl = NextNewline(buf.data() + i, n - i, wide, bigEndian);
@@ -308,25 +309,27 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
       raw->append(reinterpret_cast<const char*>(buf.data() + i), lineBytes);
       ++got;
       i = nlAt + unit;
+      lineStart = i;
       if (got >= count) {
         stop = true;
         break;
       }
     }
-    pos = chunkStart + i;
     if (stop) break;
 
-    if (pos >= c->blockEnd) break;
-    // 本块余下没有换行；只有到达块尾才是「最后一行没有换行」
+    // 读到块尾：lineStart 起的剩余字节就是最后一行（它没有换行结尾）。
+    // 这一步必须在退出前做，否则每个巨型块的最后一行永远少一条，行总数也少 1。
     if (chunkStart + n >= c->blockEnd) {
-      const size_t tailLen = n - i;
-      if (tailLen > 0 && raw->size() + tailLen <= kMaxWindowBytes) {
-        raw->append(reinterpret_cast<const char*>(buf.data() + i), tailLen);
+      const size_t tailLen = n - lineStart;
+      if (tailLen > 0) {
+        if (raw->size() + tailLen > kMaxWindowBytes) break;
+        raw->append(reinterpret_cast<const char*>(buf.data() + lineStart), tailLen);
         ++got;
       }
       pos = c->blockEnd;
       break;
     }
+    pos = chunkStart + i;
   }
   *gotLines = got;
   return true;
