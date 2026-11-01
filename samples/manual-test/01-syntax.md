@@ -61,6 +61,8 @@ function add(a, b) {
 
 <div>这是一个 div 块（内联原始 HTML）。</div>
 
+按键：<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd>，相邻写法 <kbd>⌘</kbd><kbd>K</kbd>，符号键 <kbd>⇪</kbd>。
+
 ---
 
 结束。
