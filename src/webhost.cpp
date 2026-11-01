@@ -583,7 +583,8 @@ void OnEnvironmentReady(HRESULT hr, ICoreWebView2Environment* env, bool triedCus
       LogLine(L"WEBHOST: 自定义运行时不可用 hr=0x%08X，回退系统运行时",
               static_cast<unsigned>(hr));
       ::InterlockedExchange(&g_runtimeFallback, 1);
-      StartEnvironment(std::wstring(), true);
+      // 第二次是系统运行时，triedCustom=false；再失败直接走 Fail，不能再回退。
+      StartEnvironment(std::wstring(), false);
       return;
     }
     g_host.creating = false;
