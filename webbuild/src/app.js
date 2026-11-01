@@ -3087,6 +3087,14 @@ function initMermaid(api) {
   })
 }
 
+// mermaid 会把 %%{init}%% 的 themeVariables 原样写进 SVG 的 <style>：
+// url(...) 能借 CSP 的 img-src 免网络图片确认发起远程请求，一律剥掉。
+function stripSvgStyleUrls(svg) {
+  return svg
+    .replace(/<style([\s\S]*?)<\/style>/gi, (m, body) => '<style>' + body.replace(/url\s*\([^)]*\)/gi, 'none') + '</style>')
+    .replace(/style\s*=\s*"([^"]*)"/gi, (m, css) => 'style="' + css.replace(/url\s*\([^)]*\)/gi, 'none') + '"')
+}
+
 async function renderMermaidBlocks(root, generation) {
   const pending = root.querySelectorAll('[data-mermaid="pending"]')
   if (!pending.length) return
@@ -3127,7 +3135,7 @@ async function renderMermaidBlocks(root, generation) {
         // mermaid 把配色与字体写进 SVG 内联 <style>，剥掉就只剩框没有字
         ADD_TAGS: ['style'],
       })
-      el.innerHTML = svg
+      el.innerHTML = stripSvgStyleUrls(svg)
       el.setAttribute('data-mermaid', 'done')
     } catch (err) {
       // 线上没有控制台，失败原因只能回流到日志
