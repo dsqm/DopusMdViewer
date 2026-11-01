@@ -21,20 +21,21 @@ std::string WideToUtf8(const std::wstring& s) {
 }
 
 // 按编码挑宽度。start 是 BOM 之后的第一个字节。
-bool ScanPattern(const std::wstring& path, Encoding encoding, uint64_t start,
+bool ScanPattern(const std::wstring& path, const EncodingInfo& enc,
                  const std::wstring& pattern, bool caseless,
                  const std::atomic<bool>* cancel, RegexHits* out, std::wstring* error) {
-  switch (encoding) {
+  switch (enc.encoding) {
     case Encoding::Utf8: {
       const std::string p8 = WideToUtf8(pattern);
-      return RegexScanUtf8(path, start, p8, caseless, cancel, out, error);
+      return RegexScanUtf8(path, enc.bomBytes, p8, caseless, cancel, out, error);
     }
     case Encoding::Utf16LE:
-      return RegexScanUtf16(path, start, false, pattern, caseless, cancel, out, error);
+      return RegexScanUtf16(path, enc.bomBytes, false, pattern, caseless, cancel, out, error);
     case Encoding::Utf16BE:
-      return RegexScanUtf16(path, start, true, pattern, caseless, cancel, out, error);
-    case Encoding::Gb18030:
-      return RegexScanGb18030(path, start, pattern, caseless, cancel, out, error);
+      return RegexScanUtf16(path, enc.bomBytes, true, pattern, caseless, cancel, out, error);
+    case Encoding::Legacy:
+      return RegexScanLegacy(path, enc.bomBytes, enc.codepage, pattern, caseless, cancel, out,
+                             error);
   }
   if (error) *error = L"不支持的编码";
   return false;
@@ -75,7 +76,7 @@ std::wstring QuoteLiteral(const std::wstring& needle) {
 
 }  // namespace
 
-bool RegexSearchFile(const std::wstring& path, Encoding encoding, uint32_t bomBytes,
+bool RegexSearchFile(const std::wstring& path, const EncodingInfo& encoding,
                      const std::wstring& pattern, bool caseSensitive,
                      const std::atomic<bool>* cancel, RegexHits* out,
                      std::wstring* error) {
@@ -95,7 +96,7 @@ bool RegexSearchFile(const std::wstring& path, Encoding encoding, uint32_t bomBy
     return false;
   }
 
-  return ScanPattern(path, encoding, bomBytes, pattern, !caseSensitive, cancel, out, error);
+  return ScanPattern(path, encoding, pattern, !caseSensitive, cancel, out, error);
 }
 
 bool LiteralNeedsUnicodeFold(const std::wstring& needle) {
@@ -112,8 +113,8 @@ bool LiteralNeedsUnicodeFold(const std::wstring& needle) {
          MapCase(needle, LCMAP_LOWERCASE) != needle;
 }
 
-bool LiteralSearchFile(const std::wstring& path, Encoding encoding, uint32_t bomBytes,
-                       const std::wstring& needle, bool wholeWord,
+bool LiteralSearchFile(const std::wstring& path, const EncodingInfo& encoding,
+                       bool caseSensitive, const std::wstring& needle, bool wholeWord,
                        const std::atomic<bool>* cancel, RegexHits* out,
                        std::wstring* error) {
   if (!out) return false;
@@ -130,7 +131,7 @@ bool LiteralSearchFile(const std::wstring& path, Encoding encoding, uint32_t bom
   pattern += QuoteLiteral(needle);
   if (wholeWord) pattern += L"(?![A-Za-z0-9_])";
 
-  return ScanPattern(path, encoding, bomBytes, pattern, true, cancel, out, error);
+  return ScanPattern(path, encoding, pattern, !caseSensitive, cancel, out, error);
 }
 
 }  // namespace doc

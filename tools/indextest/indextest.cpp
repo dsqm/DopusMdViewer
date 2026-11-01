@@ -109,6 +109,11 @@ bool ScanWithChunk(const std::wstring& path, size_t chunkBytes, uint64_t limit,
     if (!begun) {
       ::QueryPerformanceCounter(&r0);
       const doc::EncodingInfo enc = doc::DetectEncoding(buf.data(), got);
+      if (enc.encoding == doc::Encoding::Legacy && doc::IsUtf32CodePage(enc.codepage)) {
+        ::CloseHandle(h);
+        if (error) *error = L"不支持的编码（UTF-32）";
+        return false;
+      }
       if (!out->Begin(enc, fileSize, maxBytes)) {
         ::CloseHandle(h);
         if (error) *error = L"Begin failed (file > 4 GB?)";
@@ -349,7 +354,7 @@ int ModeSearch(const std::wstring& path, const std::string& pattern, bool caseSe
 // 字面量搜索的完整路由，判定与 doc_source 的 __search 一致：大小写不敏感且 needle
 // 含带大小写变体的非 ASCII 字符时交给 PCRE2，其余走字节扫描器。
 int ModeLiteral(const std::wstring& path, const std::wstring& needle, bool caseSensitive,
-                bool wholeWord, doc::Encoding enc, uint32_t bomBytes) {
+                bool wholeWord, const doc::EncodingInfo& enc) {
   LARGE_INTEGER t0;
   LARGE_INTEGER t1;
   ::QueryPerformanceCounter(&t0);
@@ -357,12 +362,14 @@ int ModeLiteral(const std::wstring& path, const std::wstring& needle, bool caseS
   std::vector<uint64_t> offsets;
   uint64_t total = 0;
   int truncated = 0;
-  const bool pcre = !caseSensitive && doc::LiteralNeedsUnicodeFold(needle);
+  const bool stateful =
+      enc.encoding == doc::Encoding::Legacy && doc::IsIso2022CodePage(enc.CodePage());
+  const bool pcre = stateful || (!caseSensitive && doc::LiteralNeedsUnicodeFold(needle));
   std::wstring errw;
 
   if (pcre) {
     doc::RegexHits rh;
-    if (!doc::LiteralSearchFile(path, enc, bomBytes, needle, wholeWord, nullptr, &rh, &errw)) {
+    if (!doc::LiteralSearchFile(path, enc, caseSensitive, needle, wholeWord, nullptr, &rh, &errw)) {
       wprintf(L"literal failed: %s\n", errw.c_str());
       return 1;
     }
@@ -370,11 +377,12 @@ int ModeLiteral(const std::wstring& path, const std::wstring& needle, bool caseS
     offsets = rh.offsets;
     truncated = rh.truncated ? 1 : 0;
   } else {
-    if (enc == doc::Encoding::Utf16LE || enc == doc::Encoding::Utf16BE) {
+    if (enc.IsUtf16()) {
       wprintf(L"literal: utf16 走宽扫描器（indextest 未覆盖），请用 cs 排除折叠路径\n");
       return 2;
     }
-    const UINT cp = enc == doc::Encoding::Gb18030 ? 54936 : CP_UTF8;
+    const UINT cp = enc.encoding == doc::Encoding::Legacy ? static_cast<UINT>(enc.CodePage())
+                                                          : CP_UTF8;
     const int n = ::WideCharToMultiByte(cp, 0, needle.c_str(), static_cast<int>(needle.size()),
                                         nullptr, 0, nullptr, nullptr);
     std::string bytes(static_cast<size_t>(n > 0 ? n : 0), '\0');
@@ -405,25 +413,28 @@ doc::EncodingInfo DetectFileEncoding(const std::wstring& path) {
   HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) return doc::EncodingInfo();
-  unsigned char buf[4096];
+  std::vector<unsigned char> buf(8u << 20);
   DWORD got = 0;
-  ::ReadFile(h, buf, sizeof(buf), &got, nullptr);
+  const DWORD want = static_cast<DWORD>(buf.size());
+  ::ReadFile(h, buf.data(), want, &got, nullptr);
   ::CloseHandle(h);
-  return doc::DetectEncoding(buf, got);
+  buf.resize(got);
+  return doc::DetectEncoding(buf.data(), buf.size());
 }
 
 int ModeRegex(const std::wstring& path, const std::wstring& pattern, bool caseSensitive,
-              doc::Encoding enc, uint32_t bomBytes) {
+              const doc::EncodingInfo& enc) {
   LARGE_INTEGER t0;
   LARGE_INTEGER t1;
   ::QueryPerformanceCounter(&t0);
   doc::RegexHits hits;
   std::wstring err;
-  const bool ok = doc::RegexSearchFile(path, enc, bomBytes, pattern, caseSensitive, nullptr, &hits,
+  const bool ok = doc::RegexSearchFile(path, enc, pattern, caseSensitive, nullptr, &hits,
                        &err);
   ::QueryPerformanceCounter(&t1);
-  wprintf(L"regex \"%s\" enc=%d cs=%d ok=%d total=%llu kept=%zu truncated=%d limited=%d %.1f ms %s\n",
-          pattern.c_str(), static_cast<int>(enc), caseSensitive ? 1 : 0, ok ? 1 : 0,
+  wprintf(L"regex \"%s\" enc=%d cp=%u cs=%d ok=%d total=%llu kept=%zu truncated=%d limited=%d %.1f ms %s\n",
+          pattern.c_str(), static_cast<int>(enc.encoding), enc.CodePage(),
+          caseSensitive ? 1 : 0, ok ? 1 : 0,
           static_cast<unsigned long long>(hits.total), hits.offsets.size(),
           hits.truncated ? 1 : 0, hits.limited ? 1 : 0,
           QpcMs(t0.QuadPart, t1.QuadPart), err.c_str());
@@ -485,17 +496,27 @@ int wmain(int argc, wchar_t** argv) {
       return 2;
     }
     const std::wstring flags = argc >= 5 ? argv[4] : L"";
-    const doc::EncodingInfo info = DetectFileEncoding(path);
-    doc::Encoding enc = info.encoding;
+    doc::EncodingInfo info = DetectFileEncoding(path);
     if (argc >= 6) {
       const std::wstring e = argv[5];
-      if (e == L"utf8") enc = doc::Encoding::Utf8;
-      else if (e == L"gb18030") enc = doc::Encoding::Gb18030;
-      else if (e == L"utf16le") enc = doc::Encoding::Utf16LE;
-      else if (e == L"utf16be") enc = doc::Encoding::Utf16BE;
+      if (e == L"utf8") {
+        info.encoding = doc::Encoding::Utf8;
+        info.codepage = 0;
+        info.bomBytes = 0;
+      } else if (e == L"gb18030") {
+        info.encoding = doc::Encoding::Legacy;
+        info.codepage = 54936;
+        info.bomBytes = 0;
+      } else if (e == L"utf16le") {
+        info.encoding = doc::Encoding::Utf16LE;
+        info.bomBytes = 0;
+      } else if (e == L"utf16be") {
+        info.encoding = doc::Encoding::Utf16BE;
+        info.bomBytes = 0;
+      }
     }
     return ModeLiteral(path, argv[3], flags.find(L"cs") != std::wstring::npos,
-                       flags.find(L"ww") != std::wstring::npos, enc, info.bomBytes);
+                       flags.find(L"ww") != std::wstring::npos, info);
   }
 
   if (mode == L"regex") {
@@ -504,17 +525,26 @@ int wmain(int argc, wchar_t** argv) {
       return 2;
     }
     const std::wstring flags = argc >= 5 ? argv[4] : L"";
-    const doc::EncodingInfo info = DetectFileEncoding(path);
-    doc::Encoding enc = info.encoding;
+    doc::EncodingInfo info = DetectFileEncoding(path);
     if (argc >= 6) {
       const std::wstring e = argv[5];
-      if (e == L"utf8") enc = doc::Encoding::Utf8;
-      else if (e == L"gb18030") enc = doc::Encoding::Gb18030;
-      else if (e == L"utf16le") enc = doc::Encoding::Utf16LE;
-      else if (e == L"utf16be") enc = doc::Encoding::Utf16BE;
+      if (e == L"utf8") {
+        info.encoding = doc::Encoding::Utf8;
+        info.codepage = 0;
+        info.bomBytes = 0;
+      } else if (e == L"gb18030") {
+        info.encoding = doc::Encoding::Legacy;
+        info.codepage = 54936;
+        info.bomBytes = 0;
+      } else if (e == L"utf16le") {
+        info.encoding = doc::Encoding::Utf16LE;
+        info.bomBytes = 0;
+      } else if (e == L"utf16be") {
+        info.encoding = doc::Encoding::Utf16BE;
+        info.bomBytes = 0;
+      }
     }
-    return ModeRegex(path, argv[3], flags.find(L"cs") != std::wstring::npos, enc,
-                     info.bomBytes);
+    return ModeRegex(path, argv[3], flags.find(L"cs") != std::wstring::npos, info);
   }
 
   wprintf(L"unknown mode %s\n", mode.c_str());

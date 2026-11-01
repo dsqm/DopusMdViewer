@@ -1,7 +1,8 @@
-// doc_regex16.cpp - UTF-16 与 GB18030 源文件上的 PCRE2 16 位扫描。
+// doc_regex16.cpp - UTF-16 与 Legacy 源文件上的 PCRE2 16 位扫描。
 //
-// UTF-16 直接按文件字节序拼成 UTF-16 单元；GB18030 先按块解码成 UTF-16，再把命中
-// 的单元偏移映射回源字节偏移（命中升序，映射游标只向前走）。
+// UTF-16 直接按文件字节序拼成 UTF-16 单元；Legacy（GB18030 / Shift_JIS / Big5 /
+// EUC / ISO-2022 / 单字节页）先按块解码成 UTF-16，再把命中的单元偏移映射回源字节
+// 偏移（命中升序，映射游标只向前走）。
 
 #define PCRE2_CODE_UNIT_WIDTH 16
 #include "pcre2.h"
@@ -50,8 +51,12 @@ size_t NextUnit(const uint16_t* p, size_t len, size_t at) {
   return next;
 }
 
-// GB18030 源字节 → UTF-16 单元的前进量。命中的单元偏移转回源字节偏移。
-struct GbMap {
+// Legacy 源字节 → UTF-16 单元的前进量。GB18030 另认 4 字节序列，ISO-2022 按 ESC
+// 移位序列步进（ESC 三步不产出单元）。命中的单元偏移转回源字节偏移。
+struct LegacyMap {
+  UINT cp = 0;
+  bool iso2022 = false;
+  bool twoByte = false;
   const unsigned char* src = nullptr;
   size_t srcLen = 0;
   const uint16_t* wide = nullptr;
@@ -60,21 +65,37 @@ struct GbMap {
   size_t unitIdx = 0;
 
   uint64_t ToByte(size_t unitOff) {
-    while (unitIdx < unitOff && byteIdx < srcLen) {
-      const unsigned char c = src[byteIdx];
-      size_t len = 1;
-      if (c >= 0x81 && c <= 0xFE) {
-        len = 2;
-        if (byteIdx + 1 < srcLen && src[byteIdx + 1] >= 0x30 && src[byteIdx + 1] <= 0x39) {
-          len = 4;
-        }
-      }
-      const bool pair = unitIdx + 1 < wideLen && wide[unitIdx] >= 0xD800 &&
-                        wide[unitIdx] <= 0xDBFF;
-      unitIdx += pair ? 2 : 1;
-      byteIdx += len;
-    }
+    while (unitIdx < unitOff && byteIdx < srcLen) Step();
     return byteIdx;
+  }
+
+  void Step() {
+    size_t len = 1;
+    if (iso2022) {
+      if (src[byteIdx] == 0x1B) {
+        if (byteIdx + 1 < srcLen) {
+          if (src[byteIdx + 1] == '$') {
+            twoByte = true;
+          } else if (src[byteIdx + 1] == '(' || src[byteIdx + 1] == '.') {
+            twoByte = false;
+          }
+        }
+        byteIdx += std::min<size_t>(3, srcLen - byteIdx);
+        return;
+      }
+      if (twoByte && byteIdx + 1 < srcLen) len = 2;
+    } else if (cp == 54936) {
+      if (src[byteIdx] >= 0x81 && src[byteIdx] <= 0xFE && byteIdx + 1 < srcLen) {
+        len = (src[byteIdx + 1] >= 0x30 && src[byteIdx + 1] <= 0x39) ? 4 : 2;
+      }
+    } else if (::IsDBCSLeadByteEx(cp, src[byteIdx]) && byteIdx + 1 < srcLen) {
+      len = 2;
+    }
+    if (byteIdx + len > srcLen) len = srcLen - byteIdx;
+    const bool pair = unitIdx + 1 < wideLen && wide[unitIdx] >= 0xD800 &&
+                      wide[unitIdx] <= 0xDBFF;
+    unitIdx += pair ? 2 : 1;
+    byteIdx += len;
   }
 };
 
@@ -222,9 +243,10 @@ bool RegexScanUtf16(const std::wstring& path, uint64_t startOffset, bool bigEndi
   return ok;
 }
 
-bool RegexScanGb18030(const std::wstring& path, uint64_t startOffset,
-                      const std::wstring& pattern, bool caseless,
-                      const std::atomic<bool>* cancel, RegexHits* out, std::wstring* error) {
+bool RegexScanLegacy(const std::wstring& path, uint64_t startOffset, uint32_t codepage,
+                     const std::wstring& pattern, bool caseless,
+                     const std::atomic<bool>* cancel, RegexHits* out, std::wstring* error) {
+  const UINT cp = static_cast<UINT>(codepage);
   HANDLE h = INVALID_HANDLE_VALUE;
   uint64_t fileSize = 0;
   if (!OpenForScan(path, &h, &fileSize, error)) return false;
@@ -292,10 +314,10 @@ bool RegexScanGb18030(const std::wstring& path, uint64_t startOffset,
     const int srcBytes = static_cast<int>(subjectEnd - chunkStart);
     wide.resize(static_cast<size_t>(srcBytes) + 1);
     const int wideLen = ::MultiByteToWideChar(
-        54936, 0, reinterpret_cast<LPCCH>(raw.data()), srcBytes,
+        cp, 0, reinterpret_cast<LPCCH>(raw.data()), srcBytes,
         reinterpret_cast<LPWSTR>(wide.data()), static_cast<int>(wide.size()));
     if (wideLen <= 0) {
-      if (error) *error = L"GB18030 解码失败（偏移 " +
+      if (error) *error = L"解码失败（代码页 " + std::to_wstring(codepage) + L"，偏移 " +
                           std::to_wstring(static_cast<unsigned long long>(chunkStart)) + L"）";
       ok = false;
       break;
@@ -303,7 +325,9 @@ bool RegexScanGb18030(const std::wstring& path, uint64_t startOffset,
     const size_t subjectUnits = static_cast<size_t>(wideLen);
 
     // 单元偏移 → 块内源字节偏移的起点；chunkEnd 在字节上，换算成单元。
-    GbMap map;
+    LegacyMap map;
+    map.cp = cp;
+    map.iso2022 = IsIso2022CodePage(codepage);
     map.src = raw.data();
     map.srcLen = static_cast<size_t>(subjectEnd - chunkStart);
     map.wide = wide.data();

@@ -16,8 +16,8 @@ bool RegexScanUtf16(const std::wstring& path, uint64_t startOffset, bool bigEndi
                     const std::wstring& pattern, bool caseless, const std::atomic<bool>* cancel, RegexHits* out,
                     std::wstring* error);
 
-bool RegexScanGb18030(const std::wstring& path, uint64_t startOffset,
-                      const std::wstring& pattern, bool caseless,
-                      const std::atomic<bool>* cancel, RegexHits* out, std::wstring* error);
+bool RegexScanLegacy(const std::wstring& path, uint64_t startOffset, uint32_t codepage,
+                     const std::wstring& pattern, bool caseless,
+                     const std::atomic<bool>* cancel, RegexHits* out, std::wstring* error);
 
 }  // namespace doc

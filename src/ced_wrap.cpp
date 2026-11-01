@@ -45,7 +45,9 @@ unsigned CodePageOf(Encoding e) {
     case KOREAN_EUC_KR: return 949;
     case ISO_2022_KR: return 50225;
     case ISO_2022_CN: return 50227;
-    case HZ_GB_2312: return 52936;
+    // HZ 与 UTF-7 也能显示，但检索要按 7 位状态机映射回字节；不在票 19 的范围内，
+    // 按「不解码这一类」回退，避免搜索给出错位的高亮。
+    case HZ_GB_2312: return 0;
 
     case RUSSIAN_KOI8_R: return 20866;
     case RUSSIAN_KOI8_RU: return 21866;
@@ -79,7 +81,7 @@ unsigned CodePageOf(Encoding e) {
     case CZECH_CP852: return 852;
     case MACINTOSH_ROMAN: return 10000;
 
-    case UTF7: return 65000;
+    case UTF7: return 0;
     case BINARYENC: return 0;
     default: return 0;
   }

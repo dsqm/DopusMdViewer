@@ -1,7 +1,8 @@
 // doc_index.h - 大文件块索引（票 04 / 05）。
 //
-// 索引只存源文件的字节偏移，不存解码后的字符位置；UTF-8 与 GB18030 共用同一条
-// 字节扫描路径（0x0A 不会出现在这两个编码的多字节序列里），UTF-16 走 wchar_t。
+// 索引只存源文件的字节偏移，不存解码后的字符位置；UTF-8 与 Legacy（GB18030 /
+// Shift_JIS / Big5 / EUC / ISO-2022）共用同一条字节扫描路径（票 19 核实：这些编码
+// 的多字节序列都不含 0x0A），UTF-16 走 wchar_t。
 // 块坐标相对 4 KB 页：offInPage / len16 各 2 B，浮出 64 KB 的块另存大块表。
 //
 // 与票 04 的一处实现偏差：kind 有 14 种，4 bit 的 kindNib 已占满，装不下
@@ -43,15 +44,39 @@ constexpr uint8_t kFlagFootnoteDef = 0x40;  // hidden 的脚注定义（[^x]: �
 // 票 05 第 4 节：超过这个行数的块走块内行窗口化。只记行数，不记字节。
 constexpr uint32_t kBigBlockLines = 2000;
 
-enum class Encoding : uint8_t { Utf8 = 0, Gb18030, Utf16LE, Utf16BE };
+// 编码形状：UTF-8 / UTF-16 单列，其余（GB18030、Shift_JIS、Big5、EUC、ISO-2022、
+// 单字节西欧与西里尔）统一进 Legacy + 代码页。GB18030 只是代码页 54936。
+enum class Encoding : uint8_t { Utf8 = 0, Utf16LE, Utf16BE, Legacy };
 
 struct EncodingInfo {
   Encoding encoding = Encoding::Utf8;
-  uint32_t bomBytes = 0;
+  uint16_t bomBytes = 0;
+  uint16_t codepage = 0;  // 仅 Legacy 有效
+
+  bool IsUtf16() const { return encoding == Encoding::Utf16LE || encoding == Encoding::Utf16BE; }
+  uint32_t CodePage() const {
+    switch (encoding) {
+      case Encoding::Utf8: return 65001;
+      case Encoding::Utf16LE: return 1200;
+      case Encoding::Utf16BE: return 1201;
+      case Encoding::Legacy: return codepage;
+    }
+    return 65001;
+  }
 };
 
-// 只凭前缀判定。UTF-16 只认 BOM（无 BOM 的 UTF-16 仍是雾区）；
-// 其余按「前 N 字节是否合法 UTF-8」区分 UTF-8 与 GB18030。
+// ISO-2022 系列：解码时 dwFlags 必须为 0，且检索无法用「编码后的针脚搜字节」，
+// 只能整块解码后再匹配（见 doc_source 的搜索分派）。
+inline bool IsIso2022CodePage(uint32_t cp) {
+  return cp == 50220 || cp == 50221 || cp == 50222 || cp == 50225 || cp == 50227;
+}
+
+// UTF-32 只做到「BOM 不再被 UTF-16 吞掉」，本身不支持：块扫描按 1 字节单元，
+// 4 字节编码会切错。ScanFile 见到 12000/12001 直接报「不支持的编码」。
+inline bool IsUtf32CodePage(uint32_t cp) { return cp == 12000 || cp == 12001; }
+
+// 只凭前缀判定（探测窗口最多 8 MB）：BOM → 无 BOM UTF-16 启发式 →
+// 跳过前导 ASCII 取 64 KB 样本 → 纯 ASCII / 合法 UTF-8 → CED → GB18030 兜底。
 EncodingInfo DetectEncoding(const void* data, size_t bytes);
 
 constexpr uint32_t kPageShift = 12;

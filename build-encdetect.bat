@@ -25,7 +25,7 @@ if not exist "bin\obj-encdetect" mkdir "bin\obj-encdetect"
 
 pushd "%PROJ%"
 rem /utf-8 必带：源码含中文注释，否则按 936 读会报一堆假语法错误。
-"%CL%" /nologo /c /MT /O2 /W4 /EHsc /utf-8 /I "%CED%" "/Fo:bin\obj-encdetect\\" "tools\encdetect\*.cpp"
+"%CL%" /nologo /c /MT /O2 /W4 /EHsc /utf-8 /I "%CED%" /I "%PROJ%src" "/Fo:bin\obj-encdetect\\" "tools\encdetect\*.cpp" "src\ced_wrap.cpp" "src\encoding_detect.cpp"
 if errorlevel 1 goto :fail
 
 "%CL%" /nologo /MT /O2 /EHsc "bin\obj-encdetect\*.obj" "bin\obj-ced\*.obj" /Fe"bin\encdetect.exe" /link /SUBSYSTEM:CONSOLE

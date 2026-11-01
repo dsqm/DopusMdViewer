@@ -1,8 +1,9 @@
 // doc_index.cpp - 块扫描状态机与 4 KB 页相对索引。
 //
-// 扫描器与字符类型无关：同一套规则实例化在 char（UTF-8 / GB18030）与
-// wchar_t（UTF-16）上，只有喂数据的方式不同。票 04 实测：0x0A 不会出现在
-// UTF-8 / GB18030 的多字节序列里，所以字节路径不需要先判定编码。
+// 扫描器与字符类型无关：同一套规则实例化在 char（UTF-8 与 Legacy）与
+// wchar_t（UTF-16）上，只有喂数据的方式不同。票 19 核实：UTF-8 / GB18030 /
+// Shift_JIS / Big5 / EUC / ISO-2022 的多字节序列都不含 0x0A，所以字节路径
+// 不需要先判定编码。
 
 #include "doc_index.h"
 
@@ -20,6 +21,7 @@ constexpr uint32_t kPrefix = 256;                  // 每行保留的有界前�
 constexpr uint64_t kMaxHtmlBytes = 4ull << 20;     // 票 05 6.1：HTML 区上限
 constexpr uint64_t kMaxFileBytes = 4ull << 30;     // 票 04：按 4 GB 分段
 constexpr uint64_t kReadChunk = 1ull << 20;
+constexpr uint64_t kDetectBytes = 8ull << 20;  // 判码窗口，与同步前缀扫描同尺寸
 
 template <class Char>
 inline bool IsSpace(Char c) {
@@ -820,44 +822,6 @@ class BlockScanner {
   bool looseNext_ = false;
 };
 
-bool LooksLikeUtf8(const unsigned char* p, size_t n) {
-  size_t i = 0;
-  while (i < n) {
-    const unsigned char c = p[i];
-    if (c < 0x80) {
-      ++i;
-      continue;
-    }
-    uint32_t need = 0;
-    uint32_t cp = 0;
-    if ((c & 0xE0) == 0xC0) {
-      need = 1;
-      cp = c & 0x1Fu;
-    } else if ((c & 0xF0) == 0xE0) {
-      need = 2;
-      cp = c & 0x0Fu;
-    } else if ((c & 0xF8) == 0xF0) {
-      need = 3;
-      cp = c & 0x07u;
-    } else {
-      return false;
-    }
-    if (i + need >= n) return true;  // 尾巴被切在字符中间，判不了，按合法处理
-    for (uint32_t k = 1; k <= need; ++k) {
-      const unsigned char cc = p[i + k];
-      if ((cc & 0xC0) != 0x80) return false;
-      cp = (cp << 6) | (cc & 0x3Fu);
-    }
-    if (need == 1 && cp < 0x80) return false;
-    if (need == 2 && cp < 0x800) return false;
-    if (need == 3 && cp < 0x10000) return false;
-    if (cp > 0x10FFFF) return false;
-    if (cp >= 0xD800 && cp <= 0xDFFF) return false;
-    i += need + 1;
-  }
-  return true;
-}
-
 double QpcMs(LONGLONG from, LONGLONG to) {
   static LONGLONG freq = 0;
   if (freq == 0) {
@@ -869,32 +833,6 @@ double QpcMs(LONGLONG from, LONGLONG to) {
 }
 
 }  // namespace
-
-// ---------------------------------------------------------------- 编码判定
-
-EncodingInfo DetectEncoding(const void* data, size_t bytes) {
-  EncodingInfo info;
-  const unsigned char* p = static_cast<const unsigned char*>(data);
-  if (bytes >= 3 && p[0] == 0xEF && p[1] == 0xBB && p[2] == 0xBF) {
-    info.encoding = Encoding::Utf8;
-    info.bomBytes = 3;
-    return info;
-  }
-  if (bytes >= 2 && p[0] == 0xFF && p[1] == 0xFE) {
-    info.encoding = Encoding::Utf16LE;
-    info.bomBytes = 2;
-    return info;
-  }
-  if (bytes >= 2 && p[0] == 0xFE && p[1] == 0xFF) {
-    info.encoding = Encoding::Utf16BE;
-    info.bomBytes = 2;
-    return info;
-  }
-  // 无 BOM：UTF-8 合法就是 UTF-8，否则按 GB18030；纯 ASCII 两者等价。
-  info.encoding = LooksLikeUtf8(p, bytes) ? Encoding::Utf8 : Encoding::Gb18030;
-  info.bomBytes = 0;
-  return info;
-}
 
 // ---------------------------------------------------------------- BlockIndex
 
@@ -1096,9 +1034,7 @@ bool IndexBuilder::Begin(EncodingInfo enc, uint64_t fileSize, uint64_t limitByte
   s.fileSize = fileSize;
   s.limit = limitBytes && limitBytes < fileSize ? limitBytes : fileSize;
   s.baseBytes = enc.bomBytes;
-  s.unitBytes = (enc.encoding == Encoding::Utf16LE || enc.encoding == Encoding::Utf16BE)
-                    ? 2u
-                    : 1u;
+  s.unitBytes = enc.IsUtf16() ? 2u : 1u;
   s.index.Reserve(fileSize, s.limit);
 
   if (s.unitBytes == 2) {
@@ -1156,8 +1092,7 @@ void IndexBuilder::Feed(const void* data, size_t bytes) {
     s.conv.push_back(s.enc.encoding == Encoding::Utf16LE
                          ? static_cast<wchar_t>(b0 | (b1 << 8))
                          : static_cast<wchar_t>((b0 << 8) | b1));
-  }
-  if (i < n) {
+  }  if (i < n) {
     s.carry = p[i];
     s.haveCarry = true;
   }
@@ -1227,11 +1162,54 @@ bool ScanFile(const std::wstring& path, uint64_t limitBytes, IndexBuilder* out,
   uint64_t consumed = 0;
   double rms = 0;
   double sms = 0;
-  EncodingInfo enc;
-  bool begun = false;
 
   LARGE_INTEGER t0;
   LARGE_INTEGER t1;
+
+  // 判码要先看到完整的 8 MB 窗口：非 ASCII 落在 1 MB 之后的文件，只看首块会被定型成 ASCII。
+  const uint64_t headWant = std::min<uint64_t>(kDetectBytes, limit);
+  std::vector<unsigned char> head(static_cast<size_t>(headWant));
+  size_t headLen = 0;
+  while (headLen < headWant) {
+    if (cancel && cancel->load()) {
+      ::CloseHandle(h);
+      if (error) *error = L"已取消";
+      return false;
+    }
+    DWORD got = 0;
+    ::QueryPerformanceCounter(&t0);
+    const BOOL ok = ::ReadFile(h, head.data() + headLen,
+                               static_cast<DWORD>(headWant - headLen), &got, nullptr);
+    ::QueryPerformanceCounter(&t1);
+    rms += QpcMs(t0.QuadPart, t1.QuadPart);
+    if (!ok || got == 0) break;
+    headLen += got;
+  }
+  if (headLen == 0) {
+    ::CloseHandle(h);
+    if (error) *error = L"空文件";
+    return false;
+  }
+  head.resize(headLen);
+
+  ::QueryPerformanceCounter(&t0);
+  const EncodingInfo enc = DetectEncoding(head.data(), headLen);
+  if (enc.encoding == Encoding::Legacy && IsUtf32CodePage(enc.codepage)) {
+    ::QueryPerformanceCounter(&t1);
+    ::CloseHandle(h);
+    if (error) *error = L"不支持的编码（UTF-32）";
+    return false;
+  }
+  if (!out->Begin(enc, fileSize, limit)) {
+    ::QueryPerformanceCounter(&t1);
+    ::CloseHandle(h);
+    if (error) *error = L"文件超过 4 GB，需分段建索引";
+    return false;
+  }
+  out->Feed(head.data(), head.size());
+  ::QueryPerformanceCounter(&t1);
+  sms += QpcMs(t0.QuadPart, t1.QuadPart);
+  consumed = head.size();
 
   while (consumed < limit) {
     if (cancel && cancel->load()) {
@@ -1248,16 +1226,6 @@ bool ScanFile(const std::wstring& path, uint64_t limitBytes, IndexBuilder* out,
     if (!ok || got == 0) break;
 
     ::QueryPerformanceCounter(&t0);
-    if (!begun) {
-      enc = DetectEncoding(buf.data(), got);
-      if (!out->Begin(enc, fileSize, limit)) {
-        ::QueryPerformanceCounter(&t1);
-        ::CloseHandle(h);
-        if (error) *error = L"文件超过 4 GB，需分段建索引";
-        return false;
-      }
-      begun = true;
-    }
     out->Feed(buf.data(), got);
     ::QueryPerformanceCounter(&t1);
     sms += QpcMs(t0.QuadPart, t1.QuadPart);
@@ -1265,10 +1233,6 @@ bool ScanFile(const std::wstring& path, uint64_t limitBytes, IndexBuilder* out,
   }
 
   ::CloseHandle(h);
-  if (!begun) {
-    if (error) *error = L"空文件";
-    return false;
-  }
   out->Finish();
   if (readMs) *readMs = rms;
   if (scanMs) *scanMs = sms;

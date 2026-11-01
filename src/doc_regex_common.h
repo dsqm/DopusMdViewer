@@ -85,7 +85,7 @@ inline uint64_t Utf8Boundary(const unsigned char* p, uint64_t len, uint64_t targ
   return pos;
 }
 
-// UTF-8/GB18030 的换行是单字节 0x0A。
+// UTF-8 与 Legacy 的换行都是单字节 0x0A（这些编码的多字节序列都不含 0x0A）。
 inline LineCut FindLineEnd8(const unsigned char* p, size_t len, uint64_t targetRel,
                             uint64_t slack) {
   LineCut cut;

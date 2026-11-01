@@ -95,14 +95,14 @@ void AppendU32(std::string* out, uint32_t v) {
 }
 
 void AppendFrame(std::string* out, uint32_t index, uint8_t flags, const unsigned char* p,
-                 size_t n, doc::Encoding enc) {
+                 size_t n, const doc::EncodingInfo& enc) {
   std::string utf8;
-  switch (enc) {
+  switch (enc.encoding) {
     case doc::Encoding::Utf8:
       utf8.assign(reinterpret_cast<const char*>(p), n);
       break;
-    case doc::Encoding::Gb18030:
-      utf8 = DecodeMbcs(p, n, 54936);
+    case doc::Encoding::Legacy:
+      utf8 = DecodeMbcs(p, n, static_cast<UINT>(enc.CodePage()));
       break;
     case doc::Encoding::Utf16LE:
       utf8 = DecodeWide(p, n, false);
@@ -345,12 +345,13 @@ uint32_t QueryU32(const std::wstring& query, const wchar_t* key, uint32_t def) {
   return static_cast<uint32_t>(_wtoi(query.c_str() + p + k.size()));
 }
 
-std::string ToUtf8(doc::Encoding enc, std::string raw) {
-  switch (enc) {
+std::string ToUtf8(const doc::EncodingInfo& enc, std::string raw) {
+  switch (enc.encoding) {
     case doc::Encoding::Utf8:
       return raw;
-    case doc::Encoding::Gb18030:
-      return DecodeMbcs(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), 54936);
+    case doc::Encoding::Legacy:
+      return DecodeMbcs(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(),
+                        static_cast<UINT>(enc.CodePage()));
     case doc::Encoding::Utf16LE:
       return DecodeWide(reinterpret_cast<const unsigned char*>(raw.data()), raw.size(), false);
     case doc::Encoding::Utf16BE:
@@ -509,10 +510,10 @@ struct SearchEntry {
 
 // 命中在巨型块里的行号：行号 = 命中偏移之前出现过的换行数，与 __lines 的行下标一致。
 // 只对巨型块调用（一块一次顺读，命中按偏移升序，边扫边填）。
-void FillBlockLines(HANDLE h, doc::Encoding enc, uint64_t blockStart,
+void FillBlockLines(HANDLE h, const doc::EncodingInfo& enc, uint64_t blockStart,
                     std::vector<SearchEntry>* list, size_t first, size_t last) {
-  const bool wide = enc == doc::Encoding::Utf16LE || enc == doc::Encoding::Utf16BE;
-  const bool bigEndian = enc == doc::Encoding::Utf16BE;
+  const bool wide = enc.IsUtf16();
+  const bool bigEndian = enc.encoding == doc::Encoding::Utf16BE;
   const size_t step = wide ? 2 : 1;
   const uint64_t lastOff = (*list)[last].off;
   if (lastOff <= blockStart) return;
@@ -555,10 +556,11 @@ bool IsBigBlock(const doc::BlockIndex& ix, uint32_t block) {
 }
 
 // 块内命中 → 解码文本里的 UTF-16 单元偏移。命中按偏移升序，同一块的命中一次扫完。
-// 只数不解码：UTF-8 按首字节数，GB18030 按首字节判 2/4 字节，UTF-16 直接除以 2。
-void FillBlockUnits(HANDLE h, doc::Encoding enc, uint64_t blockStart,
+// UTF-8 按首字节数，UTF-16 直接除以 2，其余编码按 MB2WC 顺解计数（ISO-2022 的
+// ESC 状态天然正确，代理对由 MB2WC 给出 2 单元）。
+void FillBlockUnits(HANDLE h, const doc::EncodingInfo& enc, uint64_t blockStart,
                     std::vector<SearchEntry>* list, size_t first, size_t last) {
-  if (enc == doc::Encoding::Utf16LE || enc == doc::Encoding::Utf16BE) {
+  if (enc.IsUtf16()) {
     for (size_t i = first; i <= last; ++i) {
       (*list)[i].units = static_cast<uint32_t>(((*list)[i].off - blockStart) / 2);
     }
@@ -570,6 +572,38 @@ void FillBlockUnits(HANDLE h, doc::Encoding enc, uint64_t blockStart,
   uint32_t units = 0;
   size_t idx = first;
   std::vector<unsigned char> buf(1u << 20);
+
+  if (enc.encoding == doc::Encoding::Legacy) {
+    const UINT cp = static_cast<UINT>(enc.CodePage());
+    while (idx <= last) {
+      while (idx <= last && (*list)[idx].off <= pos) {
+        (*list)[idx].units = units;
+        ++idx;
+      }
+      if (idx > last || pos >= lastOff) break;
+
+      const uint64_t want = std::min<uint64_t>(buf.size(), (*list)[idx].off - pos);
+      size_t got = 0;
+      if (want == 0 || !ReadAt(h, pos, static_cast<size_t>(want), &buf, &got) || got == 0) break;
+      // 切在换行之后：ISO-2022 的移位状态按行复位，每次解码都从行首起。
+      size_t use = got;
+      for (size_t k = got; k > 0; --k) {
+        if (buf[k - 1] == 0x0A) {
+          use = k;
+          break;
+        }
+      }
+      const int n = ::MultiByteToWideChar(cp, 0, reinterpret_cast<LPCCH>(buf.data()),
+                                          static_cast<int>(use), nullptr, 0);
+      if (n > 0) units += static_cast<uint32_t>(n);
+      pos += use;
+    }
+    while (idx <= last) {
+      (*list)[idx].units = units;
+      ++idx;
+    }
+    return;
+  }
 
   while (idx <= last) {
     while (idx <= last && (*list)[idx].off <= pos) {
@@ -588,37 +622,19 @@ void FillBlockUnits(HANDLE h, doc::Encoding enc, uint64_t blockStart,
       const unsigned char b = buf[i];
       uint32_t len = 0;
       uint32_t add = 1;
-      if (enc == doc::Encoding::Utf8) {
-        if (b < 0x80) {
-          len = 1;
-        } else if ((b & 0xE0) == 0xC0) {
-          len = 2;
-        } else if ((b & 0xF0) == 0xE0) {
-          len = 3;
-        } else if ((b & 0xF8) == 0xF0) {
-          len = 4;
-          add = 2;  // 4 字节 UTF-8 在 JS 里占两个 UTF-16 单元
-        } else {
-          len = 1;
-        }
-        if (i + len > got) break;
+      if (b < 0x80) {
+        len = 1;
+      } else if ((b & 0xE0) == 0xC0) {
+        len = 2;
+      } else if ((b & 0xF0) == 0xE0) {
+        len = 3;
+      } else if ((b & 0xF8) == 0xF0) {
+        len = 4;
+        add = 2;  // 4 字节 UTF-8 在 JS 里占两个 UTF-16 单元
       } else {
-        if (b < 0x80) {
-          len = 1;
-        } else if (b < 0x81 || b == 0xFF) {
-          len = 1;
-        } else {
-          if (i + 1 >= got) break;
-          const unsigned char b2 = buf[i + 1];
-          if (b2 >= 0x30 && b2 <= 0x39) {
-            if (i + 3 >= got) break;
-            len = 4;
-            add = (b >= 0x90) ? 2 : 1;
-          } else {
-            len = 2;
-          }
-        }
+        len = 1;
       }
+      if (i + len > got) break;
 
       while (idx <= last && (*list)[idx].off < pos + i) {
         (*list)[idx].units = units;
@@ -1013,8 +1029,7 @@ bool ServeLines(const std::wstring& uri, std::string* body, int* status) {
   const uint64_t blockEnd = ix.End(block);
   if (blockEnd <= blockStart) return true;
 
-  const bool wide = snap->enc.encoding == doc::Encoding::Utf16LE ||
-                    snap->enc.encoding == doc::Encoding::Utf16BE;
+  const bool wide = snap->enc.IsUtf16();
   const bool bigEndian = snap->enc.encoding == doc::Encoding::Utf16BE;
 
   HANDLE h = ::CreateFileW(snap->path.c_str(), GENERIC_READ,
@@ -1081,7 +1096,7 @@ bool ServeLines(const std::wstring& uri, std::string* body, int* status) {
             from, count, static_cast<unsigned long long>(elapsed), c.scannedLines);
   }
 
-  std::string utf8 = ToUtf8(snap->enc.encoding, std::move(raw));
+  std::string utf8 = ToUtf8(snap->enc, std::move(raw));
 
   AppendU32(body, block);
   AppendU32(body, from);
@@ -1166,16 +1181,17 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
   if (!snap) return true;
 
   const ULONGLONG t0 = ::GetTickCount64();
-  const bool wide = snap->enc.encoding == doc::Encoding::Utf16LE ||
-                    snap->enc.encoding == doc::Encoding::Utf16BE;
+  const bool wide = snap->enc.IsUtf16();
+  const UINT cp = static_cast<UINT>(snap->enc.CodePage());
+  // ISO-2022 的针脚字节里带移位序列，直接搜字节会随行首状态变化而漏配，只能整块解码后匹配。
+  const bool stateful = snap->enc.encoding == doc::Encoding::Legacy && doc::IsIso2022CodePage(cp);
   doc::SearchHits hits;
   bool limited = false;
   const wchar_t* how = L"";
   if (regex) {
     doc::RegexHits rh;
     std::wstring reError;
-    if (!doc::RegexSearchFile(snap->path, snap->enc.encoding, snap->enc.bomBytes, needle,
-                              caseSensitive, cancel,
+    if (!doc::RegexSearchFile(snap->path, snap->enc, needle, caseSensitive, cancel,
                               &rh, &reError)) {
       // flags bit1：正则错误，帧尾跟一条 u32 长度 + UTF-8 消息。
       AppendU32(body, 0);
@@ -1193,14 +1209,14 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
     hits.total = rh.total;
     hits.truncated = rh.truncated;
     limited = rh.limited;
-  } else if (!caseSensitive && doc::LiteralNeedsUnicodeFold(needle)) {
+  } else if (stateful || (!caseSensitive && doc::LiteralNeedsUnicodeFold(needle))) {
     // 非 ASCII 的大小写折叠只有 PCRE2 有（字节与宽字符扫描器只折叠 ASCII）。
     // 纯 ASCII 与无大小写的文字（中日韩）不会走到这里，快路径不受影响。
     how = L" pcre";
     doc::RegexHits rh;
     std::wstring foldError;
-    if (doc::LiteralSearchFile(snap->path, snap->enc.encoding, snap->enc.bomBytes, needle,
-                               wholeWord, cancel, &rh, &foldError)) {
+    if (doc::LiteralSearchFile(snap->path, snap->enc, caseSensitive, needle, wholeWord,
+                               cancel, &rh, &foldError)) {
       hits.offsets = std::move(rh.offsets);
       hits.total = rh.total;
       hits.truncated = rh.truncated;
@@ -1213,8 +1229,8 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
     hits = SearchWideFile(snap->path, needle, caseSensitive,
                           snap->enc.encoding == doc::Encoding::Utf16BE, wholeWord, cancel);
   } else {
-    const std::string bytes = snap->enc.encoding == doc::Encoding::Gb18030
-                                  ? WideToMbcs(needle, 54936)
+    const std::string bytes = snap->enc.encoding == doc::Encoding::Legacy
+                                  ? WideToMbcs(needle, cp)
                                   : WideToUtf8String(needle);
     if (!bytes.empty()) {
       hits = doc::SearchFileBytes(snap->path, bytes, 4, nullptr, caseSensitive, wholeWord,
@@ -1253,10 +1269,10 @@ bool SearchBody(const std::wstring& uri, std::string* body, int* status,
     while (i < list.size()) {
       size_t j = i;
       while (j + 1 < list.size() && list[j + 1].block == list[i].block) ++j;
-      FillBlockUnits(h, snap->enc.encoding, ix.Start(list[i].block), &list, i, j);
+      FillBlockUnits(h, snap->enc, ix.Start(list[i].block), &list, i, j);
       // 巨型块要给出块内行号，前端才能跳到命中那一行；普通块用不上，省掉这次顺读。
       if (IsBigBlock(ix, list[i].block)) {
-        FillBlockLines(h, snap->enc.encoding, ix.Start(list[i].block), &list, i, j);
+        FillBlockLines(h, snap->enc, ix.Start(list[i].block), &list, i, j);
       }
       i = j + 1;
     }
@@ -1327,7 +1343,7 @@ bool ServeOutline(const std::wstring& uri, std::string* body, int* status) {
         buf.resize(node.textLen);
         size_t got = 0;
         if (ReadAt(h, node.start + node.textOff, node.textLen, &buf, &got) && got > 0) {
-          text = ToUtf8(snap->enc.encoding,
+          text = ToUtf8(snap->enc,
                         std::string(reinterpret_cast<const char*>(buf.data()), got));
         }
       }
@@ -1394,7 +1410,7 @@ bool ServeDefs(const std::wstring& uri, std::string* body, int* status) {
     if (want > buf.size()) continue;  // 单个定义超过 64 KB：跳过（极不常见）
     size_t got = 0;
     if (!ReadAt(h, bs, static_cast<size_t>(want), &buf, &got)) break;
-    const std::string utf8 = ToUtf8(snap->enc.encoding,
+    const std::string utf8 = ToUtf8(snap->enc,
                                     std::string(reinterpret_cast<const char*>(buf.data()), got));
     AppendU32(body, static_cast<uint32_t>(flags));
     AppendU32(body, static_cast<uint32_t>(utf8.size()));
@@ -1471,7 +1487,7 @@ bool Serve(const std::wstring& uri, std::string* body, int* status) {
     const uint8_t flags =
         static_cast<uint8_t>(ix.KindFlags(i) | (be > bufEnd ? kFlagTruncated : 0));
     AppendFrame(body, i, flags, buf.data() + (bs - start), static_cast<size_t>(ce - bs),
-                snap->enc.encoding);
+                snap->enc);
   }
   *status = 200;
   return true;

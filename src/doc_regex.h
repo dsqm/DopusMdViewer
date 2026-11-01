@@ -1,6 +1,7 @@
 // doc_regex.h - 页内正则搜索（PCRE2 8/16 位，票 14）。
 //
-// 匹配跑在**源文本**上：UTF-8 用 8 位引擎，UTF-16 与 GB18030（解码后）用 16 位。
+// 匹配跑在**源文本**上：UTF-8 用 8 位引擎，UTF-16 直接按单元拼，Legacy（GB18030 /
+// Shift_JIS / Big5 / EUC / ISO-2022 / 单字节西欧与西里尔）先解码成 UTF-16 再匹配。
 // 按行对齐分块，块与块之间保留 64 KB 前瞻；只在后台线程调用。
 
 #pragma once
@@ -24,7 +25,7 @@ struct RegexHits {
 // bomBytes：跳过文件头的 BOM（正则从第一个真实字符开始，^ 才能命中首行）。
 // 编译失败、文件含非法编码序列等返回 false，error 给一句面向用户的原因。
 // caseSensitive=false 时加 PCRE2_CASELESS；始终 PCRE2_MULTILINE | PCRE2_UTF | PCRE2_UCP。
-bool RegexSearchFile(const std::wstring& path, Encoding encoding, uint32_t bomBytes,
+bool RegexSearchFile(const std::wstring& path, const EncodingInfo& encoding,
                      const std::wstring& pattern, bool caseSensitive,
                      const std::atomic<bool>* cancel, RegexHits* out,
                      std::wstring* error);
@@ -35,10 +36,10 @@ bool RegexSearchFile(const std::wstring& path, Encoding encoding, uint32_t bomBy
 bool LiteralNeedsUnicodeFold(const std::wstring& needle);
 
 // 大小写不敏感的字面量搜索：内部拼成 \Q…\E（wholeWord 再补 ASCII 词边界断言）交给
-// RegexSearchFile(caseSensitive=false)。偏移与编码处理与正则完全一致，只在
-// LiteralNeedsUnicodeFold 为真时使用。
-bool LiteralSearchFile(const std::wstring& path, Encoding encoding, uint32_t bomBytes,
-                       const std::wstring& needle, bool wholeWord,
+// RegexSearchFile。偏移与编码处理与正则完全一致，用于两种快路径覆盖不了的情况：
+// LiteralNeedsUnicodeFold 为真，或编码是 ISO-2022 这类状态化 7 位编码。
+bool LiteralSearchFile(const std::wstring& path, const EncodingInfo& encoding,
+                       bool caseSensitive, const std::wstring& needle, bool wholeWord,
                        const std::atomic<bool>* cancel, RegexHits* out, std::wstring* error);
 
 }  // namespace doc

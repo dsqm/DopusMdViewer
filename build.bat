@@ -38,7 +38,7 @@ if not exist "%OPUSINC%\viewer plugins.h" echo   缺少 Opus 插件头文件 %OPUSINC% 
 if not exist "%PROJ%web\app.js" echo   缺少 web\app.js，先在 webbuild 跑 node build.mjs & goto :fail
 
 rem 源文件是 UTF-8 无 BOM 且含中文注释：/utf-8 不可省，否则按 936 解读会报一堆假语法错误
-set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%SDKINC%\winrt;%OPUSINC%;%W2INC%;%PROJ%third_party"
+set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%SDKINC%\winrt;%OPUSINC%;%W2INC%;%PROJ%third_party;%PROJ%third_party\compact_enc_det"
 set "LIB=%MSVC%\lib\x64;%SDKLIB%\ucrt\x64;%SDKLIB%\um\x64"
 
 pushd "%PROJ%"
@@ -61,10 +61,15 @@ call "%PROJ%build-pcre2.bat"
 if errorlevel 1 goto :fail
 
 echo.
+echo [3c/5] CED (encoding detect) ...
+call "%PROJ%build-ced.bat"
+if errorlevel 1 goto :fail
+
+echo.
 echo [4/5] 链接 DLL...
 "%LINK%" /nologo /DLL /MACHINE:X64 /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /OPT:REF /OPT:ICF ^
   "/DEF:%PROJ%DopusMdViewer.def" "/OUT:%PROJ%bin\DopusMdViewer.dll" ^
-  "bin\obj\*.obj" "bin\obj\resource.res" "bin\obj-pcre2\8\*.obj" "bin\obj-pcre2\16\*.obj" "bin\obj-pcre2\common\*.obj" ^
+  "bin\obj\*.obj" "bin\obj\resource.res" "bin\obj-ced\*.obj" "bin\obj-pcre2\8\*.obj" "bin\obj-pcre2\16\*.obj" "bin\obj-pcre2\common\*.obj" ^
   "%W2LIB%" kernel32.lib user32.lib gdi32.lib ole32.lib oleaut32.lib ^
   shell32.lib shlwapi.lib advapi32.lib psapi.lib version.lib comctl32.lib
 if errorlevel 1 goto :fail
