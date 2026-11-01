@@ -1,8 +1,13 @@
 // resource.rc - version information only.
 // RC compiler is invoked with the same INCLUDE paths as the C++ build.
+//
+// 版本号不写在这里：构建时由 tools\gen-version.ps1 按当前时刻生成
+// build\obj\version.rc.inc（build\ 不入库），下面直接引用它的宏。
+// 缺这个文件说明没走构建脚本，rc 会在这里报找不到 include。
 
 #include <windows.h>
 #include "src/resource_ids.h"
+#include "build/obj/version.rc.inc"
 
 IDD_CONFIG_HELP DIALOGEX 0, 0, 260, 150
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
@@ -15,8 +20,8 @@ BEGIN
 END
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION    0,1,0,0
- PRODUCTVERSION 0,1,0,0
+ FILEVERSION    MDV_VER_NUMERIC
+ PRODUCTVERSION MDV_VER_NUMERIC
  FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
  FILEFLAGS      0x0L
  FILEOS         VOS_NT_WINDOWS32
@@ -28,13 +33,13 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName",      "DopusMdViewer"
-            VALUE "FileDescription",  "DopusMdViewer - Markdown viewer for Directory Opus (POC)"
-            VALUE "FileVersion",      "0.1.0.0"
+            VALUE "FileDescription",  "DopusMdViewer - Markdown viewer for Directory Opus"
+            VALUE "FileVersion",      MDV_VER_STRING
             VALUE "InternalName",     "DopusMdViewer"
             VALUE "LegalCopyright",   "(c) 2026 DopusMdViewer contributors"
             VALUE "OriginalFilename", "DopusMdViewer.dll"
             VALUE "ProductName",      "DopusMdViewer"
-            VALUE "ProductVersion",   "0.1.0.0"
+            VALUE "ProductVersion",   MDV_VER_STRING
         END
     END
     BLOCK "VarFileInfo"

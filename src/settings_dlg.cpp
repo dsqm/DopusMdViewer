@@ -70,8 +70,6 @@ enum {
   kIdOutlineBtn,
   kIdVersion = 3400,
   kIdWebView,
-  kIdGiant,
-  kIdResident,
   kIdOpenLog,
   kIdOpenConfig,
   kIdOpenSkins,
@@ -1178,20 +1176,12 @@ void BuildUi(DialogState* st) {
   y = 78;
   AddControl(st, 3, L"STATIC", L"WebView2", SS_LEFT, 16, y + 2, 90, 20, 0);
   AddControl(st, 3, L"STATIC", runtime.c_str(), SS_LEFT, 110, y + 2, 420, 20, kIdWebView);
-  y = 108;
-  AddControl(st, 3, L"STATIC", loc::T(loc::Str::GiantBlock), SS_LEFT, 16, y + 2, 90, 20, 0);
-  AddControl(st, 3, L"STATIC", loc::T(loc::Str::GiantBlockNote), SS_LEFT, 110, y + 2, 420, 20,
-             kIdGiant);
-  y = 136;
-  AddControl(st, 3, L"STATIC", loc::T(loc::Str::ResidentWindow), SS_LEFT, 16, y + 2, 90, 20, 0);
-  AddControl(st, 3, L"STATIC", loc::T(loc::Str::ResidentNote), SS_LEFT, 110, y + 2, 420, 20,
-             kIdResident);
 
-  y = 166;
+  y = 108;
   st->hPrewarm = AddControl(st, 3, L"BUTTON", loc::T(loc::Str::Prewarm),
                             BS_AUTOCHECKBOX | WS_TABSTOP, 16, y, 480, 24, kIdPrewarm);
 
-  y = 196;
+  y = 138;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleRelease), SS_LEFT, 16, y + 3, 120, 20, 0);
   st->hIdle = AddControl(st, 3, L"EDIT", L"",
                          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 140, y, 70, 24, kIdIdle,
@@ -1203,7 +1193,7 @@ void BuildUi(DialogState* st) {
   ::SendMessageW(st->hIdleSpin, UDM_SETRANGE32, 0, 1440);
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleUnit), SS_LEFT, 220, y + 3, 220, 20, 0);
 
-  y = 234;
+  y = 176;
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenLog), BS_PUSHBUTTON | WS_TABSTOP, 16, y, 130,
              26, kIdOpenLog);
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenConfig), BS_PUSHBUTTON | WS_TABSTOP, 154, y,
@@ -1213,7 +1203,7 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::LogEnabled), BS_AUTOCHECKBOX | WS_TABSTOP, 440,
              y, 108, 26, kIdEnableLog);
 
-  y = 266;
+  y = 208;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolder), SS_LEFT, 16, y, 200, 20, 0);
   std::wstring dataDir = UtilDataDir();
   if (dataDir.empty()) dataDir = loc::T(loc::Str::NoFolder);
@@ -1246,7 +1236,7 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"BUTTON", L"?", BS_PUSHBUTTON | WS_TABSTOP, 504, y + 20, 26, 24,
              kIdConfigHelp);
 
-  y = 364;
+  y = 306;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::WebViewCache), SS_LEFT, 16, y + 3, 94, 20, 0);
   st->hWebViewDir = AddControl(st, 3, L"EDIT", L"",
                                ES_AUTOHSCROLL | WS_TABSTOP, 114, y, 296, 24, kIdWebViewDir,

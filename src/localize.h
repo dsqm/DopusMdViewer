@@ -64,10 +64,6 @@ enum class Str : int {
 
   // 高级
   Version,
-  GiantBlock,
-  GiantBlockNote,
-  ResidentWindow,
-  ResidentNote,
   Prewarm,
   IdleRelease,
   IdleUnit,

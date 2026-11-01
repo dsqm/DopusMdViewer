@@ -56,6 +56,7 @@ if not exist "%PROJ%webbuild\src\app.js" echo   缺少 webbuild\src\app.js & got
 if not exist "%PROJ%webbuild\src\mermaid.entry.mjs" echo   缺少 webbuild\src\mermaid.entry.mjs & goto :fail
 if not exist "%ESBUILD%" echo   缺少 esbuild，先在 webbuild 跑 npm install & goto :fail
 if not exist "%PROJ%webbuild\node_modules\katex\dist\katex.min.css" echo   缺少 KaTeX 资源，先在 webbuild 跑 npm install & goto :fail
+if not exist "%PROJ%tools\gen-version.ps1" echo   缺少 tools\gen-version.ps1 & goto :fail
 
 rem 源文件是 UTF-8 无 BOM 且含中文注释：/utf-8 不可省，否则按 936 解读会报一堆假语法错误
 set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%SDKINC%\winrt;%OPUSINC%;%W2INC%;%PROJ%third_party;%PROJ%third_party\compact_enc_det"
@@ -85,7 +86,10 @@ rem 通配符收集 src 下全部 .cpp，新增文件不用改脚本
 if errorlevel 1 goto :fail
 
 echo.
-echo [4/8] 编译版本资源...
+echo [4/8] 生成版本号并编译版本资源...
+rem 版本号取构建时刻，写到 build\obj\version.rc.inc，不入库
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PROJ%tools\gen-version.ps1"
+if errorlevel 1 goto :fail
 "%RC%" /nologo "/fo%PROJ%build\obj\resource.res" "%PROJ%resource.rc"
 if errorlevel 1 goto :fail
 

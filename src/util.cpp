@@ -423,8 +423,11 @@ std::wstring UtilModuleVersion(void) {
     return std::wstring();
   }
   wchar_t text[64];
-  ::StringCchPrintfW(text, ARRAYSIZE(text), L"%u.%u.%u",
+  // 版本号是构建时刻的年.月.日.时分（见 tools\gen-version.ps1）：月日与时分补零，
+  // 和资源管理器属性页显示的一致。UtilFileVersion 不带补零，那是给 WebView2 运行时
+  // 那种点分版本号用的，两者不能合并。
+  ::StringCchPrintfW(text, ARRAYSIZE(text), L"%u.%02u.%02u.%04u",
                      HIWORD(info->dwFileVersionMS), LOWORD(info->dwFileVersionMS),
-                     HIWORD(info->dwFileVersionLS));
+                     HIWORD(info->dwFileVersionLS), LOWORD(info->dwFileVersionLS));
   return text;
 }
