@@ -101,7 +101,19 @@ const wchar_t* const kZh[kCount] = {
     /* Ok               */ L"确定",
     /* Cancel           */ L"取消",
 
-    /* SaveFailed       */ L"写入 config.json 失败，详见日志。",
+    /* SaveFailed       */ L"无法保存设置。",
+    /* SaveFailedPath   */ L"路径：%s",
+    /* SaveFailedError  */ L"错误：%lu - %s",
+    /* SaveFailedNoPath */ L"路径：不可用（Opus 的用户数据目录没解析出来）",
+    /* SaveAdviceMissing */
+    L"建议：配置目录建不出来，可能被清理软件删掉了上级目录，或被 Folder Alias 指到了不存在的盘。"
+    L"请检查「高级」页里的目录位置。",
+    /* SaveAdviceDenied */
+    L"建议：没有写入权限，或被安全软件拦住。检查该目录的属性，或在「高级」页把数据目录换到别处。",
+    /* SaveAdviceBusy */
+    L"建议：文件正被其他程序占用（常见于杀毒软件扫描、网盘同步）。稍后重试。",
+    /* SaveAdviceDisk   */ L"建议：清理磁盘空间后重试。",
+    /* SaveAdviceOther  */ L"建议：请检查该目录是否可写；若反复出现，把这段信息截图发给作者。",
     /* NoFolder         */ L"目录路径不可用。",
     /* OpenFolderFailed */ L"打开目录失败。",
 };

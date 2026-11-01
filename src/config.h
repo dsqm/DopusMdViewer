@@ -78,5 +78,16 @@ bool ConfigPrewarm(void);
 // 预热关闭时的空闲释放分钟数；0 = 不释放。
 int ConfigIdleReleaseMinutes(void);
 
-// 写入整份设置并更新内存值；原子写（.tmp + MoveFileEx），保留未知键。
-bool ConfigSave(const Config& config);
+// ConfigSave 失败时的现场：给设置页拼弹窗用，不落库。
+struct ConfigSaveFailure {
+  // 失败处的 Win32 错误码（DWORD 的等宽整数，免得本头文件拖进 windows.h）；
+  // 0 = 没有可给的系统错误（数据目录整个不可用）。
+  unsigned long code;
+  // 目标 config.json 的完整路径；空 = 路径本身不可用。
+  std::wstring path;
+};
+
+// 写入整份设置，成功后才更新内存值；原子写（.tmp + MoveFileEx），保留未知键。
+// 数据目录不存在时先建出来。失败时把原因填进 failure（可为 nullptr），
+// 内存配置保持旧值，日志开关按本次设置生效（不回滚）。
+bool ConfigSave(const Config& config, ConfigSaveFailure* failure = nullptr);

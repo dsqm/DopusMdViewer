@@ -98,6 +98,14 @@ enum class Str : int {
 
   // 提示
   SaveFailed,
+  SaveFailedPath,     // 一个 %s：目标文件
+  SaveFailedError,    // 一个 %lu、一个 %s：错误码、系统消息
+  SaveFailedNoPath,
+  SaveAdviceMissing,
+  SaveAdviceDenied,
+  SaveAdviceBusy,
+  SaveAdviceDisk,
+  SaveAdviceOther,
   NoFolder,
   OpenFolderFailed,
 };

@@ -183,20 +183,27 @@ nlohmann::json StackToJson(const FontStack& stack) {
   return arr;
 }
 
-bool WriteConfigAtomically(const wchar_t* path, const std::string& bytes) {
+// 失败时把 Win32 错误码带出去：调用方要拿它拼弹窗，光一个 bool 只能靠猜。
+bool WriteConfigAtomically(const wchar_t* path, const std::string& bytes, DWORD* outError) {
   const std::wstring tmp = std::wstring(path) + L".tmp";
   HANDLE h = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (h == INVALID_HANDLE_VALUE) return false;
+  if (h == INVALID_HANDLE_VALUE) {
+    if (outError) *outError = ::GetLastError();
+    return false;
+  }
   DWORD written = 0;
   const BOOL ok = ::WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written,
                               nullptr);
-  ::CloseHandle(h);
   if (!ok || written != bytes.size()) {
+    if (outError) *outError = ok ? ERROR_WRITE_FAULT : ::GetLastError();
+    ::CloseHandle(h);
     ::DeleteFileW(tmp.c_str());
     return false;
   }
+  ::CloseHandle(h);
   if (!::MoveFileExW(tmp.c_str(), path, MOVEFILE_REPLACE_EXISTING)) {
+    if (outError) *outError = ::GetLastError();
     ::DeleteFileW(tmp.c_str());
     return false;
   }
@@ -295,7 +302,12 @@ Config ConfigDefaults(void) {
   return c;
 }
 
-bool ConfigSave(const Config& input) {
+bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
+  if (failure) {
+    failure->code = 0;
+    failure->path.clear();
+  }
+
   Config c = input;
   if (c.netImageMode < 0 || c.netImageMode > 2) c.netImageMode = 1;
   if (c.font.ui.empty()) c.font.ui = DefaultUi();
@@ -307,14 +319,28 @@ bool ConfigSave(const Config& input) {
   if (c.tableCopyMode != 1) c.tableCopyMode = 0;
 
   const wchar_t* path = ConfigPath();
+  if (!g_loaded) ConfigLoad();
+
+  // 日志开关按「本次设置」生效，且必须在任何可能失败的写盘之前：
+  // 否则「勾上记录日志 → 应用 → 写盘失败」这条最需要日志的路径反而什么都不记。
+  // 关闭时 LogLine 依旧一个字节都不写。
+  LogSetEnabled(c.enableLog);
+
   if (!path || !*path) {
     LogLine(L"CONFIG: 数据目录不可用，无法写盘");
     return false;
   }
-  if (!g_loaded) ConfigLoad();
-  {
-    std::lock_guard<std::mutex> lock(g_modeMutex);
-    g_config = c;
+  if (failure) failure->path = path;
+
+  // 数据目录不一定存在：全新安装、或 Folder Alias 指到一个刚建的文件夹时都没有。
+  // 日志关闭时没有任何代码会建它，而原子写不建父目录 —— 不补这一步，第一次
+  // 保存就必然失败，且失败原因无从查起。
+  const std::wstring dataDir = UtilDataDir();
+  if (!dataDir.empty() && !UtilEnsureDir(dataDir)) {
+    const DWORD err = ::GetLastError();
+    if (failure) failure->code = err ? err : ERROR_ACCESS_DENIED;
+    LogLine(L"CONFIG: 建目录失败 %s err=%lu", dataDir.c_str(), err);
+    return false;
   }
 
   // 读旧文件并保留未知键，避免设置一次就把将来的配置项抹掉
@@ -362,11 +388,17 @@ bool ConfigSave(const Config& input) {
   root["tableCopyFormat"] = c.tableCopyMode == 1 ? "markdown" : "tsv";
 
   const std::string bytes = root.dump(2);
-  if (!WriteConfigAtomically(path, bytes)) {
-    LogLine(L"CONFIG: 写入失败 %s", path);
-    return false;
+  DWORD err = 0;
+  if (!WriteConfigAtomically(path, bytes, &err)) {
+    if (failure) failure->code = err;
+    LogLine(L"CONFIG: 写入失败 %s err=%lu", path, err);
+    return false;  // 内存保持旧值：磁盘没写成功，读者就不该看到新设置
   }
-  LogSetEnabled(c.enableLog);
+
+  {
+    std::lock_guard<std::mutex> lock(g_modeMutex);
+    g_config = c;
+  }
   LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
           L"net=%d outside=%d render=%d%d%d%d%d copy=%d%d/%d tools=%d%d log=%d prewarm=%d idle=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,

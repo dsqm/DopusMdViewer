@@ -761,6 +761,57 @@ void ReadUiIntoStaged(DialogState* st) {
   if (ok && idle <= 1440) st->staged.idleReleaseMinutes = static_cast<int>(idle);
 }
 
+// 保存失败的弹窗：主行 + 路径 + 错误码与系统消息 + 一句针对性的建议。
+// 日志关着时这是用户唯一能拿到的线索，所以一次给全，不写"详见日志"。
+void ShowSaveFailed(HWND owner, const ConfigSaveFailure& fail) {
+  const wchar_t* advice = loc::T(loc::Str::SaveAdviceOther);
+  switch (fail.code) {
+    case ERROR_PATH_NOT_FOUND:
+    case ERROR_INVALID_NAME:
+      advice = loc::T(loc::Str::SaveAdviceMissing);
+      break;
+    case ERROR_ACCESS_DENIED:
+    case ERROR_WRITE_PROTECT:
+      advice = loc::T(loc::Str::SaveAdviceDenied);
+      break;
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION:
+      advice = loc::T(loc::Str::SaveAdviceBusy);
+      break;
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL:
+      advice = loc::T(loc::Str::SaveAdviceDisk);
+      break;
+    default:
+      break;
+  }
+
+  std::wstring text = loc::T(loc::Str::SaveFailed);
+  text += L"\r\n\r\n";
+
+  if (fail.path.empty()) {
+    text += loc::T(loc::Str::SaveFailedNoPath);
+  } else {
+    wchar_t line[MAX_PATH + 32];
+    ::StringCchPrintfW(line, ARRAYSIZE(line), loc::T(loc::Str::SaveFailedPath), fail.path.c_str());
+    text += line;
+  }
+
+  if (fail.code != 0) {
+    const std::wstring sys = UtilWin32ErrorText(fail.code);
+    wchar_t line[512];
+    ::StringCchPrintfW(line, ARRAYSIZE(line), loc::T(loc::Str::SaveFailedError), fail.code,
+                       sys.empty() ? loc::T(loc::Str::Unknown) : sys.c_str());
+    text += L"\r\n";
+    text += line;
+  }
+
+  text += L"\r\n\r\n";
+  text += advice;
+
+  ::MessageBoxW(owner, text.c_str(), L"DopusMdViewer", MB_OK | MB_ICONERROR);
+}
+
 bool ApplySettings(DialogState* st) {
   ReadUiIntoStaged(st);
   const Config saved = ConfigSnapshot();
@@ -772,9 +823,9 @@ bool ApplySettings(DialogState* st) {
       return false;
     }
   }
-  if (!ConfigSave(st->staged)) {
-    ::MessageBoxW(st->hwnd, loc::T(loc::Str::SaveFailed), L"DopusMdViewer",
-                  MB_OK | MB_ICONERROR);
+  ConfigSaveFailure fail{};
+  if (!ConfigSave(st->staged, &fail)) {
+    ShowSaveFailed(st->hwnd, fail);
     return false;
   }
   ViewerNotifyConfigChanged();

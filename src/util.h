@@ -68,6 +68,10 @@ bool UtilRemoveTree(const std::wstring& dir);
 // 人类可读的大小："98.0 MB"。
 std::wstring UtilFormatSize(uint64_t bytes);
 
+// Win32 错误码对应的系统消息（中文系统上就是中文），去掉尾随的换行。
+// 取不到（code 为 0、或系统没有这条消息）时返回空串，调用方自己兜底。
+std::wstring UtilWin32ErrorText(DWORD code);
+
 bool UtilFileExists(const std::wstring& path);
 
 // 读整个文件。超过 maxBytes 直接失败（调用方用它挡住病态文件）。

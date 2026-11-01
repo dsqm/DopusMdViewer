@@ -279,6 +279,26 @@ std::wstring UtilFormatSize(uint64_t bytes) {
   return buf;
 }
 
+std::wstring UtilWin32ErrorText(DWORD code) {
+  if (code == 0) return std::wstring();
+
+  wchar_t* raw = nullptr;
+  const DWORD n = ::FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                       FORMAT_MESSAGE_IGNORE_INSERTS,
+                                   nullptr, code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                   reinterpret_cast<wchar_t*>(&raw), 0, nullptr);
+  if (n == 0 || !raw) return std::wstring();
+
+  std::wstring text(raw, n);
+  ::LocalFree(raw);
+
+  // 系统消息自带 "\r\n"，拼进弹窗会多出空行。
+  while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' ')) {
+    text.pop_back();
+  }
+  return text;
+}
+
 bool UtilEnsureDir(const std::wstring& dir) {
   if (dir.empty()) return false;
 
