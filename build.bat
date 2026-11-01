@@ -10,11 +10,26 @@ rem        ..\SDK\Headers（Directory Opus 查看器插件头文件）
 rem        webbuild\node_modules（npm install 一次；构建用内置 esbuild.exe，不需要 node）
 rem ============================================================
 
-rem ---- 工具链版本：VS2022 或 Windows SDK 升级后改这两行 ----
-set "MSVC_VER=14.44.35207"
-set "SDK_VER=10.0.26100.0"
-set "VS_ROOT=C:\VS2022"
+rem ---- Locate VS (vswhere) and newest Windows SDK ----
 set "SDK_ROOT=C:\Program Files (x86)\Windows Kits\10"
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VS_ROOT="
+if exist "%VSWHERE%" (
+  for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_ROOT=%%i"
+)
+if not defined VS_ROOT echo   vswhere found no Visual Studio with C++ tools & goto :fail
+if not exist "%VS_ROOT%\VC\Tools\MSVC" echo   MSVC tools not found under %VS_ROOT% & goto :fail
+
+rem pick the newest installed MSVC and Windows SDK
+set "MSVC_VER="
+for /f "delims=" %%v in ('dir /b /ad "%VS_ROOT%\VC\Tools\MSVC"') do set "MSVC_VER=%%v"
+set "SDK_VER="
+for /f "delims=" %%v in ('dir /b /ad "%SDK_ROOT%\Include" ^| findstr /r "^10\." ') do set "SDK_VER=%%v"
+if not defined MSVC_VER echo   no MSVC toolset found & goto :fail
+if not defined SDK_VER echo   no Windows SDK 10 found & goto :fail
+echo   VS=%VS_ROOT%
+echo   MSVC=%MSVC_VER%
+echo   SDK=%SDK_VER%
 
 set "PROJ=%~dp0"
 set "MSVC=%VS_ROOT%\VC\Tools\MSVC\%MSVC_VER%"
