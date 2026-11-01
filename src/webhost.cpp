@@ -51,6 +51,7 @@ namespace {
 
 const wchar_t kHostClass[] = L"DopusMdViewerHostWnd";
 const wchar_t kAppHost[] = L"mdprev.localhost";
+const wchar_t kAppOrigin[] = L"https://mdprev.localhost";  // CORS 回显用，必须带 scheme
 const wchar_t kDocHost[] = L"mddoc.localhost";
 const wchar_t kShellUrl[] = L"https://mdprev.localhost/shell.html";
 
@@ -883,7 +884,7 @@ void CreateController() {
                       const std::wstring headers =
                           L"Content-Type: " + contentType + L"\r\n" +
                           L"Cache-Control: no-store\r\n" +
-                          L"Access-Control-Allow-Origin: " + kAppHost + L"\r\n";
+                          L"Access-Control-Allow-Origin: " + kAppOrigin + L"\r\n";
 
                       ComPtr<ICoreWebView2WebResourceResponse> response;
                       if (g_host.env && stream) {
