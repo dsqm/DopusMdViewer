@@ -124,6 +124,8 @@ volatile LONG g_hasThread = 0;
 // 预热配置在宿主线程还没建起来时也要记住（预热关闭时 InitEx 不会建线程）。
 volatile LONG g_cfgPrewarm = 0;
 volatile LONG g_cfgIdleMinutes = 3;
+// 自定义运行时建不起来、已回退到系统运行时（设置界面的关于页据此标注）。
+volatile LONG g_runtimeFallback = 0;
 DWORD g_threadId = 0;
 HWND g_threadHost = nullptr;
 
@@ -136,6 +138,19 @@ std::wstring UserDataDir() {
   if (dataDir.empty()) return std::wstring();
   const std::wstring dir = UtilJoin(dataDir, L"WebView2");
   UtilEnsureDir(dir);
+  return dir;
+}
+
+// 用户自放的 Fixed Version 运行时（票 22）：…\DopusMdViewer\Runtime\msedgewebview2.exe。
+// 只认这一层，不递归扫描——多层扫描要回答「两份该用哪份」，没有确定答案。
+// 结果按进程缓存：换运行时本来就要重启 Opus，没必要每次建实例都去摸盘。
+const std::wstring& UserRuntimeDir() {
+  static const std::wstring dir = [] {
+    const std::wstring dataDir = UtilDataDir();
+    if (dataDir.empty()) return std::wstring();
+    const std::wstring runtime = UtilJoin(dataDir, L"Runtime");
+    return UtilFileExists(UtilJoin(runtime, L"msedgewebview2.exe")) ? runtime : std::wstring();
+  }();
   return dir;
 }
 
@@ -558,12 +573,23 @@ void ReleaseInstance() {
 }
 
 void CreateController();
+void StartEnvironment(const std::wstring& runtimeDir, bool triedCustom);
 
-void OnEnvironmentReady(HRESULT hr, ICoreWebView2Environment* env) {
+// triedCustom 表示这一轮用的是用户自放的运行时；它建不起来时不能直接判死——
+// 放错一个目录不该让整个预览不可用，回退系统运行时再试一次。
+void OnEnvironmentReady(HRESULT hr, ICoreWebView2Environment* env, bool triedCustom) {
   if (FAILED(hr) || !env) {
+    if (triedCustom) {
+      LogLine(L"WEBHOST: 自定义运行时不可用 hr=0x%08X，回退系统运行时",
+              static_cast<unsigned>(hr));
+      ::InterlockedExchange(&g_runtimeFallback, 1);
+      StartEnvironment(std::wstring(), true);
+      return;
+    }
     g_host.creating = false;
-    wchar_t szMsg[128];
-    ::StringCchPrintfW(szMsg, ARRAYSIZE(szMsg), L"Environment 创建失败 hr=0x%08X",
+    wchar_t szMsg[160];
+    ::StringCchPrintfW(szMsg, ARRAYSIZE(szMsg),
+                       L"WebView2 运行时不可用 hr=0x%08X（未安装或版本过低）",
                        static_cast<unsigned>(hr));
     Fail(szMsg);
     return;
@@ -859,6 +885,29 @@ void CreateController() {
   }
 }
 
+// 建 Environment。runtimeDir 为空表示用系统 Evergreen；非空是用户自放的运行时目录。
+// 同步返回 HRESULT 与回调里的失败走同一条路：自定义那份失败就回退系统再试一次。
+void StartEnvironment(const std::wstring& runtimeDir, bool triedCustom) {
+  g_host.creating = true;
+  if (!triedCustom) ::QueryPerformanceCounter(&g_host.tEnsure);
+
+  const std::wstring userData = UserDataDir();
+  LogLine(L"WEBHOST: 建 Environment（运行时=%s）",
+          runtimeDir.empty() ? L"系统 Evergreen" : runtimeDir.c_str());
+
+  const HRESULT hr = ::CreateCoreWebView2EnvironmentWithOptions(
+      runtimeDir.empty() ? nullptr : runtimeDir.c_str(),
+      userData.empty() ? nullptr : userData.c_str(), nullptr,
+      Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+          [triedCustom](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            OnEnvironmentReady(result, env, triedCustom);
+            return S_OK;
+          })
+          .Get());
+
+  if (FAILED(hr)) OnEnvironmentReady(hr, nullptr, triedCustom);
+}
+
 void EnsureEnvironment() {
   if (g_host.env) {
     if (!g_host.controller && !g_host.creating) CreateController();
@@ -866,27 +915,8 @@ void EnsureEnvironment() {
   }
   if (g_host.creating) return;
 
-  g_host.creating = true;
-  ::QueryPerformanceCounter(&g_host.tEnsure);
-
-  const std::wstring userData = UserDataDir();
-  const HRESULT hr = ::CreateCoreWebView2EnvironmentWithOptions(
-      nullptr, userData.empty() ? nullptr : userData.c_str(), nullptr,
-      Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-          [](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
-            OnEnvironmentReady(result, env);
-            return S_OK;
-          })
-          .Get());
-
-  if (FAILED(hr)) {
-    g_host.creating = false;
-    wchar_t szMsg[160];
-    ::StringCchPrintfW(szMsg, ARRAYSIZE(szMsg),
-                       L"WebView2 运行时不可用 hr=0x%08X（未安装或版本过低）",
-                       static_cast<unsigned>(hr));
-    Fail(szMsg);
-  }
+  const std::wstring& runtimeDir = UserRuntimeDir();
+  StartEnvironment(runtimeDir, !runtimeDir.empty());
 }
 
 // 自愈：进程失效后把画面救回来。渲染进程死掉只重载页面（页面重新发 ready，借用方
@@ -1418,11 +1448,21 @@ bool WebHostCallDevTools(HWND hViewer, const std::wstring& method) {
   return result != 0;
 }
 
-std::wstring WebHostRuntimeVersion(void) {
+std::wstring WebHostRuntimeInfo(void) {
+  const std::wstring& custom = UserRuntimeDir();
+  if (!custom.empty() && !g_runtimeFallback) {
+    const std::wstring version = UtilFileVersion(UtilJoin(custom, L"msedgewebview2.exe"));
+    return version.empty() ? std::wstring(L"自定义（版本未知）") : L"自定义 " + version;
+  }
+
   LPWSTR version = nullptr;
   const HRESULT hr = ::GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
-  if (FAILED(hr) || !version) return std::wstring();
-  std::wstring out(version);
-  ::CoTaskMemFree(version);
-  return out;
+  std::wstring out;
+  if (SUCCEEDED(hr) && version) {
+    out.assign(version);
+    ::CoTaskMemFree(version);
+  }
+  if (out.empty()) return std::wstring();
+  if (!custom.empty()) return L"系统 " + out + L"（自定义运行时不可用，已回退）";
+  return L"系统 " + out;
 }

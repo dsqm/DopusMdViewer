@@ -76,5 +76,6 @@ bool WebHostCallDevTools(HWND hViewer, const std::wstring& method);
 // 全文渲染进打印容器；运行时太老拿不到接口时返回 false。
 bool WebHostShowPrintUI(HWND hViewer);
 
-// 本机 WebView2 Runtime 版本；未安装或读不到返回空串。设置界面“关于”用。
-std::wstring WebHostRuntimeVersion(void);
+// 实际会用的 WebView2 运行时：「自定义 153.0.4234.48」/「系统 153.0.4234.48」；
+// 自定义那份建不起来时给出「系统 …（已回退）」；完全没有返回空串。设置界面“关于”用。
+std::wstring WebHostRuntimeInfo(void);

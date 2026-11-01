@@ -168,6 +168,27 @@ const wchar_t* UtilLeafName(const wchar_t* path) {
   return leaf;
 }
 
+std::wstring UtilFileVersion(const std::wstring& path) {
+  if (path.empty()) return std::wstring();
+
+  DWORD dummy = 0;
+  const DWORD size = ::GetFileVersionInfoSizeW(path.c_str(), &dummy);
+  if (size == 0) return std::wstring();
+  std::vector<unsigned char> buf(size);
+  if (!::GetFileVersionInfoW(path.c_str(), 0, size, buf.data())) return std::wstring();
+
+  VS_FIXEDFILEINFO* info = nullptr;
+  UINT len = 0;
+  if (!::VerQueryValueW(buf.data(), L"\\", reinterpret_cast<void**>(&info), &len) || !info) {
+    return std::wstring();
+  }
+  wchar_t text[64];
+  ::StringCchPrintfW(text, ARRAYSIZE(text), L"%u.%u.%u.%u",
+                     HIWORD(info->dwFileVersionMS), LOWORD(info->dwFileVersionMS),
+                     HIWORD(info->dwFileVersionLS), LOWORD(info->dwFileVersionLS));
+  return text;
+}
+
 std::wstring UtilModuleVersion(void) {
   HMODULE hmod = nullptr;
   if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |

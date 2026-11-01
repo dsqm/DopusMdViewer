@@ -43,3 +43,6 @@ const wchar_t* UtilLeafName(const wchar_t* path);
 
 // 本 DLL 的版本资源（"1.2.3"）；读不到返回空串。
 std::wstring UtilModuleVersion(void);
+
+// 任意可执行文件/模块的版本资源（"1.2.3.4"）；不存在或没有版本资源时返回空串。
+std::wstring UtilFileVersion(const std::wstring& path);

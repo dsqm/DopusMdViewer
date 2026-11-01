@@ -787,7 +787,7 @@ void BuildUi(DialogState* st) {
   // ---------------- 高级 ----------------
   std::wstring version = UtilModuleVersion();
   if (version.empty()) version = loc::T(loc::Str::Unknown);
-  std::wstring runtime = WebHostRuntimeVersion();
+  std::wstring runtime = WebHostRuntimeInfo();
   if (runtime.empty()) runtime = loc::T(loc::Str::RuntimeMissing);
 
   y = 50;
