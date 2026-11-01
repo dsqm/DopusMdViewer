@@ -49,6 +49,7 @@ struct ViewerState {
   bool chromePushed;
   bool webFailed;
   bool hasHost;  // 宿主此刻是否在本窗口（单宿主，被别的窗口借走时没有画面）
+  bool hasSelection;  // 页面里此刻有没有非折叠选区，DVPLUGINMSG_TESTSELECTION 靠它回答
   // 加载占位的自绘字体：按 DPI 缩放 + ClearType，避免默认位图字体的锯齿。
   HFONT fontName;
   HFONT fontHint;
@@ -463,6 +464,12 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     return;
   }
 
+  if (type == L"sel") {
+    // 宿主决定「复制」是否可用时要问 TESTSELECTION，这里记下页面报的实况。
+    st->hasSelection = (rest == L"1");
+    return;
+  }
+
   if (type == L"open") {
     // 预览器不做导航：网页里的链接交回系统浏览器
     LogLine(L"VIEWER: 打开外部链接 %s", rest.c_str());
@@ -709,6 +716,10 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       StartPrint(st);
       return 0;
 
+    case DVPLUGINMSG_TESTSELECTION:
+      // Opus 用它决定「复制」是否置灰：不实现就一直返回 0，菜单项永远是灰的。
+      return st->hasSelection ? TRUE : FALSE;
+
     case DVPLUGINMSG_SELECTALL:
       // Opus 菜单里的「全选」只做选中；随后的「复制」走下一分支
       if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"selectall|");
@@ -861,6 +872,7 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->chromePushed = false;
   st->webFailed = false;
   st->hasHost = false;
+  st->hasSelection = false;
   st->fontName = nullptr;
   st->fontHint = nullptr;
   st->fontDpi = 0;

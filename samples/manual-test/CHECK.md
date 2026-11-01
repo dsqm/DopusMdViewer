@@ -53,7 +53,8 @@ python samples\manual-test\gen-search.py     → %TEMP%\mdvsearch\  (big-fence-h
 
 | # | 操作 | 预期 |
 |---|---|---|
-| 16 | `01-syntax.md`：Opus 编辑菜单「全选」→「复制」→ 粘到记事本 | **有内容**；「复制」不再恒灰（此前缺 `VPCAPABILITY_COPYSELECTION`，Opus 认为本查看器不能复制） |
+| 16 | `01-syntax.md`：Opus 编辑菜单「全选」→「复制」→ 粘到记事本 | **有内容**；有选区后「复制」可点。置灰有两个原因，都已修：缺 `VPCAPABILITY_COPYSELECTION`、以及没实现 `DVPLUGINMSG_TESTSELECTION`（Opus 靠它问「有没有选区」） |
+| 16b | 看编辑菜单里的「重新选择」 | 恒灰属正常：那是文件列表的「恢复上次选择」，与查看器无关 |
 | 17 | `Ctrl+A` → `Ctrl+C` | 与 16 同结果：标题、正文、代码块按渲染后的纯文本顺序 |
 | 18 | `big1g.md` 里 `Ctrl+A` → `Ctrl+C` | 只复制前缀，状态栏提示「文档过大」 |
 

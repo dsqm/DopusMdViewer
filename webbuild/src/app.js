@@ -1338,12 +1338,28 @@ function schedulePlace() {
   })
 }
 
-function place() {
-  if (loadingEl) {
-    // 换文档后到首屏块渲染出来之前，WebView2 里是旧画面或空白，给一层占位说明。
-    const want = !!V.initializing
-    if (loadingEl.hidden === want) loadingEl.hidden = !want
+// 首屏通常几十毫秒就出来，立刻显示浮层只会闪一下；只有真卡住才让它露出来。
+let loadingTimer = 0
+
+function armLoading() {
+  if (!loadingEl) return
+  if (loadingTimer) clearTimeout(loadingTimer)
+  loadingTimer = setTimeout(() => {
+    loadingTimer = 0
+    if (V.initializing && loadingEl) loadingEl.hidden = false
+  }, 200)
+}
+
+function disarmLoading() {
+  if (loadingTimer) {
+    clearTimeout(loadingTimer)
+    loadingTimer = 0
   }
+  if (loadingEl && !loadingEl.hidden) loadingEl.hidden = true
+}
+
+function place() {
+  if (loadingEl && !V.initializing) disarmLoading()
   if (!V.active || !docEl) return
   V.vh = window.innerHeight
   const scrollable = Math.max(0, V.totalH - V.vh)
@@ -1503,6 +1519,7 @@ function resetVirtual() {
   }
   if (sbEl) sbEl.hidden = true
   V.initializing = false
+  disarmLoading()
   V.anchorSet = false
   V.big = new Map()
   V.bigPending = null
@@ -1550,7 +1567,7 @@ function applyIndex(base, prefix, est, fileSize, enc, lastVisible, complete) {
   V.anchorSet = false
   V.indexAt = performance.now()
   V.initializing = true
-  if (loadingEl) loadingEl.hidden = false
+  armLoading()
   V.pendingFullCount = 0
   if (V.bigPending) {
     V.big = V.bigPending
@@ -1790,7 +1807,11 @@ function onThumbUp(e) {
    块会随视口换出，选区一旦跨到被换出的块就会塌陷。选区覆盖的常驻块钉住不换，
    拖到视口边缘时按帧滚动并用 caretRangeFromPoint 把选区延伸过去。 */
 
-const SEL = { down: false, x: 0, y: 0, raf: 0, warned: false, all: false, allLo: 0, allHi: 0 }
+const SEL = {
+  down: false, x: 0, y: 0, raf: 0, warned: false, all: false, allLo: 0, allHi: 0,
+  anchorBlock: -1,   // 拖选起点所在块：整个拖选期间钉住，块被回收就会塌陷
+  reported: false,   // 上一次上报给宿主的「有没有选区」
+}
 
 function blockIndexOfNode(node) {
   if (!node) return null
@@ -1801,27 +1822,47 @@ function blockIndexOfNode(node) {
   return Number.isInteger(i) ? i : null
 }
 
+function applyPins(next) {
+  let same = next.size === V.pinned.size
+  if (same) {
+    for (const i of next) {
+      if (!V.pinned.has(i)) {
+        same = false
+        break
+      }
+    }
+  }
+  if (same) return
+  V.pinned = next
+  V.pinsDirty = true
+  schedulePlace()
+}
+
+// 屏幕坐标落在哪个块上（拖选起点要用它钉住锚点块）
+function blockIndexOfPoint(x, y) {
+  if (!document.caretRangeFromPoint) return -1
+  const r = document.caretRangeFromPoint(x, Math.min(Math.max(y, 1), window.innerHeight - 1))
+  if (!r || !docEl || !docEl.contains(r.startContainer)) return -1
+  const i = blockIndexOfNode(r.startContainer)
+  return i === null ? -1 : i
+}
+
 function refreshPins() {
   if (!V.active) {
     V.pinned.clear()
     return
   }
+  // 拖选进行中始终钉住起点块：起点块一旦被换出，浏览器选区会整段塌掉，
+  // 表现为「拖到一半选区全没了」。
+  const keep = SEL.down && SEL.anchorBlock >= 0 ? SEL.anchorBlock : -1
   const sel = window.getSelection()
   if (!sel || !sel.rangeCount) {
-    if (V.pinned.size) {
-      V.pinned.clear()
-      V.pinsDirty = true
-      schedulePlace()
-    }
+    applyPins(keep >= 0 ? new Set([keep]) : new Set())
     return
   }
   const range = sel.getRangeAt(0)
   if (range.collapsed) {
-    if (V.pinned.size) {
-      V.pinned.clear()
-      V.pinsDirty = true
-      schedulePlace()
-    }
+    applyPins(keep >= 0 ? new Set([keep]) : new Set())
     return
   }
   const a = blockIndexOfNode(range.startContainer)
@@ -1908,6 +1949,8 @@ function onSelDown(e) {
   SEL.down = true
   SEL.x = e.clientX
   SEL.y = e.clientY
+  SEL.anchorBlock = blockIndexOfPoint(e.clientX, e.clientY)
+  if (SEL.anchorBlock >= 0) refreshPins()
 }
 
 function onSelMove(e) {
@@ -1920,6 +1963,7 @@ function onSelMove(e) {
 function onSelUp() {
   SEL.down = false
   SEL.warned = false
+  SEL.anchorBlock = -1
   if (SEL.raf) cancelAnimationFrame(SEL.raf)
   SEL.raf = 0
 }
@@ -1948,7 +1992,6 @@ function selectAllText() {
   SEL.all = lo >= 0
   SEL.allLo = lo
   SEL.allHi = hi
-  postRaw('status|已全选全文，Ctrl+C 复制')
 }
 
 // 渲染后的纯文本：用 markdown-it 的 token 取，不生成整篇 DOM。
@@ -2511,7 +2554,18 @@ function nearestHit(el, unitOff) {
 // 命中在「块源码」里的区间。字面搜索由后端给的偏移 + 针脚长度决定；正则得自己在源码
 // 上跑一遍——后端只给偏移，不给匹配长度。
 function sourceMatchSpan(src, unitOff) {
-  if (!FIND.re) return { start: unitOff, len: FIND.query.length }
+  if (!FIND.re) {
+    // 不从后端偏移直接切：有序列表这类块里它实测会差 1（`2. 2026-…` 报了 4、实际 3），
+    // 切出来的针脚多一个字就整段找不着。改在源码里列出所有出现位置、挑离偏移最近的。
+    const len = FIND.query.length
+    const starts = findOccurrences(src, FIND.query, FIND.cs, FIND.ww)
+    if (!starts.length) return { start: unitOff, len }
+    let best = starts[0]
+    for (const at of starts) {
+      if (Math.abs(at - unitOff) < Math.abs(best - unitOff)) best = at
+    }
+    return { start: best, len }
+  }
   const ms = regexMatches(src, FIND.query, FIND.cs)
   if (!ms.length) return null
   let best = ms[0]
@@ -2543,9 +2597,45 @@ function alignSourceToText(src, text) {
 
 // 源码区间 → 渲染文本区间。命中主要落在语法字符上（渲染后只剩零星一两字）时返回 null，
 // 交给整块标注：否则表格、标题这类块会被包出半截高亮。
+// 源码区间 → 渲染文本区间。
+// 先用「命中的那段字面文本」直接定位：它通常原样出现在渲染文本里，而贪心对齐会被源码里
+// 不渲染的东西带偏——有序列表的 `2. ` 里那个 2 就让第一个数字对到了列表序号上，
+// 高亮从第二个字符开始。只有针脚里含语法字符（`**x**`、表格竖线）时才退回对齐。
 function textRangeOfSourceSpan(el, src, from, to) {
   if (!src || to <= from) return null
-  const map = alignSourceToText(src, el.textContent || '')
+  const text = el.textContent || ''
+  const needle = src.slice(from, to)
+  if (needle) {
+    const at = []
+    let i = text.indexOf(needle)
+    while (i >= 0 && at.length < 200) {
+      at.push(i)
+      i = text.indexOf(needle, i + 1)
+    }
+    if (at.length === 1) return [at[0], at[0] + needle.length]
+    if (at.length > 1) {
+      // 同一段出现了多次：用对齐估个大概位置，再挑最近的
+      const est = alignmentTextPos(src, text, from)
+      let best = at[0]
+      for (const p of at) {
+        if (Math.abs(p - est) < Math.abs(best - est)) best = p
+      }
+      return [best, best + needle.length]
+    }
+  }
+  return alignmentRange(src, text, from, to)
+}
+
+// 对齐估位：源码下标 from 大致落在渲染文本的哪里（只用于同文本多次出现时的取舍）。
+function alignmentTextPos(src, text, from) {
+  for (const m of alignSourceToText(src, text)) {
+    if (m.s >= from) return m.t
+  }
+  return text.length
+}
+
+function alignmentRange(src, text, from, to) {
+  const map = alignSourceToText(src, text)
   let a = -1
   let b = -1
   for (const m of map) {
@@ -3421,7 +3511,16 @@ function bindInput() {
   thumbEl.addEventListener('pointerup', onThumbUp)
   thumbEl.addEventListener('pointercancel', onThumbUp)
   sbEl.addEventListener('pointerdown', onTrackDown)
-  document.addEventListener('selectionchange', refreshPins)
+  document.addEventListener('selectionchange', () => {
+    refreshPins()
+    // 宿主会用 DVPLUGINMSG_TESTSELECTION 问「有没有选区」，据此决定「复制」是否可用。
+    const sel = window.getSelection()
+    const on = !!(sel && sel.rangeCount && !sel.getRangeAt(0).collapsed)
+    if (on !== SEL.reported) {
+      SEL.reported = on
+      postRaw('sel|' + (on ? '1' : '0'))
+    }
+  })
   document.addEventListener('mousedown', onSelDown)
   document.addEventListener('mousemove', onSelMove)
   document.addEventListener('mouseup', onSelUp)
