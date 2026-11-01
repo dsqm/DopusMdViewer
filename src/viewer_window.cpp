@@ -43,6 +43,7 @@ struct ViewerState {
   uint32_t lastVisible;  // 最后一个非隐藏块（脚注区挂它后面）
   int encoding;
   uint32_t encOverride;  // 手动指定的代码页，0 = 自动
+  std::vector<DVPCONTEXTMENUITEMW> ctxMenu;  // 右键菜单数组，必须活到下次请求/窗口销毁
   bool docComplete;  // 打开时索引已覆盖全文（没有后台扫描）
   LONGLONG qpcLoad;  // LOADW 起点，用于端到端耗时
   bool docOpened;    // doc_source 归本窗口
@@ -356,8 +357,6 @@ void PushIndex(ViewerState* st) {
       st->hwndSelf,
       msg::MakeIndex(kDocBase, st->prefixBlocks, st->estBlocks, st->ullFileSize, st->encoding,
                      st->lastVisible, st->docComplete));
-  // 页面据此回填编码下拉框（0 = 自动）
-  WebHostPost(st->hwndSelf, msg::MakeEnc(static_cast<int>(st->encOverride)));
   LogLine(L"VIEWER: 推送索引 %u/%u 块（末可见块 %u）-> %s", st->prefixBlocks, st->estBlocks,
           st->lastVisible, ok ? L"成功" : L"失败");
   // 索引先到（页面会重置状态），巨型块表随后到，按块号生效
@@ -417,6 +416,42 @@ void OpenDoc(ViewerState* st) {
   ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
 }
 
+// ---- 右键菜单：编码子菜单 ----
+// Opus 在显示查看器右键菜单前发 DVPLUGINMSG_ADDCONTEXTMENU；返回的数组与字符串
+// 必须活到查看器销毁（这里存在 ViewerState 里，字符串是字面量）。
+constexpr UINT kEncMenuBase = 0x6D00;
+
+struct EncMenuEntry {
+  const wchar_t* label;
+  uint32_t codepage;
+};
+
+const EncMenuEntry kEncMenu[] = {
+    {L"自动", 0},           {L"UTF-8", 65001},       {L"UTF-16LE", 1200},
+    {L"UTF-16BE", 1201},    {L"GB18030", 54936},     {L"Shift_JIS", 932},
+    {L"EUC-JP", 20932},     {L"ISO-2022-JP", 50220}, {L"Big5", 950},
+    {L"EUC-KR", 949},       {L"Windows-1251", 1251}, {L"KOI8-R", 20866},
+    {L"Windows-1252", 1252}, {L"ISO-8859-1", 28591},
+};
+constexpr size_t kEncMenuCount = sizeof(kEncMenu) / sizeof(kEncMenu[0]);
+
+void BuildContextMenu(ViewerState* st) {
+  st->ctxMenu.clear();
+  DVPCONTEXTMENUITEMW parent = {};
+  parent.lpszLabel = const_cast<LPWSTR>(L"编码");
+  parent.dwFlags = DVPCMF_BEGINSUBMENU | (st->szFile[0] ? 0 : DVPCMF_DISABLED);
+  st->ctxMenu.push_back(parent);
+  for (size_t i = 0; i < kEncMenuCount; ++i) {
+    DVPCONTEXTMENUITEMW item = {};
+    item.lpszLabel = const_cast<LPWSTR>(kEncMenu[i].label);
+    item.dwFlags = DVPCMF_RADIOCHECK;
+    if (kEncMenu[i].codepage == st->encOverride) item.dwFlags |= DVPCMF_CHECKED;
+    if (i + 1 == kEncMenuCount) item.dwFlags |= DVPCMF_ENDSUBMENU;
+    item.uID = kEncMenuBase + static_cast<UINT>(i);
+    st->ctxMenu.push_back(item);
+  }
+}
+
 // ---- 宿主事件（由宿主线程 PostMessage 过来，运行在查看器自己的线程上） ----
 
 void OnHostReady(ViewerState* st) {
@@ -473,12 +508,15 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     return;
   }
 
-  if (type == L"encode") {
-    const uint32_t cp = static_cast<uint32_t>(_wtoi(rest.c_str()));
-    if (cp == st->encOverride) return;
-    st->encOverride = cp;
-    LogLine(L"VIEWER: 手动指定编码 cp=%u，重开文档", cp);
-    if (st->szFile[0]) OpenDoc(st);
+  if (type == L"ctxmenu") {
+    // 右键落在 WebView2 子窗口上，父窗口收不到 WM_CONTEXTMENU；转发给 Opus，
+    // 它才会显示查看器菜单并向我们索取「编码」子菜单。
+    if (st->hwndParent) {
+      POINT pt = {};
+      ::GetCursorPos(&pt);
+      ::SendMessageW(st->hwndParent, WM_CONTEXTMENU,
+                     reinterpret_cast<WPARAM>(st->hwndSelf), MAKELPARAM(pt.x, pt.y));
+    }
     return;
   }
 
@@ -780,7 +818,27 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     case DVPLUGINMSG_GETCAPABILITIES:
       // COPYSELECTION 必须报：不报 Opus 会认为本查看器不能复制，「复制」菜单项恒灰。
       return VPCAPABILITY_WANTFOCUS | VPCAPABILITY_SELECTALL | VPCAPABILITY_COPYSELECTION |
-             VPCAPABILITY_PRINT;
+             VPCAPABILITY_PRINT | VPCAPABILITY_ADDCONTEXTMENU;
+
+    case DVPLUGINMSG_ADDCONTEXTMENU: {
+      BuildContextMenu(st);
+      if (wParam) *reinterpret_cast<DWORD*>(wParam) = static_cast<DWORD>(st->ctxMenu.size());
+      return reinterpret_cast<LRESULT>(st->ctxMenu.data());
+    }
+
+    case WM_COMMAND: {
+      const UINT id = LOWORD(wParam);
+      if (id >= kEncMenuBase && id < kEncMenuBase + kEncMenuCount) {
+        const uint32_t cp = kEncMenu[id - kEncMenuBase].codepage;
+        if (cp != st->encOverride) {
+          st->encOverride = cp;
+          LogLine(L"VIEWER: 右键菜单指定编码 cp=%u，重开文档", cp);
+          if (st->szFile[0]) OpenDoc(st);
+        }
+        return 0;
+      }
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+    }
 
     case DVPLUGINMSG_PREVENTAUTOSIZE:
       return TRUE;
