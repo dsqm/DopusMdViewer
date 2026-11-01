@@ -4,9 +4,10 @@ setlocal
 
 rem ============================================================
 rem  DopusMdViewer - 手工构建脚本（x64 / UNICODE / 静态 CRT）
-rem  用法：双击本文件，产物 bin\DopusMdViewer.dll
+rem  用法：双击本文件，构建 web\ 前端并输出 bin\DopusMdViewer.dll
 rem  依赖：sdk\webview2（WebView2 SDK，随工程分发）
 rem        ..\SDK\Headers（Directory Opus 查看器插件头文件）
+rem        webbuild\node_modules（npm install 一次；构建用内置 esbuild.exe，不需要 node）
 rem ============================================================
 
 rem ---- 工具链版本：VS2022 或 Windows SDK 升级后改这两行 ----
@@ -26,16 +27,20 @@ set "DUMPBIN=%MSVC%\bin\Hostx64\x64\dumpbin.exe"
 set "W2INC=%PROJ%sdk\webview2\include"
 set "W2LIB=%PROJ%sdk\webview2\x64\WebView2LoaderStatic.lib"
 set "OPUSINC=%PROJ%..\SDK\Headers"
+set "ESBUILD=%PROJ%webbuild\node_modules\@esbuild\win32-x64\esbuild.exe"
 
 echo.
-echo [1/5] 检查工具链...
+echo [1/8] 检查工具链...
 if not exist "%CL_EXE%"        echo   找不到 cl.exe   %CL_EXE%        & goto :fail
 if not exist "%LINK_EXE%"      echo   找不到 link.exe %LINK_EXE%      & goto :fail
 if not exist "%RC%"        echo   找不到 rc.exe   %RC%        & goto :fail
 if not exist "%W2INC%\WebView2.h" echo   缺少 WebView2 SDK 头文件 %W2INC% & goto :fail
 if not exist "%W2LIB%"     echo   缺少 WebView2LoaderStatic.lib %W2LIB% & goto :fail
 if not exist "%OPUSINC%\viewer plugins.h" echo   缺少 Opus 插件头文件 %OPUSINC% & goto :fail
-if not exist "%PROJ%web\app.js" echo   缺少 web\app.js，先在 webbuild 跑 node build.mjs & goto :fail
+if not exist "%PROJ%webbuild\src\app.js" echo   缺少 webbuild\src\app.js & goto :fail
+if not exist "%PROJ%webbuild\src\mermaid.entry.mjs" echo   缺少 webbuild\src\mermaid.entry.mjs & goto :fail
+if not exist "%ESBUILD%" echo   缺少 esbuild，先在 webbuild 跑 npm install & goto :fail
+if not exist "%PROJ%webbuild\node_modules\katex\dist\katex.min.css" echo   缺少 KaTeX 资源，先在 webbuild 跑 npm install & goto :fail
 
 rem 源文件是 UTF-8 无 BOM 且含中文注释：/utf-8 不可省，否则按 936 解读会报一堆假语法错误
 set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%SDKINC%\winrt;%OPUSINC%;%W2INC%;%PROJ%third_party;%PROJ%third_party\compact_enc_det"
@@ -46,28 +51,41 @@ if not exist "bin" mkdir "bin"
 if not exist "build\obj" mkdir "build\obj"
 
 echo.
-echo [2/5] 编译源文件...
+echo [2/8] 构建前端...
+rem 参数与 webbuild\build.mjs 保持一致
+"%ESBUILD%" webbuild\src\app.js --bundle --outfile=web\app.js --format=iife --target=chrome110 --minify --legal-comments=none --charset=utf8 --log-level=warning
+if errorlevel 1 goto :fail
+"%ESBUILD%" webbuild\src\mermaid.entry.mjs --bundle --outfile=web\mermaid.js --format=iife --global-name=mermaid --target=chrome110 --minify --legal-comments=none --charset=utf8 --log-level=warning
+if errorlevel 1 goto :fail
+copy /y "webbuild\node_modules\katex\dist\katex.min.css" "web\katex.css" >nul
+if errorlevel 1 goto :fail
+if not exist "web\fonts" mkdir "web\fonts"
+xcopy /y /q "webbuild\node_modules\katex\dist\fonts\*.woff2" "web\fonts\" >nul
+if errorlevel 1 goto :fail
+
+echo.
+echo [3/8] 编译源文件...
 rem 通配符收集 src 下全部 .cpp，新增文件不用改脚本
 "%CL_EXE%" /nologo /c /MT /O2 /W4 /EHsc /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /utf-8 /DPCRE2_STATIC /Ithird_party\pcre2\include "/Fo:build\obj\\" "src\*.cpp"
 if errorlevel 1 goto :fail
 
 echo.
-echo [3/5] 编译版本资源...
+echo [4/8] 编译版本资源...
 "%RC%" /nologo "/fo%PROJ%build\obj\resource.res" "%PROJ%resource.rc"
 if errorlevel 1 goto :fail
 
 echo.
-echo [3b/5] PCRE2 ...
+echo [5/8] PCRE2 ...
 call "%PROJ%build-pcre2.bat"
 if errorlevel 1 goto :fail
 
 echo.
-echo [3c/5] CED (encoding detect) ...
+echo [6/8] CED (encoding detect) ...
 call "%PROJ%build-ced.bat"
 if errorlevel 1 goto :fail
 
 echo.
-echo [4/5] 链接 DLL...
+echo [7/8] 链接 DLL...
 "%LINK_EXE%" /nologo /DLL /MACHINE:X64 /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /OPT:REF /OPT:ICF ^
   "/DEF:%PROJ%DopusMdViewer.def" "/OUT:%PROJ%bin\DopusMdViewer.dll" "/IMPLIB:%PROJ%build\obj\DopusMdViewer.lib" ^
   "build\obj\*.obj" "build\obj\resource.res" "build\obj-ced\*.obj" "build\obj-pcre2\8\*.obj" "build\obj-pcre2\16\*.obj" "build\obj-pcre2\common\*.obj" ^
@@ -76,7 +94,7 @@ echo [4/5] 链接 DLL...
 if errorlevel 1 goto :fail
 
 echo.
-echo [5/5] 同步 web 资源...
+echo [8/8] 同步 web 资源...
 rem robocopy 返回 0-7 都算成功（1 表示有文件被复制），只有 >=8 才是失败
 robocopy "%PROJ%web" "%PROJ%bin\DopusMdViewer" /MIR /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 goto :fail
