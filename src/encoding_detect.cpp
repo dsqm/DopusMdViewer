@@ -227,4 +227,20 @@ EncodingInfo DetectEncoding(const void* data, size_t bytes) {
   return DetectEncodingEx(data, bytes, nullptr);
 }
 
+bool EncodingFromCodePage(uint32_t codepage, EncodingInfo* out) {
+  if (!out || codepage == 0) return false;
+  *out = EncodingInfo();
+  if (codepage == 65001) {
+    out->encoding = Encoding::Utf8;
+  } else if (codepage == 1200) {
+    out->encoding = Encoding::Utf16LE;
+  } else if (codepage == 1201) {
+    out->encoding = Encoding::Utf16BE;
+  } else {
+    out->encoding = Encoding::Legacy;
+    out->codepage = static_cast<uint16_t>(codepage);
+  }
+  return true;
+}
+
 }  // namespace doc

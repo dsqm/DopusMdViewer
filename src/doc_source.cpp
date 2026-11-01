@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "doc_index.h"
+#include "encoding_detect.h"
 #include "doc_regex.h"
 #include "doc_search.h"
 #include "config.h"
@@ -666,13 +667,19 @@ std::shared_ptr<const Snapshot> MakeSnapshot(std::unique_ptr<doc::IndexBuilder> 
 
 }  // namespace
 
-bool Open(HWND owner, const std::wstring& path, DocumentInfo* info, std::wstring* error) {
+bool Open(HWND owner, const std::wstring& path, DocumentInfo* info, std::wstring* error,
+          uint32_t overrideCodePage) {
   Close();
+
+  doc::EncodingInfo overrideEnc;
+  const bool hasOverride = doc::EncodingFromCodePage(overrideCodePage, &overrideEnc);
+  const doc::EncodingInfo* overridePtr = hasOverride ? &overrideEnc : nullptr;
 
   const uint64_t fileSize = FileSizeOf(path);
   auto builder = std::unique_ptr<doc::IndexBuilder>(new doc::IndexBuilder());
   std::wstring err;
-  if (!doc::ScanFile(path, kPrefixBytes, builder.get(), nullptr, nullptr, &err)) {
+  if (!doc::ScanFile(path, kPrefixBytes, builder.get(), nullptr, nullptr, &err, nullptr,
+                     overridePtr)) {
     if (error) *error = err.empty() ? L"读取失败" : err;
     LogLine(L"DOCSRC: 打开失败 %s (%s)", path.c_str(), err.c_str());
     return false;
@@ -733,10 +740,11 @@ bool Open(HWND owner, const std::wstring& path, DocumentInfo* info, std::wstring
           snap->enc.CodePage());
 
   if (!complete) {
-    std::thread([path, fileSize, docId, cancel]() {
+    std::thread([path, fileSize, docId, cancel, hasOverride, overrideEnc]() {
       auto full = std::unique_ptr<doc::IndexBuilder>(new doc::IndexBuilder());
       std::wstring err2;
-      if (!doc::ScanFile(path, 0, full.get(), nullptr, nullptr, &err2, cancel.get())) {
+      if (!doc::ScanFile(path, 0, full.get(), nullptr, nullptr, &err2, cancel.get(),
+                         hasOverride ? &overrideEnc : nullptr)) {
         if (!cancel->load()) LogLine(L"DOCSRC: 后台扫描失败 %s", err2.c_str());
         return;
       }

@@ -181,8 +181,10 @@ class IndexBuilder {
 
 // 便捷入口：打开文件、扫到 limitBytes（0 = 全文件）。
 // readMs / scanMs 分开计时，验收要区分 IO 与状态机。
+// overrideEnc 非空时跳过判码（手动指定编码）；BOM 只在编码相符时跳过。
 bool ScanFile(const std::wstring& path, uint64_t limitBytes, IndexBuilder* out,
               double* readMs, double* scanMs, std::wstring* error,
-              const std::atomic<bool>* cancel = nullptr);
+              const std::atomic<bool>* cancel = nullptr,
+              const EncodingInfo* overrideEnc = nullptr);
 
 }  // namespace doc

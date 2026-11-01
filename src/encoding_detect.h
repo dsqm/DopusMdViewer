@@ -37,4 +37,8 @@ struct DetectDebug {
 
 EncodingInfo DetectEncodingEx(const void* data, size_t bytes, DetectDebug* debug);
 
+// 手动指定编码：0 表示自动（返回 false）。65001/1200/1201 走 UTF-8/UTF-16，
+// 其余有效值统一进 Legacy；非法代码页留给 MultiByteToWideChar 自己失败。
+bool EncodingFromCodePage(uint32_t codepage, EncodingInfo* out);
+
 }  // namespace doc

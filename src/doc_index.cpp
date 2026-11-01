@@ -1134,7 +1134,7 @@ bool IndexBuilder::CanFeedMore() const {
 
 bool ScanFile(const std::wstring& path, uint64_t limitBytes, IndexBuilder* out,
               double* readMs, double* scanMs, std::wstring* error,
-              const std::atomic<bool>* cancel) {
+              const std::atomic<bool>* cancel, const EncodingInfo* overrideEnc) {
   if (error) error->clear();
   if (readMs) *readMs = 0;
   if (scanMs) *scanMs = 0;
@@ -1193,7 +1193,17 @@ bool ScanFile(const std::wstring& path, uint64_t limitBytes, IndexBuilder* out,
   head.resize(headLen);
 
   ::QueryPerformanceCounter(&t0);
-  const EncodingInfo enc = DetectEncoding(head.data(), headLen);
+  EncodingInfo enc;
+  if (overrideEnc) {
+    enc = *overrideEnc;
+    // BOM 只在和指定编码是同一种时跳过；否则把 BOM 字节当正文交给用户选的编码。
+    const EncodingInfo det = DetectEncoding(head.data(), headLen);
+    const bool same = det.encoding == enc.encoding &&
+                      (enc.encoding != Encoding::Legacy || det.codepage == enc.codepage);
+    enc.bomBytes = same ? det.bomBytes : 0;
+  } else {
+    enc = DetectEncoding(head.data(), headLen);
+  }
   if (enc.encoding == Encoding::Legacy && IsUtf32CodePage(enc.codepage)) {
     ::QueryPerformanceCounter(&t1);
     ::CloseHandle(h);

@@ -42,6 +42,7 @@ struct ViewerState {
   uint32_t estBlocks;
   uint32_t lastVisible;  // 最后一个非隐藏块（脚注区挂它后面）
   int encoding;
+  uint32_t encOverride;  // 手动指定的代码页，0 = 自动
   bool docComplete;  // 打开时索引已覆盖全文（没有后台扫描）
   LONGLONG qpcLoad;  // LOADW 起点，用于端到端耗时
   bool docOpened;    // doc_source 归本窗口
@@ -355,6 +356,8 @@ void PushIndex(ViewerState* st) {
       st->hwndSelf,
       msg::MakeIndex(kDocBase, st->prefixBlocks, st->estBlocks, st->ullFileSize, st->encoding,
                      st->lastVisible, st->docComplete));
+  // 页面据此回填编码下拉框（0 = 自动）
+  WebHostPost(st->hwndSelf, msg::MakeEnc(static_cast<int>(st->encOverride)));
   LogLine(L"VIEWER: 推送索引 %u/%u 块（末可见块 %u）-> %s", st->prefixBlocks, st->estBlocks,
           st->lastVisible, ok ? L"成功" : L"失败");
   // 索引先到（页面会重置状态），巨型块表随后到，按块号生效
@@ -380,7 +383,7 @@ void OpenDoc(ViewerState* st) {
 
   docsrc::DocumentInfo info;
   std::wstring err;
-  if (!docsrc::Open(st->hwndSelf, st->szFile, &info, &err)) {
+  if (!docsrc::Open(st->hwndSelf, st->szFile, &info, &err, st->encOverride)) {
     st->docOpened = false;
     const std::wstring name = UtilLeafName(st->szFile);
     const std::wstring why = err.empty() ? std::wstring(L"读取失败") : err;
@@ -470,6 +473,15 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     return;
   }
 
+  if (type == L"encode") {
+    const uint32_t cp = static_cast<uint32_t>(_wtoi(rest.c_str()));
+    if (cp == st->encOverride) return;
+    st->encOverride = cp;
+    LogLine(L"VIEWER: 手动指定编码 cp=%u，重开文档", cp);
+    if (st->szFile[0]) OpenDoc(st);
+    return;
+  }
+
   if (type == L"sel") {
     // 宿主决定「复制」是否可用时要问 TESTSELECTION，这里记下页面报的实况。
     const bool on = (rest == L"1");
@@ -544,6 +556,7 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
   st->qpcLoad = tLoad.QuadPart;
 
   st->docOpened = false;
+  st->encOverride = 0;  // 换文件回到自动判码
   docsrc::CloseIfOwner(st->hwndSelf);
 
   if (!st->hasHost) {
@@ -562,6 +575,7 @@ void HandleClear(ViewerState* st) {
   st->szFile[0] = L'\0';
   st->ullFileSize = 0;
   st->docOpened = false;
+  st->encOverride = 0;
   st->indexFullPending = false;
   docsrc::CloseIfOwner(st->hwndSelf);
 
@@ -885,6 +899,7 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->estBlocks = 0;
   st->lastVisible = 0;
   st->encoding = 0;
+  st->encOverride = 0;
   st->docComplete = false;
   st->qpcLoad = 0;
   st->docOpened = false;

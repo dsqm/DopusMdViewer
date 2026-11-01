@@ -47,6 +47,9 @@ std::wstring MakeClear();
 // 可以包含竖线与换行。
 std::wstring MakeDocError(const std::wstring& text);
 
+// enc|<代码页>：当前文档的编码选择（0 = 自动），页面据此回填下拉框。
+std::wstring MakeEnc(int codepage);
+
 // 解析一条来自页面的消息：切出第一个竖线前的类型，其余原样给出。
 bool SplitType(const std::wstring& frame, std::wstring* type, std::wstring* rest);
 

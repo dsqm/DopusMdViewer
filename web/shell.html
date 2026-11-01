@@ -24,6 +24,24 @@
 <div id="tools" class="ui mdv-ui" hidden>
   <button type="button" data-act="find">搜索</button>
   <button type="button" data-act="outline">大纲</button>
+  <label class="enc-pick" title="临时指定本文档的编码（不保存）">编码
+    <select id="enc-select" aria-label="编码">
+      <option value="0">自动</option>
+      <option value="65001">UTF-8</option>
+      <option value="1200">UTF-16LE</option>
+      <option value="1201">UTF-16BE</option>
+      <option value="54936">GB18030</option>
+      <option value="932">Shift_JIS</option>
+      <option value="20932">EUC-JP</option>
+      <option value="50220">ISO-2022-JP</option>
+      <option value="950">Big5</option>
+      <option value="949">EUC-KR</option>
+      <option value="1251">Windows-1251</option>
+      <option value="20866">KOI8-R</option>
+      <option value="1252">Windows-1252</option>
+      <option value="28591">ISO-8859-1</option>
+    </select>
+  </label>
 </div>
 
 <div id="find" class="ui mdv-ui" hidden>
@@ -46,6 +64,6 @@
 </aside>
 
 <script src="app.js"></script>
-<script src="docerror.js"></script>
+<script src="ui-ext.js"></script>
 </body>
 </html>

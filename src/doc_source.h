@@ -27,7 +27,9 @@ struct DocumentInfo {
 };
 
 // 打开文档并同步扫前缀。失败时返回 false，error 给一行原因。
-bool Open(HWND owner, const std::wstring& path, DocumentInfo* info, std::wstring* error);
+// overrideCodePage 非 0 时按该代码页重开（查看器内的临时覆盖，不写 config.json）。
+bool Open(HWND owner, const std::wstring& path, DocumentInfo* info, std::wstring* error,
+          uint32_t overrideCodePage = 0);
 void Close();
 bool IsOwner(HWND owner);
 HWND Owner();

@@ -543,6 +543,25 @@ pre.mermaid-src {
 
 #tools[hidden] { display: none; }
 
+#tools .enc-pick {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--md-fg-muted);
+  cursor: pointer;
+}
+
+#tools select {
+  font: inherit;
+  max-width: 9em;
+  padding: 2px 4px;
+  border: 1px solid var(--md-border);
+  border-radius: calc(var(--md-radius) * 0.7);
+  background: var(--md-outline-bg);
+  color: var(--md-outline-fg);
+  cursor: pointer;
+}
+
 #tools button,
 #find button,
 .outline-head button {
