@@ -29,6 +29,18 @@
   --md-table-head-bg: #073642;
   --md-table-zebra: #03303b;
 
+  /* —— 提示框 —— */
+  --md-alert-note: #268bd2;
+  --md-alert-note-bg: rgba(38, 139, 210, 0.16);
+  --md-alert-tip: #859900;
+  --md-alert-tip-bg: rgba(133, 153, 0, 0.18);
+  --md-alert-important: #6c71c4;
+  --md-alert-important-bg: rgba(108, 113, 196, 0.18);
+  --md-alert-warning: #b58900;
+  --md-alert-warning-bg: rgba(181, 137, 0, 0.18);
+  --md-alert-caution: #dc322f;
+  --md-alert-caution-bg: rgba(220, 50, 47, 0.18);
+
   --md-scrollbar: #0f4551;
   --md-scrollbar-hover: #1a5b69;
   --md-outline-bg: #002b36;

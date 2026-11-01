@@ -4,6 +4,7 @@ import taskLists from 'markdown-it-task-lists'
 import sub from 'markdown-it-sub'
 import sup from 'markdown-it-sup'
 import mark from 'markdown-it-mark'
+import { alert as alertPlugin } from '@mdit/plugin-alert'
 import { setupMath, katexEngine, KATEX_OPTIONS } from './texcompat.js'
 import DOMPurify from 'dompurify'
 import hljs from 'highlight.js/lib/core'
@@ -109,6 +110,16 @@ md.use(deflist)
   .use(mark)
 
 setupMath(md)
+
+md.use(alertPlugin, {
+  alertNames: ['note', 'tip', 'important', 'warning', 'caution'],
+  deep: true,
+  titleRenderer: (tokens, idx) => {
+    const name = tokens[idx].markup || ''
+    return '<p class="markdown-alert-title">' +
+      escapeHtml(name.charAt(0).toUpperCase() + name.slice(1)) + '</p>\n'
+  },
+})
 
 // [^label] → 上标角标。编号由文末脚注区的定义顺序给定；定义还没到时留原文。
 md.inline.ruler.before('link', 'mdv_footnote_ref', (state, silent) => {

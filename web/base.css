@@ -420,6 +420,50 @@ blockquote {
 blockquote > *:first-child { margin-top: 0; }
 blockquote > *:last-child { margin-bottom: 0; }
 
+/* ---------------- GitHub 提示框 ---------------- */
+
+.markdown-alert {
+  margin: var(--md-space-block) 0;
+  padding: 0.6em 1em;
+  border-left: 3px solid var(--md-alert-accent);
+  border-radius: var(--md-radius);
+  background: var(--md-alert-bg);
+}
+
+.markdown-alert > *:first-child { margin-top: 0; }
+.markdown-alert > *:last-child { margin-bottom: 0; }
+
+.markdown-alert .markdown-alert-title {
+  margin: 0 0 0.35em;
+  font-weight: 600;
+  color: var(--md-alert-accent);
+}
+
+.markdown-alert-note {
+  --md-alert-accent: var(--md-alert-note);
+  --md-alert-bg: var(--md-alert-note-bg);
+}
+
+.markdown-alert-tip {
+  --md-alert-accent: var(--md-alert-tip);
+  --md-alert-bg: var(--md-alert-tip-bg);
+}
+
+.markdown-alert-important {
+  --md-alert-accent: var(--md-alert-important);
+  --md-alert-bg: var(--md-alert-important-bg);
+}
+
+.markdown-alert-warning {
+  --md-alert-accent: var(--md-alert-warning);
+  --md-alert-bg: var(--md-alert-warning-bg);
+}
+
+.markdown-alert-caution {
+  --md-alert-accent: var(--md-alert-caution);
+  --md-alert-bg: var(--md-alert-caution-bg);
+}
+
 /* ---------------- 表格 ---------------- */
 
 table {

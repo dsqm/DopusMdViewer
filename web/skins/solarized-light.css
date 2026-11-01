@@ -29,6 +29,18 @@
   --md-table-head-bg: #eee8d5;
   --md-table-zebra: #f5efdd;
 
+  /* —— 提示框 —— */
+  --md-alert-note: #268bd2;
+  --md-alert-note-bg: #e9f1f5;
+  --md-alert-tip: #859900;
+  --md-alert-tip-bg: #eef2dc;
+  --md-alert-important: #6c71c4;
+  --md-alert-important-bg: #ecebf6;
+  --md-alert-warning: #b58900;
+  --md-alert-warning-bg: #f7f0d7;
+  --md-alert-caution: #dc322f;
+  --md-alert-caution-bg: #f8e5e2;
+
   --md-scrollbar: #d6cfb8;
   --md-scrollbar-hover: #c4bda6;
   --md-outline-bg: #fdf6e3;

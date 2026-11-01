@@ -1,6 +1,6 @@
 /* name: GitHub Light
    id: light — 默认皮肤，同时是皮肤模板。
-   27 个变量全部列出；只想要配色时改这里就够，
+   37 个变量全部列出；只想要配色时改这里就够，
    要改排版再往下写选择器。字体不归皮肤：font-family / font-size /
    line-height / 行宽由 <style id="fx"> 最后写出并压住。 */
 
@@ -35,6 +35,18 @@
   --md-quote-fg: #57606a;
   --md-table-head-bg: #f6f8fa;
   --md-table-zebra: #f6f8fa;
+
+  /* —— 提示框 —— */
+  --md-alert-note: #0969da;
+  --md-alert-note-bg: #ddf4ff;
+  --md-alert-tip: #1a7f37;
+  --md-alert-tip-bg: #dafbe1;
+  --md-alert-important: #8250df;
+  --md-alert-important-bg: #fbefff;
+  --md-alert-warning: #9a6700;
+  --md-alert-warning-bg: #fff8c5;
+  --md-alert-caution: #cf222e;
+  --md-alert-caution-bg: #ffebe9;
 
   /* —— 滚动条与界面件 —— */
   --md-scrollbar: #c9d1d9;
