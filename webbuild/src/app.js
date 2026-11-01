@@ -384,6 +384,7 @@ const V = {
   windowEnd: -1,
   stageBase: 0,
   topsDirty: true,
+  topsFrom: 0,            // 高度变化后，从这一块起需要重算 top
   resident: new Map(),
   pool: [],
   bigPool: [],
@@ -399,6 +400,9 @@ const V = {
   raf: 0,
   lastTick: 0,
   lastWheelAt: 0,
+  trackH: 0,             // 滚动条轨道高度缓存（0 = 需要重读）
+  thumbH: '',
+  thumbTop: '',
   initializing: false,
   indexAt: 0,
   drag: null,
@@ -559,6 +563,9 @@ function rebuildFenwick() {
   }
   // fw[n] 只是树节点，不是前缀和；n 不是 2 的幂时会少算一大截。
   V.totalH = topPad() + fwSum(n) + bottomPad()
+  // 重建意味着一批高度同时变了（首屏、字号、巨型块布局），所有块的位置都要重算
+  V.topsDirty = true
+  V.topsFrom = 0
 }
 
 function offsetToBlock(off) {
@@ -591,7 +598,12 @@ function setHeight(i, h) {
   if (delta === 0) return
   fwAdd(i, delta)
   V.totalH += delta
-  V.topsDirty = true
+  if (V.topsDirty) {
+    if (i < V.topsFrom) V.topsFrom = i
+  } else {
+    V.topsDirty = true
+    V.topsFrom = i
+  }
   if (V.anchorSet && i < V.anchorId) {
     // 锚点之上变高/变矮：把滚动位置一起挪，屏幕内容不动
     V.off = Math.max(0, V.off + delta)
@@ -944,7 +956,7 @@ function processNetImages(root) {
   }
 }
 
-function renderItem(item) {
+function renderItem(item, pendingMeasure) {
   const i = item.i
   if (!V.active || i >= V.blockCount || item.docId !== V.docId) return
 
@@ -975,7 +987,6 @@ function renderItem(item) {
   const kind = KIND_NAMES[item.flags & 0x0f] || 'none'
   rec.el.className = 'blk blk--' + kind + (i === 0 ? ' blk--first' : '')
   rec.el.style.top = (pos(i) - V.stageBase) + 'px'
-  V.topsDirty = true
   rec.text = item.text
   rec.flags = item.flags
   let html = renderBlockHtml(item.text, item.flags, i)
@@ -983,7 +994,8 @@ function renderItem(item) {
   if (i === V.lastVisible && FOOT.html) html += FOOT.html
   rec.el.innerHTML = html
   processNetImages(rec.el)
-  setHeight(i, rec.el.offsetHeight)
+  if (pendingMeasure) pendingMeasure.push(i)
+  else setHeight(i, rec.el.offsetHeight)
   if (V.flashBlock === i) {
     V.flashBlock = -1
     animateBlock(rec.el)
@@ -1252,7 +1264,6 @@ function recycleOutside(a, b) {
       releaseBig(rec)
     } else {
       if (resizeObserver) resizeObserver.unobserve(rec.el)
-      rec.el.innerHTML = ''
       rec.el.style.top = ''
       if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
       V.pool.push(rec.el)
@@ -1370,13 +1381,19 @@ function pump() {
   }
   // 按时间片而不是块数截止：单个大块（数学密集）可能就要几十毫秒
   const t0 = performance.now()
+  const touched = []
   let n = 0
   while (V.queue.length && n < 10) {
     const item = V.queue.shift()
-    renderItem(item)
+    renderItem(item, touched)
     V.pending.delete(item.i)
     n++
     if (performance.now() - t0 >= 7) break
+  }
+  // 先写完这一批 DOM 再统一量高：交替「innerHTML → offsetHeight」会让每块各触发一次同步布局
+  for (const i of touched) {
+    const rec = V.resident.get(i)
+    if (rec && !rec.big && rec.el) setHeight(i, rec.el.offsetHeight)
   }
   if (V.queue.length) schedulePump()
   schedulePlace()
@@ -1411,17 +1428,18 @@ function place() {
   if (a !== V.windowStart || b !== V.windowEnd || V.pinsDirty) {
     V.windowStart = a
     V.windowEnd = b
-    V.stageBase = anchor
     recycleOutside(a, b)
     V.pinsDirty = false
     // 跳跃滚动时队列里会攒下大量已经过时的窗口块，别让它们挡住当前窗口
     if (V.queue.length) {
       V.queue = V.queue.filter((it) => it.i >= a && it.i <= b)
     }
-    V.topsDirty = true
-  } else if (Math.abs(anchor - V.stageBase) > V.vh * 4) {
+  }
+  // 基点只在离开 4 屏时重定一次；窗口本身移动不改变块间相对位置，不需要刷全部 top
+  if (Math.abs(anchor - V.stageBase) > V.vh * 4) {
     V.stageBase = anchor
     V.topsDirty = true
+    V.topsFrom = 0
   }
 
   docEl.style.transform = 'translate3d(0,' + (-(V.off - V.stageBase)).toFixed(2) + 'px,0)'
@@ -1434,8 +1452,9 @@ function place() {
     }
   }
   if (V.topsDirty) {
+    const from = V.topsFrom
     for (const [i, rec] of V.resident) {
-      if (rec.el) rec.el.style.top = (pos(i) - V.stageBase) + 'px'
+      if (i >= from && rec.el) rec.el.style.top = (pos(i) - V.stageBase) + 'px'
     }
     V.topsDirty = false
   }
@@ -1455,13 +1474,17 @@ function updateScrollbar() {
     return
   }
   sbEl.hidden = false
-  const trackH = sbEl.clientHeight
+  // 轨道高度只在窗口尺寸变化后重读：每帧读 clientHeight 会强制同步布局
+  if (V.trackH <= 0) V.trackH = sbEl.clientHeight
+  const trackH = V.trackH
   if (trackH <= 0) return
   const thumbH = Math.max(28, Math.min(trackH, (V.vh / V.totalH) * trackH))
   const maxTop = Math.max(0, trackH - thumbH)
   const top = scrollable > 0 ? (V.off / scrollable) * maxTop : 0
-  thumbEl.style.height = thumbH.toFixed(1) + 'px'
-  thumbEl.style.transform = 'translateY(' + top.toFixed(1) + 'px)'
+  const h = thumbH.toFixed(1) + 'px'
+  const tr = 'translateY(' + top.toFixed(1) + 'px)'
+  if (h !== V.thumbH) { thumbEl.style.height = h; V.thumbH = h }
+  if (tr !== V.thumbTop) { thumbEl.style.transform = tr; V.thumbTop = tr }
 }
 
 /* ---------------- 首屏与索引 ---------------- */
@@ -3600,6 +3623,7 @@ function bindInput() {
   window.addEventListener('resize', () => {
     if (!V.active) return
     V.vh = window.innerHeight
+    V.trackH = 0
     place()
   })
   thumbEl.addEventListener('pointerdown', onThumbDown)

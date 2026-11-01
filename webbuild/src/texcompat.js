@@ -43,7 +43,9 @@ export const KATEX_OPTIONS = {
   throwOnError: false,
   strict: false,
   trust: false,
-  output: 'htmlAndMathml',
+  // 只要 HTML：MathML 副本会让每块 DOM 翻倍，滚动时挂载成本高一半。
+  // 复制走 mathText()（单独按 mathml 渲染取文本），不受影响。
+  output: 'html',
   macros: TEX_MACROS,
 }
 
@@ -165,10 +167,19 @@ export function prepareTex(tex) {
     .replace(/\\end\{(multline\*?)\}/g, '\\end{gathered}'))
 }
 
+function texLabel(src) {
+  return src.replace(/\s+/g, ' ').trim()
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 // 插件通过 engine.renderToString 调用，包一层让所有公式走同一套改写
 export const katexEngine = {
   renderToString(tex, opts) {
-    return katex.renderToString(prepareTex(tex), opts)
+    const src = prepareTex(tex)
+    // HTML 输出不带 MathML，给根节点补 aria-label，读屏软件至少能读到 TeX 源
+    return katex.renderToString(src, opts).replace('<span class="katex"',
+      '<span class="katex" role="math" aria-label="' + texLabel(src) + '"')
   },
 }
 
