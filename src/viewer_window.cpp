@@ -35,7 +35,6 @@ struct ViewerState {
   HWND hwndParent;
   HANDLE hAbortEvent;
   DWORD dwCreateFlags;
-  UINT uMsgSeq;
   wchar_t szFile[MAX_PATH * 2];
   ULONGLONG ullFileSize;
   uint32_t prefixBlocks;
@@ -83,83 +82,6 @@ void UnregisterViewer(HWND hwnd) {
       g_viewers.erase(g_viewers.begin() + i);
       return;
     }
-  }
-}
-
-struct MsgEntry {
-  UINT uMsg;
-  const wchar_t* pszName;
-};
-
-// 只留名字表，方便把日志里的消息号翻成人能读的名字。
-const MsgEntry kPluginMessages[] = {
-    {DVPLUGINMSG_LOADA, L"LOADA"},
-    {DVPLUGINMSG_LOADW, L"LOADW"},
-    {DVPLUGINMSG_LOADSTREAMA, L"LOADSTREAMA"},
-    {DVPLUGINMSG_LOADSTREAMW, L"LOADSTREAMW"},
-    {DVPLUGINMSG_GETCAPABILITIES, L"GETCAPABILITIES"},
-    {DVPLUGINMSG_RESIZE, L"RESIZE"},
-    {DVPLUGINMSG_SELECTALL, L"SELECTALL"},
-    {DVPLUGINMSG_COPYSELECTION, L"COPYSELECTION"},
-    {DVPLUGINMSG_PRINT, L"PRINT"},
-    {DVPLUGINMSG_REDRAW, L"REDRAW"},
-    {DVPLUGINMSG_SETABORTEVENT, L"SETABORTEVENT"},
-    {DVPLUGINMSG_CLEAR, L"CLEAR"},
-    {DVPLUGINMSG_REINITIALIZE, L"REINITIALIZE"},
-    {DVPLUGINMSG_SETZOOM, L"SETZOOM"},
-    {DVPLUGINMSG_GETZOOMFACTOR, L"GETZOOMFACTOR"},
-    {DVPLUGINMSG_TRANSLATEACCEL, L"TRANSLATEACCEL"},
-    {DVPLUGINMSG_ISDLGMESSAGE, L"ISDLGMESSAGE"},
-    {DVPLUGINMSG_PREVENTAUTOSIZE, L"PREVENTAUTOSIZE"},
-    {DVPLUGINMSG_MOUSEWHEEL, L"MOUSEWHEEL"},
-};
-
-const MsgEntry kWindowMessages[] = {
-    {WM_CREATE, L"WM_CREATE"},
-    {WM_DESTROY, L"WM_DESTROY"},
-    {WM_SIZE, L"WM_SIZE"},
-    {WM_NCDESTROY, L"WM_NCDESTROY"},
-    {WM_SETFOCUS, L"WM_SETFOCUS"},
-    {WM_KILLFOCUS, L"WM_KILLFOCUS"},
-    {WM_ERASEBKGND, L"WM_ERASEBKGND"},
-    {WM_PAINT, L"WM_PAINT"},
-    {WM_TIMER, L"WM_TIMER"},
-    {WM_MOUSEWHEEL, L"WM_MOUSEWHEEL"},
-    {WM_KEYDOWN, L"WM_KEYDOWN"},
-    {WM_CHAR, L"WM_CHAR"},
-    {WM_SETCURSOR, L"WM_SETCURSOR"},
-    {WM_DPICHANGED, L"WM_DPICHANGED"},
-    {WM_MDV_INDEX_FULL, L"WM_MDV_INDEX_FULL"},
-    {WM_MDV_CONFIG_CHANGED, L"WM_MDV_CONFIG_CHANGED"},
-};
-
-const wchar_t* LookupName(const MsgEntry* pTable, size_t cEntries, UINT uMsg) {
-  for (size_t i = 0; i < cEntries; ++i) {
-    if (pTable[i].uMsg == uMsg) return pTable[i].pszName;
-  }
-  return nullptr;
-}
-
-const wchar_t* MsgName(UINT uMsg) {
-  const wchar_t* psz = LookupName(kPluginMessages, ARRAYSIZE(kPluginMessages), uMsg);
-  if (psz) return psz;
-  psz = LookupName(kWindowMessages, ARRAYSIZE(kWindowMessages), uMsg);
-  return psz ? psz : L"UNKNOWN";
-}
-
-// 鼠标移动与命中测试每秒能来上百条，而每条日志都要开一次文件。它们对排查没有
-// 价值，直接不记——鼠标掠过预览窗格时曾经一次会话刷出三千多行。
-bool IsNoisyMessage(UINT uMsg) {
-  switch (uMsg) {
-    case WM_MOUSEMOVE:
-    case WM_SETCURSOR:
-    case WM_NCHITTEST:
-    case WM_MOUSEACTIVATE:
-    case WM_GETDLGCODE:
-    case WM_PRINTCLIENT:
-      return true;
-    default:
-      return false;
   }
 }
 
@@ -532,7 +454,9 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
       LogLine(L"VIEWER: 首屏渲染完成 %s（LOADW 起 %.1fms）", detail.c_str(), total);
       LogMemory(L"首屏后");
       SetStatus(st, L"%s — %llu B", UtilLeafName(st->szFile), st->ullFileSize);
-    } else {
+    } else if (kind.find(L"error") != std::wstring::npos || kind == L"csp" ||
+               kind == L"skin-invalid" || kind == L"mermaid-unavailable" ||
+               kind == L"anchor-missing") {
       LogLine(L"VIEWER: 页面事件 \"%s\" %s", kind.c_str(), detail.c_str());
     }
     return;
@@ -933,20 +857,12 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
     }
   }
 
-  if (st) {
-    ++st->uMsgSeq;
-    if (!IsNoisyMessage(uMsg)) {
-      LogLine(L"WND %p MSG #%u %s (0x%04X)", hwnd, st->uMsgSeq, MsgName(uMsg), uMsg);
-    }
-  }
-
   if (uMsg == WM_NCDESTROY) {
     UnregisterViewer(hwnd);
     if (st) {
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
       if (st->fontName) ::DeleteObject(st->fontName);
       if (st->fontHint) ::DeleteObject(st->fontHint);
-      LogLine(L"WND %p WM_NCDESTROY 释放状态（共 %u 条消息）", hwnd, st->uMsgSeq);
       delete st;
     }
     ::InterlockedDecrement(&g_liveViewers);
@@ -1008,7 +924,6 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->hwndParent = hWndParent;
   st->hAbortEvent = nullptr;
   st->dwCreateFlags = dwFlags;
-  st->uMsgSeq = 0;
   st->szFile[0] = L'\0';
   st->ullFileSize = 0;
   st->prefixBlocks = 0;

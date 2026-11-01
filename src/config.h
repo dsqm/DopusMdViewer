@@ -33,6 +33,8 @@ struct Config {
   bool renderHighlight;
   bool renderInlineHtml;
   bool renderLocalImages;
+  // 记录诊断日志。默认关闭。
+  bool enableLog;
   // 启动后在后台预热 WebView2（Opus 窗口关闭时释放）。默认关闭。
   bool prewarm;
   // 预热关闭时，最后一次预览结束后空闲多少分钟释放 WebView2；0 = 不释放。

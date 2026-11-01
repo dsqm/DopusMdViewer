@@ -60,6 +60,7 @@ const wchar_t* const kZh[kCount] = {
     /* Prewarm          */ L"启动时预热预览引擎（Opus 窗口关闭时释放）",
     /* IdleRelease      */ L"关闭预热后空闲释放",
     /* IdleUnit         */ L"分钟（0 = 不释放）",
+    /* LogEnabled       */ L"记录日志",
     /* OpenLog          */ L"打开日志目录",
     /* OpenConfig       */ L"打开配置根目录",
     /* OpenSkins        */ L"打开皮肤目录",

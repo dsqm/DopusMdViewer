@@ -74,6 +74,7 @@ enum {
   kIdIdleSpin,
   kIdConfigPath = 3410,
   kIdConfigHelp,
+  kIdEnableLog,
   kIdRestore = 3500,
   kIdApply,
   kIdOk,
@@ -644,6 +645,7 @@ void LoadUiFromStaged(DialogState* st) {
   ::CheckRadioButton(st->hwnd, kIdNetDoc, kIdNetOff, netId);
   ::CheckDlgButton(st->hwnd, kIdOutside,
                    st->staged.allowOutsideImages ? BST_CHECKED : BST_UNCHECKED);
+  ::CheckDlgButton(st->hwnd, kIdEnableLog, st->staged.enableLog ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdPrewarm, st->staged.prewarm ? BST_CHECKED : BST_UNCHECKED);
   ::StringCchPrintfW(buf, ARRAYSIZE(buf), L"%d", st->staged.idleReleaseMinutes);
   ::SetWindowTextW(st->hIdle, buf);
@@ -684,6 +686,7 @@ void ReadUiIntoStaged(DialogState* st) {
     st->staged.netImageMode = 1;
   }
   st->staged.allowOutsideImages = ::IsDlgButtonChecked(st->hwnd, kIdOutside) == BST_CHECKED;
+  st->staged.enableLog = ::IsDlgButtonChecked(st->hwnd, kIdEnableLog) == BST_CHECKED;
   st->staged.prewarm = ::IsDlgButtonChecked(st->hwnd, kIdPrewarm) == BST_CHECKED;
   const UINT idle = ::GetDlgItemInt(st->hwnd, kIdIdle, &ok, FALSE);
   if (ok && idle <= 1440) st->staged.idleReleaseMinutes = static_cast<int>(idle);
@@ -930,6 +933,8 @@ void BuildUi(DialogState* st) {
              140, 26, kIdOpenConfig);
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 302, y,
              130, 26, kIdOpenSkins);
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::LogEnabled), BS_AUTOCHECKBOX | WS_TABSTOP, 440,
+             y, 108, 26, kIdEnableLog);
 
   y = 266;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolder), SS_LEFT, 16, y, 200, 20, 0);
@@ -1077,6 +1082,7 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdNetHost:
     case kIdNetOff:
     case kIdOutside:
+    case kIdEnableLog:
       if (code == BN_CLICKED) SetDirty(st, true);
       return;
 

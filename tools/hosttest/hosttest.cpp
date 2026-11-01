@@ -16,6 +16,7 @@
 
 #include <viewer plugins.h>  // 在 ..\SDK\Headers，走 INCLUDE
 
+#include "../../src/config.h"
 #include "../../src/viewer_window.h"
 #include "../../src/settings_dlg.h"
 #include "../../src/webhost.h"
@@ -653,6 +654,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
 
   g_hInst = hInstance;
   ExtractArgs(lpCmdLine);
+  ConfigGet();  // 让 hosttest 也遵守 enableLog
 
   // 模拟 InitEx 之后的延迟预热（预热在宿主线程里再等 3 秒）。
   if (g_prewarm) WebHostPrewarm(true, 3);

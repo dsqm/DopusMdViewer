@@ -758,10 +758,8 @@ void CreateController() {
                         }
                       }
 
-                      static int s_requests = 0;
-                      if (s_requests < 200) {
-                        ++s_requests;
-                        LogLine(L"WEBHOST: 资源请求 %s -> %d/%zu B", uri.c_str(), status,
+                      if (status >= 400) {
+                        LogLine(L"WEBHOST: 资源请求失败 %s -> %d/%zu B", uri.c_str(), status,
                                 body.size());
                       }
 

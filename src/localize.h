@@ -64,6 +64,7 @@ enum class Str : int {
   Prewarm,
   IdleRelease,
   IdleUnit,
+  LogEnabled,
   OpenLog,
   OpenConfig,
   OpenSkins,

@@ -44,6 +44,7 @@ void SetDefaults(Config* c) {
   c->renderHighlight = true;
   c->renderInlineHtml = true;
   c->renderLocalImages = true;
+  c->enableLog = false;
   c->prewarm = false;
   c->idleReleaseMinutes = 3;
 }
@@ -85,6 +86,10 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
 
   if (root.contains("allowOutsideImages") && root["allowOutsideImages"].is_boolean()) {
     c->allowOutsideImages = root["allowOutsideImages"].get<bool>();
+  }
+
+  if (root.contains("enableLog") && root["enableLog"].is_boolean()) {
+    c->enableLog = root["enableLog"].get<bool>();
   }
 
   if (root.contains("prewarm") && root["prewarm"].is_boolean()) {
@@ -205,9 +210,10 @@ const Config& ConfigLoad(void) {
       return g_config;
     }
     ApplyJson(root, &g_config);
-    LogLine(L"CONFIG: 已读取 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem", path,
+    LogSetEnabled(g_config.enableLog);
+    LogLine(L"CONFIG: 已读取 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem log=%d", path,
             g_config.skin.c_str(), g_config.font.sizePx, g_config.font.lineHeight,
-            g_config.font.measureEm);
+            g_config.font.measureEm, g_config.enableLog ? 1 : 0);
   } catch (const std::exception& e) {
     // 读坏就用默认值，不打扰用户
     LogLine(L"CONFIG: 解析失败（%hs），用默认值", e.what());
@@ -305,6 +311,7 @@ bool ConfigSave(const Config& input) {
   root["netImageConfirm"] =
       c.netImageMode == 0 ? "off" : (c.netImageMode == 2 ? "doc" : "host");
   root["allowOutsideImages"] = c.allowOutsideImages;
+  root["enableLog"] = c.enableLog;
   root["prewarm"] = c.prewarm;
   root["idleReleaseMinutes"] = c.idleReleaseMinutes;
   nlohmann::json render;
@@ -320,11 +327,13 @@ bool ConfigSave(const Config& input) {
     LogLine(L"CONFIG: 写入失败 %s", path);
     return false;
   }
+  LogSetEnabled(c.enableLog);
   LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
-          L"net=%d outside=%d render=%d%d%d%d%d prewarm=%d idle=%d",
+          L"net=%d outside=%d render=%d%d%d%d%d log=%d prewarm=%d idle=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
           c.netImageMode, c.allowOutsideImages ? 1 : 0, c.renderMermaid ? 1 : 0,
           c.renderKatex ? 1 : 0, c.renderHighlight ? 1 : 0, c.renderInlineHtml ? 1 : 0,
-          c.renderLocalImages ? 1 : 0, c.prewarm ? 1 : 0, c.idleReleaseMinutes);
+          c.renderLocalImages ? 1 : 0, c.enableLog ? 1 : 0, c.prewarm ? 1 : 0,
+          c.idleReleaseMinutes);
   return true;
 }

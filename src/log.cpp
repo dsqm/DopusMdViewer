@@ -1,6 +1,8 @@
 // log.cpp - append-only diagnostic log.
 //
 // Design notes:
+//  * Closed by default. Until LogSetEnabled(true), LogLine returns without
+//    touching the file system.
 //  * The file is opened / appended / closed per line. A viewer plugin can be
 //    unloaded at any moment, and a dropped buffered line is worse than a slow one.
 //  * A single SRWLOCK serialises writers; SRWLOCK_INIT needs no DllMain work,
@@ -9,6 +11,7 @@
 
 #include "log.h"
 
+#include <atomic>
 #include <stdarg.h>
 #include <strsafe.h>
 
@@ -19,11 +22,12 @@ namespace {
 // The log lives next to the WebView2 user data, under the data root from
 // UtilDataDirInto (which may be overridden by a Folder Alias). %TEMP% is only
 // the fallback for the case where that root is unavailable.
-const int kMaxLogBytes = 2 * 1024 * 1024;
+const int kMaxLogBytes = 1024 * 1024;
 
 SRWLOCK g_lock = SRWLOCK_INIT;
 wchar_t g_logPath[MAX_PATH];
 bool g_pathReady = false;
+std::atomic<bool> g_enabled{false};
 
 // Best effort; ERROR_ALREADY_EXISTS is the normal case and is not an error.
 // 必须逐级创建：全新机器上 User Data 下的目录树一层都不存在。
@@ -110,19 +114,12 @@ bool WriteRaw(const char* data, DWORD size) {
 
 }  // namespace
 
-void LogEnsureInit(void) {
-  ::AcquireSRWLockExclusive(&g_lock);
-  EnsurePathLocked();
-  ::ReleaseSRWLockExclusive(&g_lock);
-}
-
-const wchar_t* LogLastPath(void) {
-  LogEnsureInit();
-  return g_logPath;
+void LogSetEnabled(bool enabled) {
+  g_enabled.store(enabled, std::memory_order_relaxed);
 }
 
 void LogLine(const wchar_t* fmt, ...) {
-  LogEnsureInit();
+  if (!g_enabled.load(std::memory_order_relaxed)) return;
 
   wchar_t body[1024];
   body[0] = L'\0';

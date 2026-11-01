@@ -108,13 +108,15 @@ BOOL WINAPI DllMain(HINSTANCE hInstance, DWORD dwReason, LPVOID lpReserved) {
 
 extern "C" BOOL DVP_Init(void) {
   const LONG n = ::InterlockedIncrement(&g_initCalls);
-  LogLine(L"=== DVP_Init #%ld (pid=%lu) log=%s ===", n,
-          static_cast<unsigned long>(::GetCurrentProcessId()), LogLastPath());
+  ConfigGet();  // 先应用 enableLog，再写第一行日志
+  LogLine(L"=== DVP_Init #%ld (pid=%lu) ===", n,
+          static_cast<unsigned long>(::GetCurrentProcessId()));
   return TRUE;
 }
 
 extern "C" BOOL DVP_InitEx(LPDVPINITEXDATA pInitExData) {
   const LONG n = ::InterlockedIncrement(&g_initExCalls);
+  ConfigGet();  // DVP_Init 未调用时也要让日志开关先生效
 
   if (!pInitExData) {
     LogLine(L"=== DVP_InitEx #%ld 参数为 NULL ===", n);
