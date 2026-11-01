@@ -71,6 +71,8 @@ enum {
   kIdPrewarm,
   kIdIdle,
   kIdIdleSpin,
+  kIdConfigPath = 3410,
+  kIdConfigHelp,
   kIdRestore = 3500,
   kIdApply,
   kIdOk,
@@ -829,6 +831,17 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 302, y,
              130, 26, kIdOpenSkins);
 
+  y = 270;
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolder), SS_LEFT, 16, y, 200, 20, 0);
+  std::wstring dataDir = UtilDataDir();
+  if (dataDir.empty()) dataDir = loc::T(loc::Str::NoFolder);
+  AddControl(st, 3, L"STATIC", dataDir.c_str(), SS_LEFT | SS_PATHELLIPSIS, 16, y + 22, 452, 20,
+             kIdConfigPath);
+  AddControl(st, 3, L"BUTTON", L"?", BS_PUSHBUTTON | WS_TABSTOP, 478, y + 20, 26, 24,
+             kIdConfigHelp);
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolderPermHint), SS_LEFT, 16, y + 50, 520,
+             40, 0);
+
   // 底部按钮
   AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 16, 392,
              100, 28, kIdRestore);
@@ -957,6 +970,14 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdOpenSkins:
       OpenFolder(st->hwnd, SkinUserDir());
       return;
+    case kIdConfigHelp: {
+      const std::wstring dir = UtilDataDir();
+      wchar_t msg[1024];
+      ::StringCchPrintfW(msg, ARRAYSIZE(msg), loc::T(loc::Str::ConfigFolderHelp), kDataAliasName,
+                         dir.empty() ? loc::T(loc::Str::NoFolder) : dir.c_str());
+      ::MessageBoxW(st->hwnd, msg, L"DopusMdViewer", MB_OK | MB_ICONINFORMATION);
+      return;
+    }
 
     default:
       return;

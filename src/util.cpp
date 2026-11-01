@@ -7,9 +7,48 @@
 
 namespace {
 
-// 与 log.cpp 的 kDataSubDir 保持一致：日志目录由 log.cpp 自己算（它刻意不依赖
-// 标准库，避免在 CRT 就绪前被调用），这里是同一路径的第二份定义。
 const wchar_t kDataSubDir[] = L"GPSoftware\\Directory Opus\\User Data\\DopusMdViewer";
+
+// dopus.exe 的未公开导出；本机所有内置 Viewer 也用 GetProcAddress 按名字取它。
+using PFN_RESOLVEALIASPATH = BOOL(WINAPI*)(LPCWSTR, LPWSTR, UINT);
+
+INIT_ONCE g_dataDirOnce = INIT_ONCE_STATIC_INIT;
+wchar_t g_dataDir[MAX_PATH] = L"";
+
+bool IsAbsoluteFilePath(const wchar_t* path) {
+  if (!path || !path[0]) return false;
+  if (path[0] == L'\\' && path[1] == L'\\') return true;  // UNC、\\?\ 长路径
+  const bool drive = ((path[0] >= L'A' && path[0] <= L'Z') ||
+                      (path[0] >= L'a' && path[0] <= L'z')) &&
+                     path[1] == L':';
+  return drive && (path[2] == L'\\' || path[2] == L'/');
+}
+
+void BuildDefaultDataDir(wchar_t* buf, size_t cch) {
+  buf[0] = L'\0';
+  wchar_t appData[MAX_PATH];
+  const DWORD n = ::GetEnvironmentVariableW(L"APPDATA", appData, ARRAYSIZE(appData));
+  if (n == 0 || n >= ARRAYSIZE(appData)) return;
+  ::StringCchPrintfW(buf, cch, L"%s\\%s", appData, kDataSubDir);
+}
+
+BOOL CALLBACK InitDataDir(PINIT_ONCE, PVOID, PVOID*) {
+  const HMODULE host = ::GetModuleHandleW(nullptr);
+  const auto resolve = host ? reinterpret_cast<PFN_RESOLVEALIASPATH>(
+                                  ::GetProcAddress(host, "ResolveAliasPath"))
+                            : nullptr;
+  wchar_t alias[64];
+  wchar_t resolved[MAX_PATH];
+  if (resolve &&
+      SUCCEEDED(::StringCchPrintfW(alias, ARRAYSIZE(alias), L"/%s", kDataAliasName)) &&
+      resolve(alias, resolved, static_cast<UINT>(ARRAYSIZE(resolved))) &&
+      IsAbsoluteFilePath(resolved)) {
+    ::StringCchCopyW(g_dataDir, ARRAYSIZE(g_dataDir), resolved);
+    return TRUE;
+  }
+  BuildDefaultDataDir(g_dataDir, ARRAYSIZE(g_dataDir));
+  return TRUE;
+}
 
 bool TryDecode(const char* data, int size, UINT codePage, DWORD flags, std::wstring* out) {
   const int need = ::MultiByteToWideChar(codePage, flags, data, size, nullptr, 0);
@@ -50,15 +89,16 @@ std::wstring UtilWebDir(void) {
   return UtilJoin(moduleDir, L"DopusMdViewer");
 }
 
-std::wstring UtilDataDir(void) {
-  wchar_t szAppData[MAX_PATH];
-  const DWORD n = ::GetEnvironmentVariableW(L"APPDATA", szAppData, ARRAYSIZE(szAppData));
-  if (n == 0 || n >= ARRAYSIZE(szAppData)) return std::wstring();
+void UtilDataDirInto(wchar_t* buf, size_t cch) {
+  if (!buf || cch == 0) return;
+  ::InitOnceExecuteOnce(&g_dataDirOnce, InitDataDir, nullptr, nullptr);
+  ::StringCchCopyW(buf, cch, g_dataDir);
+}
 
-  std::wstring dir(szAppData);
-  dir += L'\\';
-  dir += kDataSubDir;
-  return dir;
+std::wstring UtilDataDir(void) {
+  wchar_t buf[MAX_PATH];
+  UtilDataDirInto(buf, ARRAYSIZE(buf));
+  return std::wstring(buf);
 }
 
 std::wstring UtilJoin(const std::wstring& a, const wchar_t* b) {

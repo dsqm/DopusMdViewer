@@ -63,6 +63,15 @@ const wchar_t* const kZh[kCount] = {
     /* OpenLog          */ L"打开日志目录",
     /* OpenConfig       */ L"打开配置根目录",
     /* OpenSkins        */ L"打开皮肤目录",
+    /* ConfigFolder     */ L"配置文件夹",
+    /* ConfigFolderPermHint */
+    L"不要放在需要管理员权限的文件夹（例如 Program Files），否则会写入失败。",
+    /* ConfigFolderHelp */
+    L"默认位置在 Opus 的用户数据目录，随 Opus 配置一起备份。\r\n\r\n"
+    L"更换位置：在「设置 → 文件夹别名（Folder Aliases）」中新建名为 %s 的别名，"
+    L"指向目标文件夹。重启 Opus 后，配置、皮肤、日志和预览缓存都会改用该文件夹。\r\n\r\n"
+    L"目标文件夹必须可写，不要指向需要管理员权限的文件夹（例如 Program Files）。"
+    L"\r\n\r\n当前配置文件夹：\r\n%s",
     /* Unknown          */ L"未知",
     /* RuntimeMissing   */ L"未安装或不可用",
 

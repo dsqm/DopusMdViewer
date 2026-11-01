@@ -15,10 +15,17 @@ std::wstring UtilModuleDir(void);
 // 不用通用的 "web" 名字，免得和 Viewers 里别的插件抢目录。
 std::wstring UtilWebDir(void);
 
-// %APPDATA%\GPSoftware\Directory Opus\User Data\DopusMdViewer
-// 皮肤、config.json、logs、WebView2 用户数据同根（票 10、票 09）。
-// 这个路径与 log.cpp 里的 kDataSubDir 必须一致。
+// 存在这个 Folder Alias 时，数据根改用它指向的文件夹。
+// 解析靠 dopus.exe 导出的 ResolveAliasPath（未写进 SDK 头，取不到就回退）。
+constexpr wchar_t kDataAliasName[] = L"DopusMdViewerData";
+
+// 数据根目录：优先 /DopusMdViewerData 别名，失败时回退
+// %APPDATA%\GPSoftware\Directory Opus\User Data\DopusMdViewer。
+// 进程内只解析一次（改别名后需重启 Opus）；皮肤、config.json、logs、WebView2 同根。
 std::wstring UtilDataDir(void);
+
+// 同上，但不碰标准库：日志初始化可能早于 CRT 就绪。
+void UtilDataDirInto(wchar_t* buf, size_t cch);
 
 // a + "\\" + b；a 允许带或不带尾随反斜杠。
 std::wstring UtilJoin(const std::wstring& a, const wchar_t* b);

@@ -12,12 +12,13 @@
 #include <stdarg.h>
 #include <strsafe.h>
 
+#include "util.h"
+
 namespace {
 
-// The log lives next to the WebView2 user data, inside Opus' own user data
-// directory, so Opus' built-in backup carries it along. %TEMP% is only the
-// fallback for the case where %APPDATA% is unavailable.
-const wchar_t kDataSubDir[] = L"GPSoftware\\Directory Opus\\User Data\\DopusMdViewer";
+// The log lives next to the WebView2 user data, under the data root from
+// UtilDataDirInto (which may be overridden by a Folder Alias). %TEMP% is only
+// the fallback for the case where that root is unavailable.
 const int kMaxLogBytes = 2 * 1024 * 1024;
 
 SRWLOCK g_lock = SRWLOCK_INIT;
@@ -52,15 +53,13 @@ void FallBackToTemp(wchar_t* pszPath, size_t cchPath) {
 void EnsurePathLocked() {
   if (g_pathReady) return;
 
-  wchar_t appData[MAX_PATH];
-  DWORD n = ::GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH);
+  wchar_t dataDir[MAX_PATH];
+  UtilDataDirInto(dataDir, ARRAYSIZE(dataDir));
 
-  if (n == 0 || n >= MAX_PATH) {
+  if (!dataDir[0]) {
     FallBackToTemp(g_logPath, MAX_PATH);
   } else {
-    wchar_t dataDir[MAX_PATH];
     wchar_t logDir[MAX_PATH];
-    ::StringCchPrintfW(dataDir, MAX_PATH, L"%s\\%s", appData, kDataSubDir);
     ::StringCchPrintfW(logDir, MAX_PATH, L"%s\\logs", dataDir);
     EnsureDir(dataDir);
     EnsureDir(logDir);
