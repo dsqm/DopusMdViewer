@@ -382,8 +382,14 @@ void OpenDoc(ViewerState* st) {
   std::wstring err;
   if (!docsrc::Open(st->hwndSelf, st->szFile, &info, &err)) {
     st->docOpened = false;
+    const std::wstring name = UtilLeafName(st->szFile);
+    const std::wstring why = err.empty() ? std::wstring(L"读取失败") : err;
     LogLine(L"VIEWER: 打开文档失败 \"%s\"：%s", st->szFile, err.c_str());
-    SetStatus(st, L"打开失败：%s", UtilLeafName(st->szFile));
+    SetStatus(st, L"打开失败：%s", name.c_str());
+    // 不清空页面就会留着上一个文件的内容，很容易误以为失败的是那个文件。
+    WebHostPost(st->hwndSelf, msg::MakeClear());
+    WebHostPost(st->hwndSelf, msg::MakeDocError(L"无法预览此文件\n\n" + name + L"\n" + why));
+    ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
     return;
   }
 

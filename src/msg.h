@@ -43,6 +43,10 @@ std::wstring MakeCfg(const Config& config);
 // clear|
 std::wstring MakeClear();
 
+// docerror|<文本>：打开失败。页面清空旧内容并居中显示原因；文本是最后一个字段，
+// 可以包含竖线与换行。
+std::wstring MakeDocError(const std::wstring& text);
+
 // 解析一条来自页面的消息：切出第一个竖线前的类型，其余原样给出。
 bool SplitType(const std::wstring& frame, std::wstring* type, std::wstring* rest);
 

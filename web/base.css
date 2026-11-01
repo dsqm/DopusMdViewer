@@ -136,9 +136,18 @@ body.virtual .blk--hr { padding-top: 1.8em; }
 
 #sb-thumb:hover { background: var(--md-scrollbar-hover); }
 
+/* 打开失败：页面清空后居中显示文件名与原因（文本里的换行靠 pre-line 保留） */
+.mdv-error {
+  max-width: var(--fx-measure);
+  margin: 0 auto;
+  padding: 30vh 1.5em 0;
+  opacity: 0.75;
+  text-align: center;
+  white-space: pre-line;
+}
+
 /* 开发模式（Edge 里整篇渲染），与原 .measure 布局一致 */
 body.dev { overflow: auto; }
-
 body.dev #doc {
   max-width: var(--fx-measure);
   margin: 0 auto;

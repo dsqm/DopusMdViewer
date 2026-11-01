@@ -104,6 +104,8 @@ std::wstring MakeCfg(const Config& config) {
 
 std::wstring MakeClear(void) { return L"clear"; }
 
+std::wstring MakeDocError(const std::wstring& text) { return Join({L"docerror", text}); }
+
 bool SplitType(const std::wstring& frame, std::wstring* type, std::wstring* rest) {
   const size_t pos = frame.find(kSep);
   if (pos == std::wstring::npos) {
