@@ -605,7 +605,47 @@ function setHeight(i, h) {
 let mermaidChain = Promise.resolve()
 let resizeObserver = null
 
+// 块 HTML 缓存：滚动来回经过同一批块时省掉 markdown-it 与 DOMPurify 的开销。
+// 块内容在一份文档内不会变，换文档 / 重算定义 / 改渲染开关时整体清掉。
+const HTML_CACHE_MAX = 6 << 20
+const htmlCache = new Map()
+let htmlCacheBytes = 0
+
+function htmlCacheGet(i) {
+  const v = htmlCache.get(i)
+  if (v === undefined) return null
+  htmlCache.delete(i)
+  htmlCache.set(i, v)
+  return v
+}
+
+function htmlCachePut(i, html) {
+  const old = htmlCache.get(i)
+  if (old !== undefined) htmlCacheBytes -= old.length
+  htmlCache.delete(i)
+  htmlCache.set(i, html)
+  htmlCacheBytes += html.length
+  while (htmlCacheBytes > HTML_CACHE_MAX && htmlCache.size > 1) {
+    const [k, v] = htmlCache.entries().next().value
+    htmlCache.delete(k)
+    htmlCacheBytes -= v.length
+  }
+}
+
+function htmlCacheClear() {
+  htmlCache.clear()
+  htmlCacheBytes = 0
+}
+
+// 块里没有 `<` 时输出的 HTML 全部由 markdown-it / KaTeX 生成，不需要再过 DOMPurify
+function sanitizeBlock(html, text) {
+  return text.includes('<') ? sanitize(html) : html
+}
+
 function renderBlockHtml(text, flags, i) {
+  const cached = htmlCacheGet(i)
+  if (cached !== null) return cached
+  let html
   try {
     const env = blockEnv()
     const slug = SLUG.byBlock.get(i)
@@ -624,13 +664,16 @@ function renderBlockHtml(text, flags, i) {
           }
         }
       }
-      return sanitize(md.renderer.render(tokens, md.options, env))
+      html = sanitizeBlock(md.renderer.render(tokens, md.options, env), text)
+    } else {
+      html = sanitizeBlock(md.render(text, env), text)
     }
-    return sanitize(md.render(text, env))
   } catch (err) {
     report('render-error', String(err))
-    return '<pre>' + escapeHtml(text) + '</pre>'
+    html = '<pre>' + escapeHtml(text) + '</pre>'
   }
+  htmlCachePut(i, html)
+  return html
 }
 
 /* ---------------- 跨块定义：链接引用与脚注 ---------------- */
@@ -694,6 +737,7 @@ function applyDefs(bytes) {
     FOOT.nums.set(label, num)
   }
   FOOT.html = buildFootHtml()
+  htmlCacheClear()
 
   report('defs', 'refs=' + (REF.references ? Object.keys(REF.references).length : 0)
     + ' foot=' + FOOT.defs.length)
@@ -1317,12 +1361,22 @@ function schedulePump() {
 function pump() {
   V.pumpRaf = 0
   if (!V.active) return
+  // 视口附近的块先渲染：跳转时不必等窗口里离得远的块排完
+  if (V.queue.length > 12) {
+    const first = offsetToBlock(V.off)
+    const last = offsetToBlock(Math.min(Math.max(0, V.totalH - 1), V.off + V.vh))
+    const dist = (i) => (i < first ? first - i : i > last ? i - last : 0)
+    V.queue.sort((a, b) => dist(a.i) - dist(b.i))
+  }
+  // 按时间片而不是块数截止：单个大块（数学密集）可能就要几十毫秒
+  const t0 = performance.now()
   let n = 0
   while (V.queue.length && n < 10) {
     const item = V.queue.shift()
     renderItem(item)
     V.pending.delete(item.i)
     n++
+    if (performance.now() - t0 >= 7) break
   }
   if (V.queue.length) schedulePump()
   schedulePlace()
@@ -1481,6 +1535,7 @@ function resetVirtual() {
   V.queue.length = 0
   V.pending.clear()
   V.fetching.clear()
+  htmlCacheClear()
   if (resizeObserver) resizeObserver.disconnect()
   for (const rec of V.resident.values()) {
     if (rec.big) {
@@ -2926,7 +2981,10 @@ function applyRenderConfig(flags) {
       // 规则缺席（插件版本变化）时忽略
     }
   }
-  if (changed && V.active) rerenderResidents()
+  if (changed && V.active) {
+    htmlCacheClear()
+    rerenderResidents()
+  }
 }
 
 /* ---------------- 皮肤 ---------------- */
