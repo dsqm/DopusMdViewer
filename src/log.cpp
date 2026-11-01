@@ -143,7 +143,9 @@ void LogLine(const wchar_t* fmt, ...) {
   int need = ::WideCharToMultiByte(CP_UTF8, 0, line, -1, nullptr, 0, nullptr, nullptr);
   if (need <= 1) return;
 
-  char utf8[2400];
+  // 1200 个 wchar 最坏情况约 3.6 KB（BMP 汉字 3 B/字符），缓冲必须装得下，
+  // 否则超长日志行会被静默丢弃。
+  char utf8[4096];
   if (need > static_cast<int>(sizeof(utf8))) return;
 
   int got = ::WideCharToMultiByte(CP_UTF8, 0, line, -1, utf8, static_cast<int>(sizeof(utf8)),
