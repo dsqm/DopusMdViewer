@@ -459,6 +459,14 @@ tbody tr:nth-child(2n) { background: var(--md-table-zebra); }
 
 /* ---------------- 公式与图表 ---------------- */
 
+.katex-block {
+  margin: var(--md-space-block) 0;
+}
+
+.katex-block > .katex-display {
+  margin: 0;
+}
+
 .katex-display {
   margin: 1em 0;
   overflow-x: auto;

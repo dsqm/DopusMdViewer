@@ -4,8 +4,7 @@ import taskLists from 'markdown-it-task-lists'
 import sub from 'markdown-it-sub'
 import sup from 'markdown-it-sup'
 import mark from 'markdown-it-mark'
-import texmath from 'markdown-it-texmath'
-import katex from 'katex'
+import { setupMath, katexEngine, KATEX_OPTIONS } from './texcompat.js'
 import DOMPurify from 'dompurify'
 import hljs from 'highlight.js/lib/core'
 
@@ -108,16 +107,8 @@ md.use(deflist)
   .use(sub)
   .use(sup)
   .use(mark)
-  .use(texmath, {
-    engine: katex,
-    delimiters: 'dollars',
-    katexOptions: {
-      throwOnError: false,
-      strict: false,
-      trust: false,
-      output: 'htmlAndMathml',
-    },
-  })
+
+setupMath(md)
 
 // [^label] → 上标角标。编号由文末脚注区的定义顺序给定；定义还没到时留原文。
 md.inline.ruler.before('link', 'mdv_footnote_ref', (state, silent) => {
@@ -354,7 +345,7 @@ const state = {
   },
 }
 
-const MATH_RULES = ['math_inline', 'math_inline_double', 'math_block', 'math_block_eqno']
+const MATH_RULES = ['math_inline', 'math_inline_block', 'math_block']
 
 const V = {
   active: false,
@@ -1970,7 +1961,7 @@ function decodeEntities(text) {
 // 只取 MathML 的可见符号；annotation 里是 LaTeX 源码，不能进剪贴板。
 function mathText(tex) {
   try {
-    const html = katex.renderToString(tex, { throwOnError: false, strict: false, output: 'mathml' })
+    const html = katexEngine.renderToString(tex, { ...KATEX_OPTIONS, output: 'mathml' })
     const plain = html
       .replace(/<annotation[\s\S]*?<\/annotation>/gi, '')
       .replace(/<[^>]*>/g, '')
@@ -1988,8 +1979,8 @@ function inlineText(children) {
     else if (t.type === 'hardbreak') s += '\n'
     else if (t.type === 'html_inline') s += htmlPlain(t.content)
     else if (t.type === 'image') continue
-    else if (t.type === 'math_inline' || t.type === 'math_inline_double' ||
-             t.type === 'math_block' || t.type === 'math_block_eqno') s += mathText(t.content)
+    else if (t.type === 'math_inline' || t.type === 'math_inline_block' ||
+             t.type === 'math_block') s += mathText(t.content)
     else if (t.children) s += inlineText(t.children)
   }
   return s
@@ -2017,7 +2008,6 @@ function blockText(src) {
         line()
         break
       case 'math_block':
-      case 'math_block_eqno':
         out += mathText(t.content)
         line()
         break
