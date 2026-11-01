@@ -43,6 +43,7 @@ struct ViewerState {
   uint32_t lastVisible;  // 最后一个非隐藏块（脚注区挂它后面）
   int encoding;
   uint32_t encOverride;  // 手动指定的代码页，0 = 自动
+  bool isPreview;        // 创建在 Lister 查看器窗格（DVPCVF_Preview）
   std::vector<DVPCONTEXTMENUITEMW> ctxMenu;  // 右键菜单数组，必须活到下次请求/窗口销毁
   bool docComplete;  // 打开时索引已覆盖全文（没有后台扫描）
   LONGLONG qpcLoad;  // LOADW 起点，用于端到端耗时
@@ -452,6 +453,60 @@ void BuildContextMenu(ViewerState* st) {
   }
 }
 
+// 独立查看器不会把插件条目并进 Opus 自己的菜单（预览窗格会），这里自绘一个。
+constexpr UINT kCtxCopy = 0x6D80;
+constexpr UINT kCtxSelectAll = 0x6D81;
+constexpr UINT kCtxPrint = 0x6D82;
+
+void ShowOwnContextMenu(ViewerState* st) {
+  HMENU menu = ::CreatePopupMenu();
+  HMENU enc = ::CreatePopupMenu();
+  if (!menu || !enc) {
+    if (menu) ::DestroyMenu(menu);
+    if (enc) ::DestroyMenu(enc);
+    return;
+  }
+  for (size_t i = 0; i < kEncMenuCount; ++i) {
+    UINT flags = MF_STRING;
+    if (kEncMenu[i].codepage == st->encOverride) flags |= MF_CHECKED;
+    ::AppendMenuW(enc, flags, kEncMenuBase + static_cast<UINT>(i), kEncMenu[i].label);
+  }
+  ::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(enc), L"编码");
+  ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  const UINT docFlags = st->docOpened ? 0 : MF_GRAYED;
+  ::AppendMenuW(menu, MF_STRING | docFlags, kCtxCopy, L"复制");
+  ::AppendMenuW(menu, MF_STRING | docFlags, kCtxSelectAll, L"全选");
+  ::AppendMenuW(menu, MF_STRING | docFlags, kCtxPrint, L"打印…");
+
+  POINT pt = {};
+  ::GetCursorPos(&pt);
+  const UINT cmd = ::TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+                                    pt.x, pt.y, 0, st->hwndSelf, nullptr);
+  ::DestroyMenu(menu);
+  if (!cmd) return;
+
+  if (cmd >= kEncMenuBase && cmd < kEncMenuBase + kEncMenuCount) {
+    const uint32_t cp = kEncMenu[cmd - kEncMenuBase].codepage;
+    if (cp != st->encOverride) {
+      st->encOverride = cp;
+      LogLine(L"VIEWER: 右键菜单指定编码 cp=%u，重开文档", cp);
+      if (st->szFile[0]) OpenDoc(st);
+    }
+    return;
+  }
+  if (cmd == kCtxCopy) {
+    if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"copy|");
+    return;
+  }
+  if (cmd == kCtxSelectAll) {
+    if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"selectall|");
+    return;
+  }
+  if (cmd == kCtxPrint) {
+    StartPrint(st);
+  }
+}
+
 // ---- 宿主事件（由宿主线程 PostMessage 过来，运行在查看器自己的线程上） ----
 
 void OnHostReady(ViewerState* st) {
@@ -509,13 +564,16 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   }
 
   if (type == L"ctxmenu") {
-    // 右键落在 WebView2 子窗口上，父窗口收不到 WM_CONTEXTMENU；转发给 Opus，
-    // 它才会显示查看器菜单并向我们索取「编码」子菜单。
-    if (st->hwndParent) {
-      POINT pt = {};
-      ::GetCursorPos(&pt);
-      ::SendMessageW(st->hwndParent, WM_CONTEXTMENU,
-                     reinterpret_cast<WPARAM>(st->hwndSelf), MAKELPARAM(pt.x, pt.y));
+    if (st->isPreview) {
+      // 预览窗格：转发给 Opus，它显示的菜单会带上插件条目。
+      if (st->hwndParent) {
+        POINT pt = {};
+        ::GetCursorPos(&pt);
+        ::SendMessageW(st->hwndParent, WM_CONTEXTMENU,
+                       reinterpret_cast<WPARAM>(st->hwndSelf), MAKELPARAM(pt.x, pt.y));
+      }
+    } else {
+      ShowOwnContextMenu(st);
     }
     return;
   }
@@ -958,6 +1016,7 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->lastVisible = 0;
   st->encoding = 0;
   st->encOverride = 0;
+  st->isPreview = (dwFlags & DVPCVF_Preview) != 0;
   st->docComplete = false;
   st->qpcLoad = 0;
   st->docOpened = false;
