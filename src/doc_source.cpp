@@ -723,9 +723,14 @@ bool Open(HWND owner, const std::wstring& path, DocumentInfo* info, std::wstring
     info->encoding = static_cast<uint8_t>(snap->enc.encoding);
     info->complete = complete;
   }
-  LogLine(L"DOCSRC: 打开 \"%s\" prefix=%u est=%u 文件=%llu B 完整=%d", path.c_str(),
-          prefixBlocks, estimated, static_cast<unsigned long long>(fileSize),
-          complete ? 1 : 0);
+  LogLine(L"DOCSRC: 打开 \"%s\" prefix=%u est=%u 文件=%llu B 完整=%d 编码=%s cp=%u",
+          path.c_str(), prefixBlocks, estimated,
+          static_cast<unsigned long long>(fileSize), complete ? 1 : 0,
+          snap->enc.encoding == doc::Encoding::Utf8        ? L"UTF-8"
+          : snap->enc.encoding == doc::Encoding::Utf16LE   ? L"UTF-16LE"
+          : snap->enc.encoding == doc::Encoding::Utf16BE   ? L"UTF-16BE"
+                                                           : L"Legacy",
+          snap->enc.CodePage());
 
   if (!complete) {
     std::thread([path, fileSize, docId, cancel]() {
