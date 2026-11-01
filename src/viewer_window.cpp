@@ -19,7 +19,6 @@
 #include "doc_source.h"
 #include "log.h"
 #include "msg.h"
-#include "resource_ids.h"
 #include "skin.h"
 #include "util.h"
 #include "viewer plugins.h"
@@ -430,72 +429,6 @@ void ShowOwnContextMenu(ViewerState* st) {
   }
 }
 
-// ---- 外部链接二次确认 ----
-// 页面传来的链接不可信（可能直接指向本地程序），交给系统前必须人工确认；
-// 「打开」按钮延迟 3 秒才可用，给用户读完链接的时间。
-
-constexpr int kOpenCountdown = 3;
-
-INT_PTR CALLBACK OpenConfirmProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-  switch (uMsg) {
-    case WM_INITDIALOG: {
-      ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, kOpenCountdown);
-      ::SetWindowTextW(hwnd, L"打开外部链接");
-      ::SetDlgItemTextW(hwnd, IDC_OPEN_WARN,
-                        L"此链接会交给系统打开，可能是程序或脚本。请确认来源可信：");
-      ::SetDlgItemTextW(hwnd, IDC_OPEN_URL, reinterpret_cast<const wchar_t*>(lParam));
-      ::SetDlgItemTextW(hwnd, IDC_OPEN_GO, L"打开（3）");
-      ::SetDlgItemTextW(hwnd, IDCANCEL, L"取消");
-      ::EnableWindow(::GetDlgItem(hwnd, IDC_OPEN_GO), FALSE);
-      ::SetTimer(hwnd, 1, 1000, nullptr);
-      ::SetFocus(::GetDlgItem(hwnd, IDCANCEL));
-      return FALSE;  // 焦点已手工设置
-    }
-    case WM_TIMER: {
-      LONG_PTR left = ::GetWindowLongPtrW(hwnd, GWLP_USERDATA) - 1;
-      ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, left);
-      if (left > 0) {
-        wchar_t label[32];
-        ::StringCchPrintfW(label, ARRAYSIZE(label), L"打开（%d）", static_cast<int>(left));
-        ::SetDlgItemTextW(hwnd, IDC_OPEN_GO, label);
-        return TRUE;
-      }
-      ::KillTimer(hwnd, 1);
-      ::SetDlgItemTextW(hwnd, IDC_OPEN_GO, L"打开");
-      ::EnableWindow(::GetDlgItem(hwnd, IDC_OPEN_GO), TRUE);
-      return TRUE;
-    }
-    case WM_COMMAND:
-      if (HIWORD(wParam) == BN_CLICKED) {
-        // 倒计时没走完时按钮仍是禁用的，这里再挡一道防回车/空格钻空子。
-        if (LOWORD(wParam) == IDC_OPEN_GO &&
-            ::GetWindowLongPtrW(hwnd, GWLP_USERDATA) <= 0) {
-          ::EndDialog(hwnd, IDOK);
-          return TRUE;
-        }
-        if (LOWORD(wParam) == IDCANCEL) {
-          ::EndDialog(hwnd, IDCANCEL);
-          return TRUE;
-        }
-      }
-      break;
-    case WM_CLOSE:
-      ::EndDialog(hwnd, IDCANCEL);
-      return TRUE;
-    default:
-      break;
-  }
-  return FALSE;
-}
-
-bool ConfirmOpenExternal(HWND parent, const std::wstring& url) {
-  HINSTANCE inst = g_hInstance ? g_hInstance : ::GetModuleHandleW(nullptr);
-  const INT_PTR rc = ::DialogBoxParamW(inst, MAKEINTRESOURCEW(IDD_OPEN_CONFIRM), parent,
-                                       OpenConfirmProc, reinterpret_cast<LPARAM>(url.c_str()));
-  if (rc == -1) LogLine(L"VIEWER: 确认框创建失败 err=%lu", ::GetLastError());
-  return rc == IDOK;
-}
-
 // ---- 宿主事件（由宿主线程 PostMessage 过来，运行在查看器自己的线程上） ----
 
 void OnHostReady(ViewerState* st) {
@@ -580,14 +513,9 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   }
 
   if (type == L"open") {
-    // 预览器不做导航：链接先过人工确认，再交回系统打开
-    LogLine(L"VIEWER: 请求打开外部链接 %s", rest.c_str());
-    if (ConfirmOpenExternal(st->hwndSelf, rest)) {
-      LogLine(L"VIEWER: 确认打开 %s", rest.c_str());
-      ::ShellExecuteW(nullptr, L"open", rest.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    } else {
-      LogLine(L"VIEWER: 用户取消了打开");
-    }
+    // 预览器不做导航：页面里已做过二次确认，这里交回系统打开
+    LogLine(L"VIEWER: 打开外部链接 %s", rest.c_str());
+    ::ShellExecuteW(nullptr, L"open", rest.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
   }
 }
 

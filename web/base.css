@@ -9,7 +9,7 @@
    ============================================================ */
 
 :root {
-  /* —— 变量契约（27 个） —— */
+  /* —— 变量契约（28 个） —— */
   --md-bg: #ffffff;
   --md-bg-alt: #f6f8fa;
   --md-fg: #1f2328;
@@ -39,6 +39,8 @@
   --md-scrollbar-hover: #adb5bd;
   --md-outline-bg: #ffffff;
   --md-outline-fg: #1f2328;
+
+  --md-danger: #cf222e;
 
   --md-radius: 6px;
   --md-space-block: 1em;
@@ -670,4 +672,89 @@ pre.mermaid-src {
 .outline-note {
   padding: 8px 10px;
   color: var(--md-fg-muted);
+}
+
+/* ---------------- 外部链接确认（页面内弹窗） ----------------
+   链接可能指向本地程序：弹层提示风险，”打开”按钮倒计时 3 秒。
+   结构由 app.js 动态创建，样式跟皮肤变量。 */
+
+.mdv-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.mdv-modal {
+  width: min(520px, calc(100vw - 48px));
+  padding: 20px 20px 16px;
+  background: var(--md-bg);
+  color: var(--md-fg);
+  border: 1px solid var(--md-border);
+  border-radius: var(--md-radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  font-family: var(--fx-ui);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.mdv-modal-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--md-fg-heading);
+}
+
+.mdv-modal-warn {
+  margin: 0 0 12px;
+  color: var(--md-fg-muted);
+}
+
+.mdv-modal-url {
+  margin: 0 0 16px;
+  padding: 8px 10px;
+  max-height: 132px;
+  overflow: auto;
+  background: var(--md-bg-alt);
+  border: 1px solid var(--md-border);
+  border-radius: var(--md-radius);
+  font-family: var(--fx-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+  user-select: text;
+  cursor: text;
+}
+
+.mdv-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.mdv-modal-actions button {
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 16px;
+  border: 1px solid var(--md-border);
+  border-radius: var(--md-radius);
+  background: var(--md-bg);
+  color: var(--md-fg);
+  cursor: pointer;
+}
+
+.mdv-modal-actions button:hover:not(:disabled) { background: var(--md-bg-alt); }
+
+.mdv-modal-actions button.mdv-danger {
+  border-color: var(--md-danger);
+  color: var(--md-danger);
+}
+
+.mdv-modal-actions button:disabled {
+  color: var(--md-fg-muted);
+  cursor: default;
+  opacity: 0.6;
 }

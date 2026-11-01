@@ -3400,6 +3400,84 @@ function onHostMessage(event) {
   }
 }
 
+/* ---------------- 外部链接确认 ----------------
+   链接可能指向本地程序，交给宿主前必须人工过目：页面内弹窗 + 3 秒倒计时。
+   href 只经 textContent 写入，不参与 HTML 拼接。 */
+const kOpenConfirmDelay = 3
+
+function confirmOpenExternal(href) {
+  if (document.querySelector('.mdv-modal-overlay')) return
+  const prevFocus = document.activeElement
+  const overlay = document.createElement('div')
+  overlay.className = 'mdv-modal-overlay'
+  overlay.innerHTML =
+    '<div class="mdv-modal" role="dialog" aria-modal="true">' +
+    '<h2 class="mdv-modal-title"></h2>' +
+    '<p class="mdv-modal-warn"></p>' +
+    '<div class="mdv-modal-url"></div>' +
+    '<div class="mdv-modal-actions">' +
+    '<button type="button" class="mdv-cancel"></button>' +
+    '<button type="button" class="mdv-danger mdv-open" disabled></button>' +
+    '</div></div>'
+  const modal = overlay.querySelector('.mdv-modal')
+  modal.querySelector('.mdv-modal-title').textContent = '打开外部链接'
+  modal.querySelector('.mdv-modal-warn').textContent =
+    '此链接会交给系统打开，可能是程序或脚本。请确认来源可信。'
+  modal.querySelector('.mdv-modal-url').textContent = href
+  const btnCancel = modal.querySelector('.mdv-cancel')
+  const btnOpen = modal.querySelector('.mdv-open')
+  btnCancel.textContent = '取消'
+  btnOpen.textContent = '打开（' + kOpenConfirmDelay + '）'
+
+  let timer = 0
+  const close = (open) => {
+    if (timer) clearInterval(timer)
+    timer = 0
+    overlay.remove()
+    if (prevFocus && prevFocus.isConnected) prevFocus.focus()
+    if (open) postRaw('open|' + href)
+  }
+
+  timer = setInterval(() => {
+    const left = (btnOpen.dataset.left ? parseInt(btnOpen.dataset.left, 10) : kOpenConfirmDelay) - 1
+    if (left > 0) {
+      btnOpen.dataset.left = String(left)
+      btnOpen.textContent = '打开（' + left + '）'
+      return
+    }
+    clearInterval(timer)
+    timer = 0
+    btnOpen.textContent = '打开'
+    btnOpen.disabled = false
+  }, 1000)
+
+  btnCancel.addEventListener('click', () => close(false))
+  btnOpen.addEventListener('click', () => {
+    if (!btnOpen.disabled) close(true)
+  })
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) close(false)
+  })
+  overlay.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault()
+      close(false)
+      return
+    }
+    if (ev.key === 'Tab') {
+      // 焦点只在两个按钮间循环，别落到弹层后面的文档上
+      const focusables = [btnCancel, btnOpen]
+      const i = focusables.indexOf(document.activeElement)
+      const next = ev.shiftKey ? (i <= 0 ? 1 : i - 1) : (i === 0 ? 1 : 0)
+      ev.preventDefault()
+      focusables[next].focus()
+    }
+  })
+
+  document.body.appendChild(overlay)
+  btnCancel.focus()
+}
+
 document.addEventListener('click', (e) => {
   const a = e.target && e.target.closest ? e.target.closest('a') : null
   if (!a) return
@@ -3427,7 +3505,7 @@ document.addEventListener('click', (e) => {
     }
     return
   }
-  postRaw('open|' + href)
+  confirmOpenExternal(href)
 }, true)
 
 /* ---------------- 开发模式（只在 Edge 里用，线上走 postMessage） ---------------- */
