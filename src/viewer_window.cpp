@@ -429,6 +429,137 @@ void ShowOwnContextMenu(ViewerState* st) {
   }
 }
 
+// ---- 外部链接二次确认 ----
+// 页面传来的链接不可信（可能直接指向本地程序），交给系统前必须人工确认；
+// 「打开」按钮延迟 3 秒才可用，给用户读完链接的时间。
+
+constexpr int kOpenCtlWarn = 100;
+constexpr int kOpenCtlUrl = 101;
+
+constexpr int kOpenCountdown = 3;
+
+void AlignTemplateDword(std::vector<WORD>& v) {
+  while (v.size() & 1) v.push_back(0);
+}
+
+void TemplateString(std::vector<WORD>& v, const wchar_t* s) {
+  const size_t n = wcslen(s) + 1;
+  for (size_t i = 0; i < n; ++i) v.push_back(static_cast<WORD>(s[i]));
+}
+
+void TemplateItem(std::vector<WORD>& v, DWORD style, short x, short y, short cx, short cy, WORD id,
+                  WORD cls, const wchar_t* text) {
+  AlignTemplateDword(v);
+  v.push_back(style & 0xFFFF); v.push_back(style >> 16);  // DWORD style
+  v.push_back(0); v.push_back(0);                         // DWORD exStyle
+  v.push_back(static_cast<WORD>(x));
+  v.push_back(static_cast<WORD>(y));
+  v.push_back(static_cast<WORD>(cx));
+  v.push_back(static_cast<WORD>(cy));
+  v.push_back(id);
+  v.push_back(0xFFFF);
+  v.push_back(cls);
+  if (text) {
+    TemplateString(v, text);
+  } else {
+    v.push_back(0);
+  }
+  v.push_back(0);  // 无附加数据
+}
+
+// 对话框模板不进 resource.rc：这个框只有一处用，内存里拼一次即可。
+std::vector<WORD> BuildOpenConfirmTemplate() {
+  std::vector<WORD> v;
+  v.push_back(1);          // dlgVer
+  v.push_back(0xFFFF);     // signature
+  const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_SETFONT | DS_CENTER;
+  v.push_back(style & 0xFFFF);
+  v.push_back(style >> 16);
+  v.push_back(0);          // exStyle
+  v.push_back(4);          // cdit
+  v.push_back(0); v.push_back(0); v.push_back(0);           // x, y（DS_CENTER 忽略）
+  v.push_back(300); v.push_back(104);
+  v.push_back(0);          // menu
+  v.push_back(0);          // class
+  TemplateString(v, L"打开外部链接");
+  v.push_back(9);          // 9pt，随系统 DPI 缩放
+  v.push_back(FW_NORMAL);
+  BYTE f[] = {0, DEFAULT_CHARSET};
+  v.insert(v.end(), f, f + 2);
+  TemplateString(v, L"Microsoft YaHei UI");
+
+  TemplateItem(v, WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 8, 280, 20, kOpenCtlWarn, 0x0082,
+               L"此链接会交给系统打开，可能是程序或脚本。请确认来源可信：");
+  TemplateItem(v,
+               WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WS_VSCROLL | ES_READONLY |
+                   ES_MULTILINE | ES_AUTOVSCROLL,
+               10, 32, 280, 40, kOpenCtlUrl, 0x0081, nullptr);
+  TemplateItem(v, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON | WS_DISABLED, 186, 82, 50, 14,
+               IDOK, 0x0080, L"打开");
+  TemplateItem(v, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 240, 82, 50, 14, IDCANCEL,
+               0x0080, L"取消");
+  return v;
+}
+
+INT_PTR CALLBACK OpenConfirmProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  switch (uMsg) {
+    case WM_INITDIALOG: {
+      ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, kOpenCountdown);
+      const wchar_t* url = reinterpret_cast<const wchar_t*>(lParam);
+      ::SetDlgItemTextW(hwnd, kOpenCtlUrl, url);
+      wchar_t label[32];
+      ::StringCchPrintfW(label, ARRAYSIZE(label), L"打开（%d）", kOpenCountdown);
+      ::SetDlgItemTextW(hwnd, IDOK, label);
+      ::SetTimer(hwnd, 1, 1000, nullptr);
+      ::SetFocus(::GetDlgItem(hwnd, IDCANCEL));
+      return FALSE;  // 焦点已手工设置
+    }
+    case WM_TIMER: {
+      LONG_PTR left = ::GetWindowLongPtrW(hwnd, GWLP_USERDATA) - 1;
+      ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, left);
+      if (left > 0) {
+        wchar_t label[32];
+        ::StringCchPrintfW(label, ARRAYSIZE(label), L"打开（%d）", static_cast<int>(left));
+        ::SetDlgItemTextW(hwnd, IDOK, label);
+        return TRUE;
+      }
+      ::KillTimer(hwnd, 1);
+      ::SetDlgItemTextW(hwnd, IDOK, L"打开");
+      ::EnableWindow(::GetDlgItem(hwnd, IDOK), TRUE);
+      return TRUE;
+    }
+    case WM_COMMAND:
+      if (HIWORD(wParam) == BN_CLICKED) {
+        // 倒计时没走完时按钮仍是禁用的，这里再挡一道防回车/空格钻空子。
+        if (LOWORD(wParam) == IDOK &&
+            ::GetWindowLongPtrW(hwnd, GWLP_USERDATA) <= 0) {
+          ::EndDialog(hwnd, IDOK);
+          return TRUE;
+        }
+        if (LOWORD(wParam) == IDCANCEL) {
+          ::EndDialog(hwnd, IDCANCEL);
+          return TRUE;
+        }
+      }
+      break;
+    case WM_CLOSE:
+      ::EndDialog(hwnd, IDCANCEL);
+      return TRUE;
+    default:
+      break;
+  }
+  return FALSE;
+}
+
+bool ConfirmOpenExternal(HWND parent, const std::wstring& url) {
+  const std::vector<WORD> tpl = BuildOpenConfirmTemplate();
+  const INT_PTR rc = ::DialogBoxIndirectParamW(g_hInstance,
+                                               reinterpret_cast<LPCDLGTEMPLATEW>(tpl.data()),
+                                               parent, OpenConfirmProc,
+                                               reinterpret_cast<LPARAM>(url.c_str()));
+  return rc == IDOK;
+}
+
 // ---- 宿主事件（由宿主线程 PostMessage 过来，运行在查看器自己的线程上） ----
 
 void OnHostReady(ViewerState* st) {
@@ -513,9 +644,14 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   }
 
   if (type == L"open") {
-    // 预览器不做导航：网页里的链接交回系统浏览器
-    LogLine(L"VIEWER: 打开外部链接 %s", rest.c_str());
-    ::ShellExecuteW(nullptr, L"open", rest.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    // 预览器不做导航：链接先过人工确认，再交回系统打开
+    LogLine(L"VIEWER: 请求打开外部链接 %s", rest.c_str());
+    if (ConfirmOpenExternal(st->hwndSelf, rest)) {
+      LogLine(L"VIEWER: 确认打开 %s", rest.c_str());
+      ::ShellExecuteW(nullptr, L"open", rest.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    } else {
+      LogLine(L"VIEWER: 用户取消了打开");
+    }
   }
 }
 
