@@ -11,10 +11,10 @@ set "SDK_ROOT=C:\Program Files (x86)\Windows Kits\10"
 set "PROJ=%~dp0"
 set "MSVC=%VS_ROOT%\VC\Tools\MSVC\%MSVC_VER%"
 set "SDKINC=%SDK_ROOT%\Include\%SDK_VER%"
-set "CL=%MSVC%\bin\Hostx64\x64\cl.exe"
+set "CL_EXE=%MSVC%\bin\Hostx64\x64\cl.exe"
 set "CED=%PROJ%third_party\compact_enc_det"
 
-if not exist "%CL%" echo   missing cl.exe & exit /b 1
+if not exist "%CL_EXE%" echo   missing cl.exe & exit /b 1
 if not exist "%CED%\compact_enc_det\compact_enc_det.h" echo   missing third_party\compact_enc_det & exit /b 1
 if exist "build\obj-ced\.stamp" if not "%CED_REBUILD%"=="1" (
   echo   cached
@@ -30,7 +30,7 @@ set FILES=compact_enc_det\compact_enc_det compact_enc_det\compact_enc_det_hint_c
 
 for %%F in (%FILES%) do (
   echo   %%F
-  "%CL%" /nologo /c /MT /O2 /W0 /EHsc /bigobj /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE /DNOMINMAX /I "%CED%" /Fo"build\obj-ced\%%~nxF.obj" "%CED%\%%F.cc" || exit /b 1
+  "%CL_EXE%" /nologo /c /MT /O2 /W0 /EHsc /bigobj /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE /DNOMINMAX /I "%CED%" /Fo"build\obj-ced\%%~nxF.obj" "%CED%\%%F.cc" || exit /b 1
 )
 
 echo done> "build\obj-ced\.stamp"

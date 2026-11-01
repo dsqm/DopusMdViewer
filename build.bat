@@ -19,8 +19,8 @@ set "PROJ=%~dp0"
 set "MSVC=%VS_ROOT%\VC\Tools\MSVC\%MSVC_VER%"
 set "SDKINC=%SDK_ROOT%\Include\%SDK_VER%"
 set "SDKLIB=%SDK_ROOT%\Lib\%SDK_VER%"
-set "CL=%MSVC%\bin\Hostx64\x64\cl.exe"
-set "LINK=%MSVC%\bin\Hostx64\x64\link.exe"
+set "CL_EXE=%MSVC%\bin\Hostx64\x64\cl.exe"
+set "LINK_EXE=%MSVC%\bin\Hostx64\x64\link.exe"
 set "RC=%SDK_ROOT%\bin\%SDK_VER%\x64\rc.exe"
 set "DUMPBIN=%MSVC%\bin\Hostx64\x64\dumpbin.exe"
 set "W2INC=%PROJ%sdk\webview2\include"
@@ -29,8 +29,8 @@ set "OPUSINC=%PROJ%..\SDK\Headers"
 
 echo.
 echo [1/5] 检查工具链...
-if not exist "%CL%"        echo   找不到 cl.exe   %CL%        & goto :fail
-if not exist "%LINK%"      echo   找不到 link.exe %LINK%      & goto :fail
+if not exist "%CL_EXE%"        echo   找不到 cl.exe   %CL_EXE%        & goto :fail
+if not exist "%LINK_EXE%"      echo   找不到 link.exe %LINK_EXE%      & goto :fail
 if not exist "%RC%"        echo   找不到 rc.exe   %RC%        & goto :fail
 if not exist "%W2INC%\WebView2.h" echo   缺少 WebView2 SDK 头文件 %W2INC% & goto :fail
 if not exist "%W2LIB%"     echo   缺少 WebView2LoaderStatic.lib %W2LIB% & goto :fail
@@ -48,7 +48,7 @@ if not exist "build\obj" mkdir "build\obj"
 echo.
 echo [2/5] 编译源文件...
 rem 通配符收集 src 下全部 .cpp，新增文件不用改脚本
-"%CL%" /nologo /c /MT /O2 /W4 /EHsc /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /utf-8 /DPCRE2_STATIC /Ithird_party\pcre2\include "/Fo:build\obj\\" "src\*.cpp"
+"%CL_EXE%" /nologo /c /MT /O2 /W4 /EHsc /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /utf-8 /DPCRE2_STATIC /Ithird_party\pcre2\include "/Fo:build\obj\\" "src\*.cpp"
 if errorlevel 1 goto :fail
 
 echo.
@@ -68,7 +68,7 @@ if errorlevel 1 goto :fail
 
 echo.
 echo [4/5] 链接 DLL...
-"%LINK%" /nologo /DLL /MACHINE:X64 /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /OPT:REF /OPT:ICF ^
+"%LINK_EXE%" /nologo /DLL /MACHINE:X64 /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /OPT:REF /OPT:ICF ^
   "/DEF:%PROJ%DopusMdViewer.def" "/OUT:%PROJ%bin\DopusMdViewer.dll" "/IMPLIB:%PROJ%build\obj\DopusMdViewer.lib" ^
   "build\obj\*.obj" "build\obj\resource.res" "build\obj-ced\*.obj" "build\obj-pcre2\8\*.obj" "build\obj-pcre2\16\*.obj" "build\obj-pcre2\common\*.obj" ^
   "%W2LIB%" kernel32.lib user32.lib gdi32.lib ole32.lib oleaut32.lib ^
@@ -84,7 +84,7 @@ if errorlevel 8 goto :fail
 popd
 echo.
 echo [OK] %PROJ%bin\DopusMdViewer.dll
-echo 导出表（应为 6 个 DVP_ 函数）：
+echo 导出表（应为 7 个 DVP_ 函数）：
 "%DUMPBIN%" /exports "%PROJ%bin\DopusMdViewer.dll" | findstr /i "DVP_ number of"
 echo.
 pause

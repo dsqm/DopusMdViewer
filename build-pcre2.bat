@@ -9,18 +9,18 @@ set "SDK_ROOT=C:\Program Files (x86)\Windows Kits\10"
 
 set "PROJ=%~dp0"
 set "MSVC=%VS_ROOT%\VC\Tools\MSVC\%MSVC_VER%"
-set "SDKInC=%SDK_ROOT%\Include\%SDK_VER%"
-set "CL=%MSVC%\bin\Hostx64\x64\cl.exe"
+set "SDKINC=%SDK_ROOT%\Include\%SDK_VER%"
+set "CL_EXE=%MSVC%\bin\Hostx64\x64\cl.exe"
 set "PCRE=%PROJ%third_party\pcre2"
 
-if not exist "%CL%" echo   missing cl.exe & exit /b 1
+if not exist "%CL_EXE%" echo   missing cl.exe & exit /b 1
 if not exist "%PCRE%\include\pcre2.h" echo   missing third_party\pcre2 & exit /b 1
 if exist "build\obj-pcre2\16\.stamp" if not "%PCRE2_REBUILD%"=="1" (
   echo   cached
   exit /b 0
 )
 
-set "InCLUDE=%MSVC%\include;%SDKInC%\ucrt;%SDKInC%\shared;%SDKInC%\um;%PCRE%\include;%PCRE%\src"
+set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%PCRE%\include;%PCRE%\src"
 if not exist "build\obj-pcre2" mkdir "build\obj-pcre2"
 if not exist "build\obj-pcre2\chartables.c" copy /y "%PCRE%\src\pcre2_chartables.c.dist" "build\obj-pcre2\chartables.c" >nul
 
@@ -31,13 +31,13 @@ set FILES=pcre2_auto_possess pcre2_compile pcre2_compile_class pcre2_config pcre
 for %%W in (8 16) do (
   if not exist "build\obj-pcre2\%%W" mkdir "build\obj-pcre2\%%W"
   for %%F in (%FILES%) do (
-    "%CL%" /nologo /c /MT /O2 /W0 /D_CRT_SECURE_nO_WARnInGS /DPCRE2_STATIC /DHAVE_COnFIG_H /DPCRE2_CODE_UnIT_WIDTH=%%W /I "%PCRE%\include" /I "%PCRE%\src" /Fo"build\obj-pcre2\%%W\%%F.obj" "%PCRE%\src\%%F.c" || exit /b 1
+    "%CL_EXE%" /nologo /c /MT /O2 /W0 /D_CRT_SECURE_NO_WARNINGS /DPCRE2_STATIC /DHAVE_CONFIG_H /DPCRE2_CODE_UNIT_WIDTH=%%W /I "%PCRE%\include" /I "%PCRE%\src" /Fo"build\obj-pcre2\%%W\%%F.obj" "%PCRE%\src\%%F.c" || exit /b 1
   )
-  "%CL%" /nologo /c /MT /O2 /W0 /D_CRT_SECURE_nO_WARnInGS /DPCRE2_STATIC /DHAVE_COnFIG_H /DPCRE2_CODE_UnIT_WIDTH=%%W /I "%PCRE%\include" /I "%PCRE%\src" /Fo"build\obj-pcre2\%%W\chartables.obj" "build\obj-pcre2\chartables.c" || exit /b 1
+  "%CL_EXE%" /nologo /c /MT /O2 /W0 /D_CRT_SECURE_NO_WARNINGS /DPCRE2_STATIC /DHAVE_CONFIG_H /DPCRE2_CODE_UNIT_WIDTH=%%W /I "%PCRE%\include" /I "%PCRE%\src" /Fo"build\obj-pcre2\%%W\chartables.obj" "build\obj-pcre2\chartables.c" || exit /b 1
 )
 
 if not exist "build\obj-pcre2\common" mkdir "build\obj-pcre2\common"
-"%CL%" /nologo /c /MT /O2 /W0 /D_CRT_SECURE_nO_WARnInGS /DPCRE2_STATIC /DHAVE_COnFIG_H /DPCRE2_CODE_UnIT_WIDTH=8 /I "%PCRE%\include" /I "%PCRE%\src" /Fo"build\obj-pcre2\common\pcre2_chkdint.obj" "%PCRE%\src\pcre2_chkdint.c" || exit /b 1
+"%CL_EXE%" /nologo /c /MT /O2 /W0 /D_CRT_SECURE_NO_WARNINGS /DPCRE2_STATIC /DHAVE_CONFIG_H /DPCRE2_CODE_UNIT_WIDTH=8 /I "%PCRE%\include" /I "%PCRE%\src" /Fo"build\obj-pcre2\common\pcre2_chkdint.obj" "%PCRE%\src\pcre2_chkdint.c" || exit /b 1
 
 echo done> "build\obj-pcre2\16\.stamp"
 echo   built width 8 + 16
