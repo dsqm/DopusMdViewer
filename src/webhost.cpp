@@ -64,6 +64,8 @@ const UINT kCmdRelease = kCmdBase + 7;
 const UINT kCmdScript = kCmdBase + 8;
 const UINT kCmdPrewarm = kCmdBase + 9;
 const UINT kCmdPrint = kCmdBase + 10;
+const UINT kCmdRecover = kCmdBase + 11;  // 进程失效后的自愈，wParam 1 = 连实例一起重建
+const UINT kCmdDevTools = kCmdBase + 12;  // 只给 hosttest：发一条 DevTools 方法（造崩溃用）
 
 // 预热：InitEx 后等一会儿再开始，避开 Opus 自己的启动高峰。
 const UINT_PTR kTimerPrewarm = 1;
@@ -73,6 +75,9 @@ const UINT kPrewarmDelayMs = 3000;
 const UINT kWatchIntervalMs = 2000;
 const int kWatchEmptyLimit = 2;  // 连续两次看不见 DO 窗口才释放（约 4 秒）
 const int kMaxRoots = 8;
+// 自愈预算：一分钟内连续崩这么多次就停手，免得卡在崩—恢复—再崩的循环里。
+const int kRecoverBudget = 3;
+const LONGLONG kRecoverWindowMs = 60000;
 
 // 以下状态只在宿主线程上访问。
 struct Host {
@@ -92,6 +97,9 @@ struct Host {
   bool suspended = false;
   int idleReleaseMinutes = 3;
   int watchEmpty = 0;
+  // 自愈状态：最近一次恢复的时刻与一分钟内的累计次数（只在宿主线程上读写）。
+  LARGE_INTEGER lastRecover = {};
+  int recoverCount = 0;
   LARGE_INTEGER tEnsure = {};
   LARGE_INTEGER tController = {};
   LARGE_INTEGER tNav = {};
@@ -564,6 +572,29 @@ void OnEnvironmentReady(HRESULT hr, ICoreWebView2Environment* env) {
   LARGE_INTEGER now;
   ::QueryPerformanceCounter(&now);
   LogLine(L"WEBHOST: Environment 就绪 +%.1fms", QpcMs(g_host.tEnsure.QuadPart, now.QuadPart));
+
+  // 浏览器进程整个没了：controller 一定也跟着失效，只能回收到 Environment 重建。
+  ComPtr<ICoreWebView2Environment5> env5;
+  if (SUCCEEDED(env->QueryInterface(IID_ICoreWebView2Environment5,
+                                    reinterpret_cast<void**>(env5.GetAddressOf()))) &&
+      env5) {
+    EventRegistrationToken exitToken = {};
+    const HRESULT exitHr = env5->add_BrowserProcessExited(
+        Callback<ICoreWebView2BrowserProcessExitedEventHandler>(
+            [](ICoreWebView2Environment* sender,
+               ICoreWebView2BrowserProcessExitedEventArgs* args) -> HRESULT {
+              (void)sender;
+              (void)args;
+              LogLine(L"WEBHOST: 浏览器进程已退出");
+              if (g_host.host) ::PostMessageW(g_host.host, kCmdRecover, 1, 0);
+              return S_OK;
+            })
+            .Get(),
+        &exitToken);
+    if (FAILED(exitHr)) LogLine(L"WEBHOST: 注册浏览器进程退出事件失败 hr=0x%08X",
+                                static_cast<unsigned>(exitHr));
+  }
+
   CreateController();
 }
 
@@ -599,6 +630,39 @@ void CreateController() {
             }
 
             ApplySettings(g_host.webview.Get());
+
+            // 渲染进程崩溃时页面会停在内置错误页，界面不会自己回来。
+            EventRegistrationToken failedToken = {};
+            const HRESULT failHr = g_host.webview->add_ProcessFailed(
+                Callback<ICoreWebView2ProcessFailedEventHandler>(
+                    [](ICoreWebView2* sender,
+                       ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT {
+                      (void)sender;
+                      COREWEBVIEW2_PROCESS_FAILED_KIND kind =
+                          COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED;
+                      args->get_ProcessFailedKind(&kind);
+                      LogLine(L"WEBHOST: 进程失效 kind=%d", static_cast<int>(kind));
+                      switch (kind) {
+                        case COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED:
+                        case COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED:
+                          // 就地重载比整份实例重建便宜，页面会重新发 ready。
+                          g_host.ready = false;
+                          ::InterlockedExchange(&g_readyFlag, 0);
+                          if (g_host.host) ::PostMessageW(g_host.host, kCmdRecover, 0, 0);
+                          break;
+                        case COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED:
+                          if (g_host.host) ::PostMessageW(g_host.host, kCmdRecover, 1, 0);
+                          break;
+                        default:
+                          // GPU / utility / 沙箱助手由 Chromium 自己重启，不用插手。
+                          break;
+                      }
+                      return S_OK;
+                    })
+                    .Get(),
+                &failedToken);
+            if (FAILED(failHr)) LogLine(L"WEBHOST: 注册进程失效事件失败 hr=0x%08X",
+                                        static_cast<unsigned>(failHr));
 
             // 虚拟主机：app 资源。DENY_CORS 让同源可用、跨源 fetch 被拒（票 08）。
             ComPtr<ICoreWebView2_3> webview3;
@@ -823,6 +887,43 @@ void EnsureEnvironment() {
                        static_cast<unsigned>(hr));
     Fail(szMsg);
   }
+}
+
+// 自愈：进程失效后把画面救回来。渲染进程死掉只重载页面（页面重新发 ready，借用方
+// 按原流程重推皮肤与索引）；浏览器进程死掉则回收实例，从 Environment 重建。
+// 一分钟内连续恢复超过预算就停手——再救下去只是让窗格反复闪白，不如报一句失败。
+bool RecoveryAllowed() {
+  LARGE_INTEGER now;
+  ::QueryPerformanceCounter(&now);
+  const double elapsed = QpcMs(g_host.lastRecover.QuadPart, now.QuadPart);
+  if (!g_host.lastRecover.QuadPart || elapsed > static_cast<double>(kRecoverWindowMs)) {
+    g_host.recoverCount = 0;
+  }
+  if (g_host.recoverCount >= kRecoverBudget) return false;
+  g_host.lastRecover = now;
+  ++g_host.recoverCount;
+  LogLine(L"WEBHOST: 第 %d 次恢复（距上次 %.0fms）", g_host.recoverCount, elapsed);
+  return true;
+}
+
+void RecoverInstance() {
+  LogLine(L"WEBHOST: 回收实例后重建");
+  ReleaseInstance();
+  EnsureEnvironment();
+}
+
+void RecoverPage() {
+  if (!g_host.webview || !g_host.controller) {
+    RecoverInstance();
+    return;
+  }
+  ResumeIfSuspended();
+  if (g_host.controller) g_host.controller->put_IsVisible(TRUE);
+  ::QueryPerformanceCounter(&g_host.tNav);
+  const HRESULT hr = g_host.webview->Reload();
+  LogLine(L"WEBHOST: 重载页面 hr=0x%08X", static_cast<unsigned>(hr));
+  // 渲染进程还没退干净时 Reload 会失败，退回到整份实例重建这条确定的路。
+  if (FAILED(hr)) RecoverInstance();
 }
 
 void SetChildStyle(bool child) {
@@ -1078,11 +1179,48 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       return SUCCEEDED(hr) ? 1 : 0;
     }
 
+    case kCmdRecover: {
+      // 实例已经被回收过就什么都不用做：POST 可能来两次（ProcessFailed 与
+      // BrowserProcessExited 都会报浏览器进程退出）。
+      const bool full = wParam != 0;
+      if (full && !g_host.env) return 0;
+      if (!full && !g_host.webview) return 0;
+      if (!RecoveryAllowed()) {
+        LogLine(L"WEBHOST: 恢复次数超预算，停止自愈");
+        Fail(L"预览引擎反复崩溃，已停止自动恢复（重启 Opus 后再试）");
+        return 0;
+      }
+      PostEvent(MDV_EVT_RECOVERING, L"");
+      if (full) {
+        RecoverInstance();
+      } else {
+        RecoverPage();
+      }
+      return 1;
+    }
+
     case kCmdScript: {
       const std::wstring* script = reinterpret_cast<const std::wstring*>(lParam);
       if (!script || !g_host.webview || !g_host.ready) return 0;
       if (g_host.borrower != reinterpret_cast<HWND>(wParam)) return 0;
       return SUCCEEDED(g_host.webview->ExecuteScript(script->c_str(), nullptr)) ? 1 : 0;
+    }
+
+    case kCmdDevTools: {
+      const std::wstring* method = reinterpret_cast<const std::wstring*>(lParam);
+      if (!method || !g_host.webview) return 0;
+      const HRESULT hr = g_host.webview->CallDevToolsProtocolMethod(
+          method->c_str(), L"{}",
+          Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
+              [](HRESULT result, LPCWSTR json) -> HRESULT {
+                LogLine(L"WEBHOST: DevTools 返回 hr=0x%08X %s", static_cast<unsigned>(result),
+                        json ? json : L"");
+                return S_OK;
+              })
+              .Get());
+      LogLine(L"WEBHOST: DevTools 调用 %s hr=0x%08X", method->c_str(),
+              static_cast<unsigned>(hr));
+      return SUCCEEDED(hr) ? 1 : 0;
     }
 
     case kSearchDone: {
@@ -1265,6 +1403,16 @@ bool WebHostExecuteScript(HWND hViewer, const std::wstring& script) {
   LRESULT result = 0;
   if (!SendCommand(kCmdScript, reinterpret_cast<WPARAM>(hViewer),
                    reinterpret_cast<LPARAM>(&script), &result)) {
+    return false;
+  }
+  return result != 0;
+}
+
+bool WebHostCallDevTools(HWND hViewer, const std::wstring& method) {
+  if (!hViewer) return false;
+  LRESULT result = 0;
+  if (!SendCommand(kCmdDevTools, reinterpret_cast<WPARAM>(hViewer),
+                   reinterpret_cast<LPARAM>(&method), &result)) {
     return false;
   }
   return result != 0;

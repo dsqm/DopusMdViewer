@@ -51,6 +51,7 @@ const UINT_PTR kCopyLateTimerId = 27;
 const UINT_PTR kFindPingTimerId = 28;
 const UINT_PTR kFindPing2TimerId = 29;
 const UINT_PTR kFindRaceTimerId = 30;
+const UINT_PTR kCrashTimerId = 31;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -90,6 +91,8 @@ bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，�
 bool g_copy = false;        // 5 秒后按 Ctrl+A，7 秒读剪贴板，9 秒再走 SELECTALL 消息
 bool g_pin = false;         // 5 秒后选区钉块 + 拖边滚动，滚到底验钉块没被换出
 bool g_print = false;       // 5 秒后准备打印容器（不弹对话框），回流块数/图表/图片
+bool g_crash = false;          // 5 秒后崩渲染进程（DevTools Page.crash），验自愈
+bool g_crashBrowser = false;   // 5 秒后崩浏览器进程（DevTools Browser.crash），验实例重建
 HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
 HWND g_hwndTimer = nullptr;  // release 模式：主窗口销毁后用它继续跑计时器
@@ -279,6 +282,11 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       } else if (wParam == kSettingsTimerId) {
         ::KillTimer(hwnd, kSettingsTimerId);
         SettingsShow(g_hwndMain);
+      } else if (wParam == kCrashTimerId) {
+        ::KillTimer(hwnd, kCrashTimerId);
+        const wchar_t* method = g_crashBrowser ? L"Browser.crash" : L"Page.crash";
+        const bool ok = g_viewer && WebHostCallDevTools(g_viewer, method);
+        LogLine(L"TEST: 请求崩溃 %s -> %s", method, ok ? L"已发出" : L"失败");
       } else if (wParam == kScrollTimerId) {
         // 通过页面脚本走一遍 wheel 路径：更新 target、收敛动画、重新摆位、取块。
         ::KillTimer(hwnd, kScrollTimerId);
@@ -604,6 +612,11 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"slug")) g_slug = true;
   if (*p && wcsstr(p, L"copy")) g_copy = true;
   if (*p && wcsstr(p, L"pin")) g_pin = true;
+  if (*p && wcsstr(p, L"crashb")) {
+    g_crashBrowser = true;
+  } else if (*p && wcsstr(p, L"crash")) {
+    g_crash = true;
+  }
   if (*p && wcsstr(p, L"print")) g_print = true;
   if (*p && wcsstr(p, L"prewarm")) g_prewarm = true;
   if (*p && wcsstr(p, L"release")) g_release = true;
@@ -727,6 +740,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_print) {
     ::SetTimer(g_hwndMain, kPrintTimerId, 5000, nullptr);
+  }
+  if (g_crash || g_crashBrowser) {
+    ::SetTimer(g_hwndMain, kCrashTimerId, 5000, nullptr);
   }
 
   if (g_drop) {

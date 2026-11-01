@@ -487,6 +487,13 @@ void OnHostFailed(ViewerState* st, const wchar_t* reason) {
   ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
 }
 
+void OnHostRecovering(ViewerState* st) {
+  LogLine(L"VIEWER: 预览进程失效，等宿主重载页面");
+  // 重载期间页面是空的：占位文字由 OnPaint 按「未就绪」自己顶上来。
+  SetStatus(st, L"预览进程异常，正在恢复…");
+  ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
+}
+
 void HandleHostEvent(ViewerState* st, int kind, const wchar_t* text) {
   switch (kind) {
     case MDV_EVT_READY:
@@ -497,6 +504,9 @@ void HandleHostEvent(ViewerState* st, int kind, const wchar_t* text) {
       return;
     case MDV_EVT_MESSAGE:
       if (text) OnHostMessage(st, std::wstring(text));
+      return;
+    case MDV_EVT_RECOVERING:
+      OnHostRecovering(st);
       return;
     default:
       return;

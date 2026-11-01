@@ -27,6 +27,7 @@ enum {
   MDV_EVT_READY = 1,    // 页面首帧就绪（text 为空）
   MDV_EVT_FAILED = 2,   // 建不起来（text = 原因）
   MDV_EVT_MESSAGE = 3,  // 页面发来的消息（text = 完整帧，如 "event|rendered|12.3"）
+  MDV_EVT_RECOVERING = 4,  // 进程失效后正在自愈，随后会再发一次 READY（text 为空）
 };
 
 struct MDV_EVENT {
@@ -67,6 +68,9 @@ void WebHostReleaseController(void);
 
 // 只给 tools/hosttest 用：在页面里执行一段脚本（滚动验收）。
 bool WebHostExecuteScript(HWND hViewer, const std::wstring& script);
+
+// 只给 tools/hosttest 用：发一条 DevTools 方法，用来造渲染进程崩溃（Page.crash）。
+bool WebHostCallDevTools(HWND hViewer, const std::wstring& method);
 
 // 打开 WebView2 的打印对话框（ICoreWebView2_16::ShowPrintUI）。页面要先把
 // 全文渲染进打印容器；运行时太老拿不到接口时返回 false。
