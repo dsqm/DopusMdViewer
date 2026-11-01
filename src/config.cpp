@@ -228,21 +228,23 @@ const Config& ConfigLoad(void) {
   g_loaded = true;
 
   const wchar_t* path = ConfigPath();
+  // 读不到配置的几条路（目录不可用 / 文件缺失 / 格式坏）都无从得知日志开关的
+  // 意图，用 LogLineAlways 绕过开关记下来；否则首次运行连一条现场都没有。
   if (!path || !*path) {
-    LogLine(L"CONFIG: 数据目录不可用，全部用默认值");
+    LogLineAlways(L"CONFIG: 数据目录不可用，全部用默认值");
     return g_config;
   }
 
   std::string bytes;
   if (!UtilReadFileBytes(path, kMaxConfigBytes, &bytes)) {
-    LogLine(L"CONFIG: 没有 %s，用默认值", path);
+    LogLineAlways(L"CONFIG: 没有 %s，用默认值", path);
     return g_config;
   }
 
   try {
     const nlohmann::json root = nlohmann::json::parse(bytes);
     if (!root.is_object()) {
-      LogLine(L"CONFIG: 顶层不是对象，用默认值");
+      LogLineAlways(L"CONFIG: 顶层不是对象，用默认值");
       return g_config;
     }
     ApplyJson(root, &g_config);
@@ -252,7 +254,7 @@ const Config& ConfigLoad(void) {
             g_config.font.measureEm, g_config.enableLog ? 1 : 0);
   } catch (const std::exception& e) {
     // 读坏就用默认值，不打扰用户
-    LogLine(L"CONFIG: 解析失败（%hs），用默认值", e.what());
+    LogLineAlways(L"CONFIG: 解析失败（%hs），用默认值", e.what());
   }
 
   return g_config;

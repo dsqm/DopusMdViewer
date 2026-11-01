@@ -2,7 +2,8 @@
 //
 // Design notes:
 //  * Closed by default. Until LogSetEnabled(true), LogLine returns without
-//    touching the file system.
+//    touching the file system. LogLineAlways bypasses the switch for the
+//    startup paths where the configured switch itself is unreadable.
 //  * The file is opened / appended / closed per line. A viewer plugin can be
 //    unloaded at any moment, and a dropped buffered line is worse than a slow one.
 //  * A single SRWLOCK serialises writers; SRWLOCK_INIT needs no DllMain work,
@@ -118,16 +119,13 @@ void LogSetEnabled(bool enabled) {
   g_enabled.store(enabled, std::memory_order_relaxed);
 }
 
-void LogLine(const wchar_t* fmt, ...) {
-  if (!g_enabled.load(std::memory_order_relaxed)) return;
+namespace {
 
+void WriteFormatted(const wchar_t* fmt, va_list args) {
   wchar_t body[1024];
   body[0] = L'\0';
 
-  va_list args;
-  va_start(args, fmt);
   ::StringCchVPrintfW(body, ARRAYSIZE(body), fmt, args);
-  va_end(args);
   body[ARRAYSIZE(body) - 1] = L'\0';
 
   SYSTEMTIME st;
@@ -156,4 +154,22 @@ void LogLine(const wchar_t* fmt, ...) {
   EnsurePathLocked();
   WriteRaw(utf8, static_cast<DWORD>(got - 1));  // drop the terminating NUL
   ::ReleaseSRWLockExclusive(&g_lock);
+}
+
+}  // namespace
+
+void LogLine(const wchar_t* fmt, ...) {
+  if (!g_enabled.load(std::memory_order_relaxed)) return;
+
+  va_list args;
+  va_start(args, fmt);
+  WriteFormatted(fmt, args);
+  va_end(args);
+}
+
+void LogLineAlways(const wchar_t* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  WriteFormatted(fmt, args);
+  va_end(args);
 }
