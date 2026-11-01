@@ -104,6 +104,8 @@ const wchar_t* const kZh[kCount] = {
 };
 
 static_assert(static_cast<int>(Str::Skin) == 5, "字符串表顺序必须与 localize.h 的 Str 一致");
+static_assert(sizeof(kZh) / sizeof(kZh[0]) == kCount,
+              "kZh 少了条目：漏配的 key 会显示成空串");
 
 }  // namespace
 

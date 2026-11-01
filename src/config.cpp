@@ -76,9 +76,9 @@ FontStack ReadStack(const nlohmann::json& obj, const char* key, const FontStack&
   FontStack out;
   for (const auto& item : obj[key]) {
     if (!item.is_string()) continue;
-    std::string name = item.get<std::string>();
+    const std::string name = item.get<std::string>();
     if (name.empty()) continue;
-    out.push_back(std::wstring(name.begin(), name.end()));
+    out.push_back(Utf8ToWide(name));
   }
   return out.empty() ? fallback : out;
 }
@@ -130,7 +130,7 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
 
   if (root.contains("skin") && root["skin"].is_string()) {
     const std::string id = root["skin"].get<std::string>();
-    if (!id.empty()) c->skin.assign(id.begin(), id.end());
+    if (!id.empty()) c->skin = Utf8ToWide(id);
   }
 
   if (!root.contains("font") || !root["font"].is_object()) return;
@@ -238,7 +238,10 @@ const Config& ConfigLoad(void) {
 }
 
 const Config& ConfigGet(void) {
-  if (!g_loaded) return ConfigLoad();
+  // ConfigLoad 内部自持锁，这里不能再包着它；加载后上锁返回，避免与
+  // ConfigSave 的写并发。惰性双载无害（结果一致）。
+  if (!g_loaded) ConfigLoad();
+  std::lock_guard<std::mutex> lock(g_modeMutex);
   return g_config;
 }
 
