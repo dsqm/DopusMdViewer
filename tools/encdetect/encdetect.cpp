@@ -1,4 +1,4 @@
-// encdetect.cpp - 票 19 判码链的诊断入口。
+// encdetect.cpp - 判码链的诊断入口。
 //
 // 直接调用 DLL 里的 DetectEncodingEx，避免工具与生产代码各写一套判定。
 //

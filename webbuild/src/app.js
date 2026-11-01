@@ -30,7 +30,7 @@ import diff from 'highlight.js/lib/languages/diff'
 import powershell from 'highlight.js/lib/languages/powershell'
 
 /* ============================================================
-   约定（票 03 / 05 / 06 / 07 / 08 / 11）
+   约定
    - 全文不进 DOM：自绘滚动条 + 估算总高 + 常驻窗口（800 块量级）。
    - 块正文走 https://mdblocks.localhost/__blocks 的二进制帧，批量取。
    - 颜色全在 #base / #skin，字体全在 #fx（#fx 永远最后）。
@@ -48,10 +48,10 @@ const SEARCH_URL = 'https://mdblocks.localhost/__search'
 const OUTLINE_URL = 'https://mdblocks.localhost/__outline'
 
 const OVERSCAN = 120          // 视口上下各留多少块
-const MAX_FETCH_BLOCKS = 100  // 单次请求块数（票 03：50–200）
+const MAX_FETCH_BLOCKS = 100  // 单次请求块数
 const MAX_INFLIGHT = 3
 
-// 钉块（票 05）：选区覆盖的常驻块不参与换出，上限 3000 块 / 32MB。
+// 钉块：选区覆盖的常驻块不参与换出，上限 3000 块 / 32MB。
 const PIN_MAX_BLOCKS = 3000
 const PIN_MAX_BYTES = 32 * 1024 * 1024
 const SEL_EDGE = 42           // 拖选到离视口边缘多少 px 开始自动滚动
@@ -79,7 +79,7 @@ const LANGUAGES = {
 
 for (const [name, lang] of Object.entries(LANGUAGES)) hljs.registerLanguage(name, lang)
 
-/* 跨块语义（票 05）：链接引用定义与脚注定义散在别的块里，逐块渲染时拿不到。
+/* 跨块语义：链接引用定义与脚注定义散在别的块里，逐块渲染时拿不到。
    C++ 把隐藏块原文一次性送过来，这里先建 references，再按定义顺序给脚注编号。
    脚注角标自己实现，不用 markdown-it-footnote 的全局状态。 */
 const REF = { references: null }
@@ -407,7 +407,7 @@ const decoder = new TextDecoder('utf-8')
 const KIND_NAMES = ['none', 'para', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'fence', 'table', 'list', 'quote', 'html', 'hr', 'fm']
 
-/* 页内搜索与大纲（M6）。命中在 C++ 里按源字节找，块内偏移换成解码文本的
+/* 页内搜索与大纲。命中在 C++ 里按源字节找，块内偏移换成解码文本的
    UTF-16 单元下标；前端在渲染后的文本里找最近的一处真实出现位置再包 mark——
    源码里的 `**`、链接语法不在渲染文本里，纯按下标切会偏。 */
 const FIND = {
@@ -448,7 +448,7 @@ const OUT = {
   seq: 0,
 }
 
-/* 标题 slug（票 05）：GitHub 风格、按出现顺序去重，重名追加 -1 / -2。
+/* 标题 slug：GitHub 风格、按出现顺序去重，重名追加 -1 / -2。
    清单来自 __outline 的前 1 万条，超过这个数的标题没有锚点——与大纲同一条上限。 */
 const SLUG = {
   bySlug: new Map(),   // slug -> 块号
@@ -1920,7 +1920,7 @@ function onSelUp() {
 }
 
 // Ctrl+A：全文不在 DOM 里，视觉上只能选中已载入的块；同时记下“全选”，
-// 让接下来的 Ctrl+C 走宿主复制完整全文（票 05 第 5.2 节的复制路径）。
+// 让接下来的 Ctrl+C 走宿主复制完整全文。
 function selectAllText() {
   if (!V.active) return
   let lo = -1
@@ -2107,7 +2107,7 @@ async function copyRendered() {
   }
 }
 
-/* ---------------- 搜索与大纲（M6） ---------------- */
+/* ---------------- 搜索与大纲 ---------------- */
 
 function foldAscii(text) {
   // 兜底路径（正则不可用时）只折叠 ASCII；正常路径由 findOccurrences 里的 i+u 正则负责
@@ -2941,7 +2941,7 @@ function applySkin(css, skinId) {
     return false
   }
   state.skinId = skinId
-  // 皮肤换了，后续图表要按新配色重画（已画好的等 M6 换皮肤重渲染时再处理）
+  // 皮肤换了，后续图表按新配色重画；已经画好的图保留旧配色，等重新渲染时才更新
   if (state.mermaidState === 'ready' && state.mermaidApi) initMermaid(state.mermaidApi)
   if (V.active) refreshBigLayout()
   return true

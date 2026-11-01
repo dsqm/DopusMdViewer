@@ -139,7 +139,7 @@ bool ParseBlocksUri(const std::wstring& uri, uint32_t* from, uint32_t* count) {
   return true;
 }
 
-// ---------------- 巨型块行窗口（票 05 第 4 节） ----------------
+// ---------------- 巨型块行窗口 ----------------
 
 constexpr uint32_t kLineCheckpoint = 64;
 constexpr size_t kLineCacheEntries = 8;

@@ -2,14 +2,14 @@
    base.css — 排版骨架，随 web\ 分发。
 
    颜色：一律取 --md-* 变量，规则里不出现字面色值。
-   类型：一律取 --fx-* 变量（票 06 的三槽位 / px 字号 / 倍数行高 / em 行宽），
+   类型：一律取 --fx-* 变量（三槽位 / px 字号 / 倍数行高 / em 行宽），
          由 <style id="fx"> 最后覆盖，皮肤改不动。
    唯一的字面色值集中在 :root 默认块，供"皮肤只写两三行"时兜底。
    语法高亮的 token 配色不在本文件，由皮肤以选择器提供。
    ============================================================ */
 
 :root {
-  /* —— 变量契约（票 07，27 个） —— */
+  /* —— 变量契约（27 个） —— */
   --md-bg: #ffffff;
   --md-bg-alt: #f6f8fa;
   --md-fg: #1f2328;
@@ -43,7 +43,7 @@
   --md-radius: 6px;
   --md-space-block: 1em;
 
-  /* —— 字体与行宽（票 06），#fx 会整组覆盖 —— */
+  /* —— 字体与行宽，#fx 会整组覆盖 —— */
   --fx-ui: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   --fx-body: var(--fx-ui);
   --fx-mono: "Cascadia Mono", "Consolas", "Courier New", monospace;
@@ -78,7 +78,7 @@ body.mdv-root {
   padding: 1.5em 1.5em 3em;
 }
 
-/* ---------------- 虚拟滚动（M4，票 03） ----------------
+/* ---------------- 虚拟滚动 ----------------
    全文不进 DOM：块绝对定位在 #doc 里，整体用 translate3d 位移；
    右侧是自绘滚动条，位置由前端的 Fenwick 前缀和算出。 */
 
@@ -154,7 +154,7 @@ body.dev #doc {
   padding: 1.5em 1.5em 3em;
 }
 
-/* ---------------- 打印（票 05 / M5） ----------------
+/* ---------------- 打印 ----------------
    虚拟滚动只有视口块，打印前前端把全文渲染进 #print-root；
    平时不显示，@media print 时只留它。 */
 #print-root { display: none; }
@@ -464,7 +464,7 @@ pre.mermaid-src {
   border-left: 0.25em solid var(--md-block-border);
 }
 
-/* ---------------- 界面件（大纲 / 搜索），票 06 的 .ui ---------------- */
+/* ---------------- 界面件（大纲 / 搜索），.ui ---------------- */
 
 .ui {
   font-family: var(--fx-ui);
@@ -530,7 +530,7 @@ pre.mermaid-src {
   background: transparent;
 }
 
-/* ---------------- 搜索条与大纲（M6） ---------------- */
+/* ---------------- 搜索条与大纲 ---------------- */
 
 #tools {
   position: fixed;

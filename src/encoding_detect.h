@@ -1,4 +1,4 @@
-// encoding_detect.h - 判码链的详细结果（票 19）。
+// encoding_detect.h - 判码链的详细结果。
 //
 // 生产路径只用 DetectEncoding()；这里的 Ex 版本把中间证据（样本位置、CED 原始
 // 结果）一并交出来，给 tools/encdetect 量准确率用，避免工具与 DLL 各写一套判码。

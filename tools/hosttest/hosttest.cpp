@@ -2,7 +2,7 @@
 //
 // 它不复制任何渲染逻辑：直接调用 src\viewer_window.cpp 的 ViewerCreate 与
 // DVPLUGINMSG_LOADW，所以跑通就等于「Opus 里那条路」跑通，只是省掉每次重启 Opus。
-// 用来验证：宿主窗口、controller、mdprev.localhost 映射、CSP 头、皮肤/字体/正文推送。
+// 用来验证：宿主窗口、controller、mdprev.localhost 映射、CSP 生效、皮肤/字体/正文推送。
 //
 // 用法：hosttest.exe "C:\path\to\sample.md"
 

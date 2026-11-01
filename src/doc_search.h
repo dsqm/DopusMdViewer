@@ -1,7 +1,7 @@
-// doc_search.h - 页内搜索（票 04：不建倒排索引，多线程线性扫）。
+// doc_search.h - 页内搜索（不建倒排索引，多线程线性扫）。
 //
-// 只做字节匹配，服务于 UTF-8 与 Legacy 源文件。UTF-16 源在搜索前由调用方
-// 决定是否转成宽字符模式（M6 的搜索 UI 再定大小写与整词选项）。
+// 只做字节匹配，服务于 UTF-8 与 Legacy 源文件。UTF-16 源由调用方改用宽字符
+// 扫描（见 doc_source 的搜索分派）。
 
 #pragma once
 
@@ -18,7 +18,7 @@ struct SearchHits {
   bool truncated = false;         // 超过上限只留前 10000 条
 };
 
-// threads <= 0 时用 4。命中上限 10000（票 04）。
+// threads <= 0 时用 4。命中上限 10000。
 // caseSensitive=false 时只折叠 ASCII 字母，多字节编码按原字节比较。
 // needle 里含带大小写变体的非 ASCII 字符时，这一层给不出正确结果，由调用方改走
 // doc::LiteralSearchFile（PCRE2 的 Unicode 简单折叠），见 doc_regex.h。

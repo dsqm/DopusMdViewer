@@ -1,4 +1,4 @@
-// doc_regex.h - 页内正则搜索（PCRE2 8/16 位，票 14）。
+// doc_regex.h - 页内正则搜索（PCRE2 8/16 位）。
 //
 // 匹配跑在**源文本**上：UTF-8 用 8 位引擎，UTF-16 直接按单元拼，Legacy（GB18030 /
 // Shift_JIS / Big5 / EUC / ISO-2022 / 单字节西欧与西里尔）先解码成 UTF-16 再匹配。

@@ -1,7 +1,7 @@
 // viewer_window.h - Opus 的查看器子窗口。
 //
 // 这个窗口本身不画任何东西：它把 WebView2 的宿主窗口借进来铺满客户区，
-// 负责把 DVPLUGINMSG_* 翻译成「读文件 / 推送正文 / 重新注入皮肤与字体」。
+// 负责把 DVPLUGINMSG_* 翻译成「打开文档 / 推送索引 / 重新注入皮肤与字体」。
 #pragma once
 
 #include <windows.h>

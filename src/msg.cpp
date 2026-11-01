@@ -63,7 +63,7 @@ std::wstring MakeSkin(const std::wstring& id, const std::wstring& css) {
 
 std::wstring MakeFx(const FontSettings& font) {
   const std::wstring ui = FontStackToCss(font.ui);
-  // 正文槽位为空时解析成界面槽位的实际值再写出，不留继承给皮肤（票 07 第 4 节）
+  // 正文槽位为空时解析成界面槽位的实际值再写出，不留继承给皮肤
   const std::wstring body = font.body.empty() ? ui : FontStackToCss(font.body);
   const std::wstring mono = FontStackToCss(font.mono);
 

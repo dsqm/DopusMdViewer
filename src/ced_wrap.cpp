@@ -37,7 +37,7 @@ unsigned CodePageOf(Encoding e) {
     case GB18030: return 54936;
     case CHINESE_BIG5:
     case CHINESE_BIG5_CP950: return 950;
-    case BIG5_HKSCS: return 950;  // 无 HKSCS 扩展的 CP950，见票 19 的已知限制
+    case BIG5_HKSCS: return 950;  // 无 HKSCS 扩展的 CP950，罕见扩展字符会解码失败
     case CHINESE_EUC_CN:
     case CHINESE_EUC_DEC:
     case CHINESE_CNS: return 0;   // EUC-TW，Windows 无稳定代码页
@@ -45,7 +45,7 @@ unsigned CodePageOf(Encoding e) {
     case KOREAN_EUC_KR: return 949;
     case ISO_2022_KR: return 50225;
     case ISO_2022_CN: return 50227;
-    // HZ 与 UTF-7 也能显示，但检索要按 7 位状态机映射回字节；不在票 19 的范围内，
+    // HZ 与 UTF-7 也能显示，但检索要按 7 位状态机映射回字节；不在支持范围内，
     // 按「不解码这一类」回退，避免搜索给出错位的高亮。
     case HZ_GB_2312: return 0;
 

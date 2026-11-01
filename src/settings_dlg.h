@@ -1,4 +1,4 @@
-// settings_dlg.h - Opus 插件设置入口（M6 的四页设置之前先放网络图片这一项）。
+// settings_dlg.h - Opus 插件设置入口（非模态四页：外观 / 字体 / 渲染 / 高级）。
 
 #pragma once
 

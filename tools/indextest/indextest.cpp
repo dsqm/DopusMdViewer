@@ -1,4 +1,5 @@
-// indextest.cpp - M3 验收驱动：只调 doc_index / doc_search，不复制扫描逻辑。
+// indextest.cpp - 索引与搜索的验收驱动：只调 doc_index / doc_search / doc_regex，
+// 不复制扫描逻辑。
 //
 // 用法：
 //   indextest scanmulti <file>

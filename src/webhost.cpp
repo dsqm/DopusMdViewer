@@ -6,7 +6,7 @@
 //     的 postMessage 直接失败（0x802A000C）。因此这里自建一个线程，Environment
 //     与 Controller 只活在那条线程上，其余线程通过消息借用。
 //  2. controller 的父窗口一旦销毁就永久失效，所以它只认插件自持的宿主窗口，
-//     Opus 的查看器窗口通过 SetParent 借用（票 10）。归还必须在 WM_DESTROY 做：
+//     Opus 的查看器窗口通过 SetParent 借用。归还必须在 WM_DESTROY 做：
 //     DestroyWindow 会连子窗口一起销毁，等到 WM_NCDESTROY 宿主已经没了。
 //  3. 宿主线程与进程同寿命，controller 不按空闲回收——这样关掉窗口再打开只是
 //     一次 SetParent 加一次推送，不必再付浏览器进程冷启动的两三秒。代价是**同一
@@ -141,7 +141,7 @@ std::wstring UserDataDir() {
   return dir;
 }
 
-// 用户自放的 Fixed Version 运行时（票 22）：…\DopusMdViewer\Runtime\msedgewebview2.exe。
+// 用户自放的 Fixed Version 运行时：…\DopusMdViewer\Runtime\msedgewebview2.exe。
 // 只认这一层，不递归扫描——多层扫描要回答「两份该用哪份」，没有确定答案。
 // 结果按进程缓存：换运行时本来就要重启 Opus，没必要每次建实例都去摸盘。
 const std::wstring& UserRuntimeDir() {
@@ -691,7 +691,7 @@ void CreateController() {
             if (FAILED(failHr)) LogLine(L"WEBHOST: 注册进程失效事件失败 hr=0x%08X",
                                         static_cast<unsigned>(failHr));
 
-            // 虚拟主机：app 资源。DENY_CORS 让同源可用、跨源 fetch 被拒（票 08）。
+            // 虚拟主机：app 资源。DENY_CORS 让同源可用、跨源 fetch 被拒。
             ComPtr<ICoreWebView2_3> webview3;
             if (SUCCEEDED(g_host.webview.As(&webview3)) && webview3) {
               g_host.webview3 = webview3;

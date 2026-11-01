@@ -10,7 +10,7 @@
 
 namespace {
 
-// 票 07：皮肤文件上限 1 MB，超过拒绝。
+// 皮肤文件上限 1 MB，超过拒绝。
 const size_t kMaxSkinBytes = 1024 * 1024;
 
 std::wstring SanitizeId(const std::wstring& id) {

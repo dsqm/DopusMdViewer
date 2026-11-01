@@ -1,5 +1,5 @@
 // config.cpp - config.json 的读写。**唯一 include nlohmann/json 的编译单元**
-// （票 11：单头两万多行，扩散出去每个 TU 多付 2–4 秒编译）。
+// （单头两万多行，扩散出去每个 TU 多付 2–4 秒编译）。
 
 #include "config.h"
 
@@ -209,7 +209,7 @@ const Config& ConfigLoad(void) {
             g_config.skin.c_str(), g_config.font.sizePx, g_config.font.lineHeight,
             g_config.font.measureEm);
   } catch (const std::exception& e) {
-    // 读坏就用默认值，不打扰用户（票 09）
+    // 读坏就用默认值，不打扰用户
     LogLine(L"CONFIG: 解析失败（%hs），用默认值", e.what());
   }
 

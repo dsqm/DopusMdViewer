@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""生成多编码判定样本（票 19）。
+"""生成多编码判定样本。
 
 输出到 %TEMP%\\encsamples\\，不入库：其中 very-late-sjis.md 约 10 MB。
 

@@ -1,9 +1,8 @@
 // doc_index.cpp - 块扫描状态机与 4 KB 页相对索引。
 //
 // 扫描器与字符类型无关：同一套规则实例化在 char（UTF-8 与 Legacy）与
-// wchar_t（UTF-16）上，只有喂数据的方式不同。票 19 核实：UTF-8 / GB18030 /
-// Shift_JIS / Big5 / EUC / ISO-2022 的多字节序列都不含 0x0A，所以字节路径
-// 不需要先判定编码。
+// wchar_t（UTF-16）上，只有喂数据的方式不同。UTF-8 / GB18030 / Shift_JIS / Big5 /
+// EUC / ISO-2022 的多字节序列都不含 0x0A，所以字节路径不需要先判定编码。
 
 #include "doc_index.h"
 
@@ -18,8 +17,8 @@ namespace doc {
 namespace {
 
 constexpr uint32_t kPrefix = 256;                  // 每行保留的有界前缀
-constexpr uint64_t kMaxHtmlBytes = 4ull << 20;     // 票 05 6.1：HTML 区上限
-constexpr uint64_t kMaxFileBytes = 4ull << 30;     // 票 04：按 4 GB 分段
+constexpr uint64_t kMaxHtmlBytes = 4ull << 20;     // HTML 区上限
+constexpr uint64_t kMaxFileBytes = 4ull << 30;     // 按 4 GB 分段
 constexpr uint64_t kReadChunk = 1ull << 20;
 constexpr uint64_t kDetectBytes = 8ull << 20;  // 判码窗口，与同步前缀扫描同尺寸
 
@@ -241,7 +240,7 @@ class BlockScanner {
       UpdateHtmlDepth(l);
       Extend(l);
       if (end_ - start_ > maxHtmlUnits_) {
-        // 外壳太大就放弃继续合并，接受外壳丢失（票 05 6.1）
+        // 外壳太大就放弃继续合并，接受外壳丢失
         inHtml_ = false;
         htmlDepth_ = 0;
         CloseBlock(0);
@@ -856,7 +855,7 @@ void BlockIndex::Reserve(uint64_t fileSize, uint64_t reserveBytes) {
   pageCount_ = static_cast<uint32_t>(fileSize / kPageSize) + 1;
   pageBase_.assign(static_cast<size_t>(pageCount_) + 2, 0);
 
-  // 票 04：按字节数 / 200 预留，避免 4 M 条记录反复搬家。前缀扫描只预留前缀。
+  // 按字节数 / 200 预留，避免 4 M 条记录反复搬家。前缀扫描只预留前缀。
   size_t est = static_cast<size_t>(reserveBytes / 200);
   if (est > 40000000u) est = 40000000u;
   offInPage_.reserve(est);

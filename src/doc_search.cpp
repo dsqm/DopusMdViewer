@@ -1,4 +1,4 @@
-// doc_search.cpp - 4 线程 Horspool。票 04 实测：1 GB 热缓存 127–215 ms。
+// doc_search.cpp - 4 线程 Horspool。1 GB 热缓存实测 127–215 ms。
 
 #include "doc_search.h"
 
@@ -14,7 +14,7 @@ namespace doc {
 
 namespace {
 
-constexpr size_t kHitsCap = 10000;     // 票 04
+constexpr size_t kHitsCap = 10000;
 constexpr size_t kChunk = 1u << 20;
 
 struct RangeResult {

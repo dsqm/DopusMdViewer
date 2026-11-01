@@ -1,6 +1,6 @@
 // viewer_window.cpp - 查看器窗口与消息分发。
 //
-// M4 起正文不再整篇读入推送：打开时由 doc_source 建索引（同步前缀 + 后台全文），
+// 正文不再整篇读入推送：打开时由 doc_source 建索引（同步前缀 + 后台全文），
 // 这里只推 index 控制消息，块正文由页面按区间向 mdblocks.localhost 取。
 
 #include "viewer_window.h"
@@ -91,7 +91,7 @@ struct MsgEntry {
   const wchar_t* pszName;
 };
 
-// 票 11 第 8 节：探针删掉，只留名字表，方便把日志里的消息号翻成人能读的名字。
+// 只留名字表，方便把日志里的消息号翻成人能读的名字。
 const MsgEntry kPluginMessages[] = {
     {DVPLUGINMSG_LOADA, L"LOADA"},
     {DVPLUGINMSG_LOADW, L"LOADW"},

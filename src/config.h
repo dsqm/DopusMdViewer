@@ -1,15 +1,14 @@
-// config.h - 插件自己的 config.json（票 09：不走 Opus 的配置存储，因此也不导出
+// config.h - 插件自己的 config.json（不走 Opus 的配置存储，因此也不导出
 // DVP_USBSafe）。
 //
 // 只有 config.cpp 允许 include nlohmann/json；其余模块只看到这个纯 std 结构。
-// 现在只会读，写盘要等设置对话框（M6）。
 
 #pragma once
 
 #include <string>
 #include <vector>
 
-// 一条有序回退链（票 06：每槽一条链，Chromium 逐字符回退，不按脚本分组）。
+// 一条有序回退链（每槽一条链，Chromium 逐字符回退，不按脚本分组）。
 using FontStack = std::vector<std::wstring>;
 
 struct FontSettings {
@@ -28,7 +27,7 @@ struct Config {
   int netImageMode;
   // 图片是否允许引用文档目录之外的路径（../ 与绝对路径）。默认关闭。
   bool allowOutsideImages;
-  // 渲染开关（票 09 的“渲染”页）。默认全开。
+  // 渲染开关（设置里的“渲染”页）。默认全开。
   bool renderMermaid;
   bool renderKatex;
   bool renderHighlight;

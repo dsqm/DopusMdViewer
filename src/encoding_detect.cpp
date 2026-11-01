@@ -1,4 +1,4 @@
-// encoding_detect.cpp - 判码链（票 19）。
+// encoding_detect.cpp - 判码链。
 //
 // 判定顺序：4 字节 BOM → 无 BOM UTF-16 零字节启发式 → 跳过前导 ASCII 取 64 KB 样本 →
 // 纯 ASCII / 全段合法 UTF-8 → CED → GB18030 兜底。
@@ -59,7 +59,7 @@ bool LooksLikeUtf8(const unsigned char* p, size_t n) {
 }
 
 // ASCII 为主的文本在固定奇偶位置有大量 0x00。纯 CJK 的 UTF-16 一个 0x00 都没有，
-// 这个启发式判不出来（票 19 的已知限制，靠手动覆盖或后续版本解决）。
+// 这个启发式判不出来（已知限制，靠手动覆盖或后续版本解决）。
 bool LooksLikeUtf16(const unsigned char* p, size_t n, bool* bigEndian) {
   if (n < 64) return false;
   const size_t lim = n < kZeroScan ? n : kZeroScan;

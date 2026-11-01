@@ -1,12 +1,12 @@
-// doc_index.h - 大文件块索引（票 04 / 05）。
+// doc_index.h - 大文件块索引。
 //
 // 索引只存源文件的字节偏移，不存解码后的字符位置；UTF-8 与 Legacy（GB18030 /
-// Shift_JIS / Big5 / EUC / ISO-2022）共用同一条字节扫描路径（票 19 核实：这些编码
-// 的多字节序列都不含 0x0A），UTF-16 走 wchar_t。
+// Shift_JIS / Big5 / EUC / ISO-2022）共用同一条字节扫描路径（这些编码的多字节
+// 序列都不含 0x0A），UTF-16 走 wchar_t。
 // 块坐标相对 4 KB 页：offInPage / len16 各 2 B，浮出 64 KB 的块另存大块表。
 //
-// 与票 04 的一处实现偏差：kind 有 14 种，4 bit 的 kindNib 已占满，装不下
-// loose / hidden / 脚注定义三个标志，因此块属性直接用 1 B/块（1 GB 多约 2 MB）。
+// 一处实现取舍：kind 有 14 种，4 bit 的 kind 位已占满，装不下 loose / hidden /
+// 脚注定义三个标志，因此块属性直接用 1 B/块（1 GB 多约 2 MB）。
 
 #pragma once
 
@@ -41,7 +41,7 @@ constexpr uint8_t kFlagLoose = 0x10;        // 仅列表项：项内含空行，
 constexpr uint8_t kFlagHidden = 0x20;       // 定义块 / front matter：渲染时产出空串
 constexpr uint8_t kFlagFootnoteDef = 0x40;  // hidden 的脚注定义（[^x]: …）
 
-// 票 05 第 4 节：超过这个行数的块走块内行窗口化。只记行数，不记字节。
+// 超过这个行数的块走块内行窗口化。只记行数，不记字节。
 constexpr uint32_t kBigBlockLines = 2000;
 
 // 编码形状：UTF-8 / UTF-16 单列，其余（GB18030、Shift_JIS、Big5、EUC、ISO-2022、
@@ -152,14 +152,14 @@ struct OutlineNode {
 constexpr size_t kOutlineNodeBytes = sizeof(OutlineNode);
 
 // 增量索引：Begin → 若干次 Feed → Finish。Feed 的字节必须按文件顺序给，
-// 可以是任意切块（4 KB 与 4 MB 的结果必须一致，这条是 M3 的验收项）。
+// 可以是任意切块（4 KB 与 4 MB 的结果必须一致）。
 class IndexBuilder {
  public:
   IndexBuilder();
   ~IndexBuilder();
 
   // fileSize 用于页表规模与预留；limitBytes > 0 时只接受前 limitBytes 字节。
-  // 返回 false 表示文件超过 4 GB 的分段上限（票 04：按 4 GB 分段各建一套）。
+  // 返回 false 表示文件超过 4 GB 的分段上限（按 4 GB 分段各建一套）。
   bool Begin(EncodingInfo enc, uint64_t fileSize, uint64_t limitBytes);
   void Feed(const void* data, size_t bytes);
   void Finish();
