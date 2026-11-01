@@ -126,12 +126,236 @@ HWND g_hwnd = nullptr;
 
 HMODULE ModuleHandle(void);
 
+int ScaleByDpi(UINT dpi, int value) {
+  return ::MulDiv(value, static_cast<int>(dpi ? dpi : 96), 96);
+}
+
 int ScaleOf(const DialogState* st, int value) {
-  return ::MulDiv(value, static_cast<int>(st->dpi ? st->dpi : 96), 96);
+  return ScaleByDpi(st->dpi, value);
 }
 
 void ApplyFont(HWND hwnd, HFONT font) {
   if (hwnd && font) ::SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+}
+
+/* ---------------- 配置文件夹说明 ----------------
+   不用 MessageBox：它的文字不能选中，别名名只能手打。这里放只读多行编辑框，
+   选中、Ctrl+C、右键复制都可用；另给一个「复制别名」按钮一键复制。 */
+
+const wchar_t kHelpClass[] = L"DopusMdViewerConfigHelp";
+
+enum { kHelpEdit = 4001, kHelpCopy, kHelpClose };
+
+struct HelpState {
+  HWND hwnd = nullptr;
+  HWND edit = nullptr;
+  HWND copy = nullptr;
+  HWND close = nullptr;
+  HFONT font = nullptr;
+  UINT dpi = 96;
+  const wchar_t* text = nullptr;
+};
+
+bool CopyTextToClipboard(HWND owner, const wchar_t* text) {
+  if (!text || !::OpenClipboard(owner)) return false;
+  bool ok = false;
+  if (::EmptyClipboard()) {
+    const size_t cch = std::wcslen(text) + 1;
+    HGLOBAL mem = ::GlobalAlloc(GMEM_MOVEABLE, cch * sizeof(wchar_t));
+    if (mem) {
+      void* dst = ::GlobalLock(mem);
+      if (dst) {
+        std::wmemcpy(static_cast<wchar_t*>(dst), text, cch);
+        ::GlobalUnlock(mem);
+        if (::SetClipboardData(CF_UNICODETEXT, mem)) {
+          ok = true;
+        } else {
+          ::GlobalFree(mem);
+        }
+      } else {
+        ::GlobalFree(mem);
+      }
+    }
+  }
+  ::CloseClipboard();
+  return ok;
+}
+
+void CycleHelpFocus(HelpState* st, bool backwards) {
+  if (!st) return;
+  HWND controls[] = {st->edit, st->copy, st->close};
+  HWND focus = ::GetFocus();
+  int idx = -1;
+  for (int i = 0; i < 3; ++i) {
+    if (controls[i] == focus) idx = i;
+  }
+  const int next = idx < 0 ? 0 : (idx + (backwards ? 2 : 1)) % 3;
+  ::SetFocus(controls[next]);
+}
+
+LRESULT CALLBACK HelpProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  HelpState* st = reinterpret_cast<HelpState*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+  switch (uMsg) {
+    case WM_NCCREATE: {
+      const CREATESTRUCTW* cs = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+      st = static_cast<HelpState*>(cs->lpCreateParams);
+      if (st) {
+        st->hwnd = hwnd;
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+      }
+      // 标题靠这里转给 DefWindowProc，CreateWindowExW 的窗口名才不会丢。
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+    }
+
+    case WM_CREATE: {
+      if (!st) return -1;
+      RECT rc;
+      ::GetClientRect(hwnd, &rc);
+      const int m = ScaleByDpi(st->dpi, 12);
+      const int gap = ScaleByDpi(st->dpi, 8);
+      const int bh = ScaleByDpi(st->dpi, 26);
+      const int bw = ScaleByDpi(st->dpi, 96);
+
+      st->edit = ::CreateWindowExW(
+          WS_EX_CLIENTEDGE, L"EDIT", st->text ? st->text : L"",
+          WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | ES_MULTILINE | ES_READONLY |
+              ES_AUTOVSCROLL,
+          m, m, rc.right - m * 2, rc.bottom - m * 2 - bh - gap, hwnd,
+          reinterpret_cast<HMENU>(kHelpEdit), ModuleHandle(), nullptr);
+      st->copy = ::CreateWindowExW(
+          0, L"BUTTON", loc::T(loc::Str::CopyAlias), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+          rc.right - m - bw * 2 - gap, rc.bottom - m - bh, bw, bh, hwnd,
+          reinterpret_cast<HMENU>(kHelpCopy), ModuleHandle(), nullptr);
+      st->close = ::CreateWindowExW(
+          0, L"BUTTON", loc::T(loc::Str::Ok),
+          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, rc.right - m - bw,
+          rc.bottom - m - bh, bw, bh, hwnd, reinterpret_cast<HMENU>(kHelpClose), ModuleHandle(),
+          nullptr);
+
+      HWND controls[] = {st->edit, st->copy, st->close};
+      for (HWND h : controls) ApplyFont(h, st->font);
+      return 0;
+    }
+
+    case WM_COMMAND:
+      if (!st) return 0;
+      if (LOWORD(wParam) == kHelpCopy && HIWORD(wParam) == BN_CLICKED) {
+        if (CopyTextToClipboard(hwnd, kDataAliasName) && st->copy) {
+          ::SetWindowTextW(st->copy, loc::T(loc::Str::Copied));
+          ::SetTimer(hwnd, 1, 1200, nullptr);
+        }
+      } else if (LOWORD(wParam) == kHelpClose) {
+        ::DestroyWindow(hwnd);
+      }
+      return 0;
+
+    case WM_TIMER:
+      if (st && wParam == 1) {
+        ::KillTimer(hwnd, 1);
+        if (st->copy) ::SetWindowTextW(st->copy, loc::T(loc::Str::CopyAlias));
+      }
+      return 0;
+
+    case WM_CLOSE:
+      ::DestroyWindow(hwnd);
+      return 0;
+
+    default:
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+  }
+}
+
+bool RegisterHelpClass(void) {
+  static bool registered = false;
+  if (registered) return true;
+
+  WNDCLASSEXW wc = {};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = HelpProc;
+  wc.hInstance = ModuleHandle();
+  wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+  wc.lpszClassName = kHelpClass;
+
+  if (::RegisterClassExW(&wc) || ::GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+    registered = true;
+    return true;
+  }
+  return false;
+}
+
+void ShowConfigHelp(HWND owner, const wchar_t* text, HFONT font, UINT dpi) {
+  if (!text) return;
+  if (!RegisterHelpClass()) {
+    ::MessageBoxW(owner, text, loc::T(loc::Str::ConfigFolder), MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+
+  HelpState st;
+  st.font = font;
+  st.dpi = dpi ? dpi : 96;
+  st.text = text;
+
+  RECT rc = {0, 0, ScaleByDpi(st.dpi, 480), ScaleByDpi(st.dpi, 300)};
+  const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+  ::AdjustWindowRectEx(&rc, style, FALSE, 0);
+  const int w = rc.right - rc.left;
+  const int h = rc.bottom - rc.top;
+
+  int x = 0;
+  int y = 0;
+  if (owner) {
+    RECT orc;
+    if (::GetWindowRect(owner, &orc)) {
+      x = orc.left + ((orc.right - orc.left) - w) / 2;
+      y = orc.top + ((orc.bottom - orc.top) - h) / 2;
+    }
+  }
+
+  HWND hwnd = ::CreateWindowExW(0, kHelpClass, loc::T(loc::Str::ConfigFolder), style, x, y, w, h,
+                                owner, nullptr, ModuleHandle(), &st);
+  if (!hwnd) return;
+
+  if (owner) ::EnableWindow(owner, FALSE);
+  ::ShowWindow(hwnd, SW_SHOW);
+  ::SetForegroundWindow(hwnd);
+  if (st.edit) ::SetFocus(st.edit);
+
+  MSG msg;
+  while (::IsWindow(hwnd)) {
+    const BOOL got = ::GetMessageW(&msg, nullptr, 0, 0);
+    if (got <= 0) {
+      if (got == 0) ::PostQuitMessage(static_cast<int>(msg.wParam));
+      if (::IsWindow(hwnd)) ::DestroyWindow(hwnd);
+      break;
+    }
+    if (msg.message == WM_KEYDOWN) {
+      if (msg.wParam == VK_ESCAPE) {
+        ::DestroyWindow(hwnd);
+        continue;
+      }
+      if (msg.wParam == VK_RETURN) {
+        if (msg.hwnd == st.copy) {
+          ::SendMessageW(st.copy, BM_CLICK, 0, 0);
+        } else if (msg.hwnd == st.close) {
+          ::DestroyWindow(hwnd);
+        }
+        continue;
+      }
+      if (msg.wParam == VK_TAB) {
+        CycleHelpFocus(&st, (::GetKeyState(VK_SHIFT) & 0x8000) != 0);
+        continue;
+      }
+    }
+    ::TranslateMessage(&msg);
+    ::DispatchMessageW(&msg);
+  }
+
+  if (owner && ::IsWindow(owner)) {
+    ::EnableWindow(owner, TRUE);
+    ::SetActiveWindow(owner);
+  }
 }
 
 /* ---------------- 键盘导航 ----------------
@@ -831,16 +1055,38 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 302, y,
              130, 26, kIdOpenSkins);
 
-  y = 270;
+  y = 266;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolder), SS_LEFT, 16, y, 200, 20, 0);
   std::wstring dataDir = UtilDataDir();
   if (dataDir.empty()) dataDir = loc::T(loc::Str::NoFolder);
-  AddControl(st, 3, L"STATIC", dataDir.c_str(), SS_LEFT | SS_PATHELLIPSIS, 16, y + 22, 452, 20,
-             kIdConfigPath);
-  AddControl(st, 3, L"BUTTON", L"?", BS_PUSHBUTTON | WS_TABSTOP, 478, y + 20, 26, 24,
+  HWND hPath = AddControl(st, 3, L"EDIT", dataDir.c_str(),
+                          WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 16, y + 22,
+                          480, 40, kIdConfigPath, WS_EX_CLIENTEDGE);
+  if (hPath) {
+    HFONT font = reinterpret_cast<HFONT>(::SendMessageW(hPath, WM_GETFONT, 0, 0));
+    if (!font) font = static_cast<HFONT>(::GetStockObject(DEFAULT_GUI_FONT));
+    int lineH = ScaleOf(st, 16);
+    HDC hdc = ::GetDC(hPath);
+    TEXTMETRICW tm = {};
+    if (hdc) {
+      HGDIOBJ old = ::SelectObject(hdc, font);
+      if (::GetTextMetricsW(hdc, &tm)) lineH = tm.tmHeight + tm.tmExternalLeading;
+      ::SelectObject(hdc, old);
+      ::ReleaseDC(hPath, hdc);
+    }
+    const int lines = static_cast<int>(::SendMessageW(hPath, EM_GETLINECOUNT, 0, 0));
+    const int visible = lines < 1 ? 1 : (lines > 3 ? 3 : lines);
+    const int editH = visible * lineH + ScaleOf(st, 8);
+    ::SetWindowPos(hPath, nullptr, 0, 0, ScaleOf(st, 480), editH,
+                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (lines > visible) {
+      ::SetWindowLongPtrW(hPath, GWL_STYLE, ::GetWindowLongPtrW(hPath, GWL_STYLE) | WS_VSCROLL);
+      ::SetWindowPos(hPath, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+  }
+  AddControl(st, 3, L"BUTTON", L"?", BS_PUSHBUTTON | WS_TABSTOP, 504, y + 20, 26, 24,
              kIdConfigHelp);
-  AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolderPermHint), SS_LEFT, 16, y + 50, 520,
-             40, 0);
 
   // 底部按钮
   AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 16, 392,
@@ -975,7 +1221,7 @@ void OnCommand(DialogState* st, int id, int code) {
       wchar_t msg[1024];
       ::StringCchPrintfW(msg, ARRAYSIZE(msg), loc::T(loc::Str::ConfigFolderHelp), kDataAliasName,
                          dir.empty() ? loc::T(loc::Str::NoFolder) : dir.c_str());
-      ::MessageBoxW(st->hwnd, msg, L"DopusMdViewer", MB_OK | MB_ICONINFORMATION);
+      ShowConfigHelp(st->hwnd, msg, st->font, st->dpi);
       return;
     }
 

@@ -68,8 +68,9 @@ enum class Str : int {
   OpenConfig,
   OpenSkins,
   ConfigFolder,
-  ConfigFolderPermHint,
   ConfigFolderHelp,  // 两个 %s：别名名、当前路径
+  CopyAlias,
+  Copied,
   Unknown,
   RuntimeMissing,
 
