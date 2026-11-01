@@ -19,9 +19,9 @@
 
 namespace {
 
-// The log lives next to the WebView2 user data, under the data root from
-// UtilDataDirInto (which may be overridden by a Folder Alias). %TEMP% is only
-// the fallback for the case where that root is unavailable.
+// The log lives under the data root from UtilDataDirInto (which may be
+// overridden by a Folder Alias). %TEMP% is only the fallback for the case
+// where that root is unavailable.
 const int kMaxLogBytes = 1024 * 1024;
 
 SRWLOCK g_lock = SRWLOCK_INIT;

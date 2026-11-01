@@ -70,8 +70,20 @@ enum class Str : int {
   OpenSkins,
   ConfigFolder,
   ConfigFolderHelp,  // 两个 %s：别名名、当前路径
+  WebViewCache,
+  WebViewBrowse,
+  WebViewOpen,
+  WebViewDefault,
+  WebViewClear,
+  WebViewCacheInfo,  // 两个 %s：当前大小、自动清理上限
+  WebViewDirHelp,    // 三个 %s：默认目录、实际目录、清理上限
+  WebViewClearConfirm,
+  WebViewClearCloseFirst,
+  WebViewClearFailed,
+  WebViewPathInvalid,
   CopyAlias,
   Copied,
+  CopyPath,
   Unknown,
   RuntimeMissing,
 

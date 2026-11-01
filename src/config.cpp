@@ -45,6 +45,7 @@ void SetDefaults(Config* c) {
   c->renderInlineHtml = true;
   c->renderLocalImages = true;
   c->enableLog = false;
+  c->webviewBaseDir.clear();
   c->prewarm = false;
   c->idleReleaseMinutes = 3;
 }
@@ -57,6 +58,16 @@ int ClampInt(int v, int lo, int hi, int fallback) {
 double ClampDouble(double v, double lo, double hi, double fallback) {
   if (!(v >= lo && v <= hi)) return fallback;  // 同时挡住 NaN
   return v;
+}
+
+std::wstring Utf8ToWide(const std::string& text) {
+  if (text.empty()) return std::wstring();
+  const int n = ::MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                                      nullptr, 0);
+  if (n <= 0) return std::wstring();
+  std::wstring out(static_cast<size_t>(n), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), &out[0], n);
+  return out;
 }
 
 FontStack ReadStack(const nlohmann::json& obj, const char* key, const FontStack& fallback) {
@@ -90,6 +101,10 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
 
   if (root.contains("enableLog") && root["enableLog"].is_boolean()) {
     c->enableLog = root["enableLog"].get<bool>();
+  }
+
+  if (root.contains("webviewBaseDir") && root["webviewBaseDir"].is_string()) {
+    c->webviewBaseDir = Utf8ToWide(root["webviewBaseDir"].get<std::string>());
   }
 
   if (root.contains("prewarm") && root["prewarm"].is_boolean()) {
@@ -312,6 +327,7 @@ bool ConfigSave(const Config& input) {
       c.netImageMode == 0 ? "off" : (c.netImageMode == 2 ? "doc" : "host");
   root["allowOutsideImages"] = c.allowOutsideImages;
   root["enableLog"] = c.enableLog;
+  root["webviewBaseDir"] = WideToUtf8(c.webviewBaseDir);
   root["prewarm"] = c.prewarm;
   root["idleReleaseMinutes"] = c.idleReleaseMinutes;
   nlohmann::json render;

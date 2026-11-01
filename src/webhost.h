@@ -12,7 +12,11 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <string>
+
+// WebView2 缓存超过该大小时，在下次创建环境前自动清理。
+constexpr uint64_t kWebViewCacheAutoCleanBytes = 512ull * 1024 * 1024;
 
 // 宿主 → 借用方窗口（查看器窗口）的事件消息。
 // wParam = MDV_EVT_*，lParam = MDV_EVENT*（接收方负责 delete）。
@@ -44,6 +48,10 @@ void WebHostPrewarm(bool enabled, int idleReleaseMinutes);
 
 // 页面是否已发过 ready（未就绪时 Post 会失败，调用方要先缓存内容）。
 bool WebHostIsReady(void);
+
+// 清理指定 WebView2 用户数据目录。目录正被本进程使用时先释放宿主；
+// 目录被占用或不是 ...\WebView2 时返回 false。
+bool WebHostClearUserData(const std::wstring& userDataDir);
 
 // 发一条控制消息。页面未就绪、controller 不在，或 hViewer 不是当前借用方时返回
 // false——**宿主只有一个**，非借用方投递出去的内容会画进看不见的宿主窗口。

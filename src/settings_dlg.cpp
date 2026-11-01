@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shellapi.h>
+#include <shobjidl.h>
 #include <strsafe.h>
 
 #include <algorithm>
@@ -75,6 +76,12 @@ enum {
   kIdConfigPath = 3410,
   kIdConfigHelp,
   kIdEnableLog,
+  kIdWebViewDir = 3420,
+  kIdWebViewBrowse,
+  kIdWebViewHelp,
+  kIdWebViewOpen,
+  kIdWebViewDefault,
+  kIdWebViewClear,
   kIdRestore = 3500,
   kIdApply,
   kIdOk,
@@ -120,6 +127,8 @@ struct DialogState {
   HWND hPrewarm = nullptr;
   HWND hIdle = nullptr;
   HWND hIdleSpin = nullptr;
+  HWND hWebViewDir = nullptr;
+  HWND hWebViewInfo = nullptr;
   HWND hApply = nullptr;
   bool dirty = false;
 };
@@ -145,7 +154,10 @@ void ApplyFont(HWND hwnd, HFONT font) {
    不自己跑嵌套消息循环，避免和外层配置窗口的消息循环打架。 */
 
 struct HelpDialogData {
+  const wchar_t* title = nullptr;
   const wchar_t* text = nullptr;
+  const wchar_t* copyText = nullptr;
+  const wchar_t* copyLabel = nullptr;
   HFONT font = nullptr;
 };
 
@@ -178,9 +190,11 @@ INT_PTR CALLBACK HelpDlgProc(HWND dlg, UINT uMsg, WPARAM wParam, LPARAM lParam) 
   switch (uMsg) {
     case WM_INITDIALOG: {
       const HelpDialogData* data = reinterpret_cast<const HelpDialogData*>(lParam);
-      ::SetWindowTextW(dlg, loc::T(loc::Str::ConfigFolder));
+      ::SetWindowLongPtrW(dlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
+      ::SetWindowTextW(dlg, data && data->title ? data->title : L"");
       ::SetDlgItemTextW(dlg, IDC_HELP_TEXT, data && data->text ? data->text : L"");
-      ::SetDlgItemTextW(dlg, IDC_HELP_COPY, loc::T(loc::Str::CopyAlias));
+      ::SetDlgItemTextW(dlg, IDC_HELP_COPY,
+                        data && data->copyLabel ? data->copyLabel : loc::T(loc::Str::CopyAlias));
       ::SetDlgItemTextW(dlg, IDOK, loc::T(loc::Str::Ok));
       if (data && data->font) {
         HWND controls[] = {::GetDlgItem(dlg, IDC_HELP_TEXT), ::GetDlgItem(dlg, IDC_HELP_COPY),
@@ -196,7 +210,12 @@ INT_PTR CALLBACK HelpDlgProc(HWND dlg, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
     case WM_COMMAND:
       if (LOWORD(wParam) == IDC_HELP_COPY && HIWORD(wParam) == BN_CLICKED) {
-        if (CopyTextToClipboard(dlg, kDataAliasName)) {
+        const HelpDialogData* data =
+            reinterpret_cast<const HelpDialogData*>(::GetWindowLongPtrW(dlg, GWLP_USERDATA));
+        const wchar_t* copy = data && data->copyText && *data->copyText
+                                  ? data->copyText
+                                  : (data && data->text ? data->text : L"");
+        if (CopyTextToClipboard(dlg, copy)) {
           ::SetDlgItemTextW(dlg, IDC_HELP_COPY, loc::T(loc::Str::Copied));
           ::SetTimer(dlg, 1, 1200, nullptr);
         }
@@ -225,14 +244,23 @@ INT_PTR CALLBACK HelpDlgProc(HWND dlg, UINT uMsg, WPARAM wParam, LPARAM lParam) 
   }
 }
 
-void ShowConfigHelp(HWND owner, const wchar_t* text, HFONT font) {
+void ShowTextHelp(HWND owner, const wchar_t* title, const wchar_t* text,
+                  const wchar_t* copyText, const wchar_t* copyLabel, HFONT font) {
   HelpDialogData data;
+  data.title = title;
   data.text = text;
+  data.copyText = copyText;
+  data.copyLabel = copyLabel;
   data.font = font;
   if (::DialogBoxParamW(ModuleHandle(), MAKEINTRESOURCEW(IDD_CONFIG_HELP), owner, HelpDlgProc,
                         reinterpret_cast<LPARAM>(&data)) == -1) {
-    ::MessageBoxW(owner, text, loc::T(loc::Str::ConfigFolder), MB_OK | MB_ICONINFORMATION);
+    ::MessageBoxW(owner, text, title ? title : L"", MB_OK | MB_ICONINFORMATION);
   }
+}
+
+void ShowConfigHelp(HWND owner, const wchar_t* text, HFONT font) {
+  ShowTextHelp(owner, loc::T(loc::Str::ConfigFolder), text, kDataAliasName,
+               loc::T(loc::Str::CopyAlias), font);
 }
 
 /* ---------------- 键盘导航 ----------------
@@ -246,6 +274,9 @@ void MoveFocus(DialogState* st, int dir);
 void FocusFirst(DialogState* st);
 void ShowPage(DialogState* st, int page);
 bool ApplySettings(DialogState* st);
+void RefreshWebViewCacheInfo(DialogState* st);
+bool ValidateWebViewDir(const std::wstring& raw, std::wstring* error);
+std::wstring ReadText(HWND hwnd);
 bool HandleDialogKey(DialogState* st, HWND focus, WPARAM vk);
 
 DialogState* StateOfParent(HWND hwnd) {
@@ -445,6 +476,7 @@ void ShowPage(DialogState* st, int page) {
   // 切页后焦点若落在刚藏起来的控件上，挪到本页第一个控件
   HWND focus = ::GetFocus();
   if (!focus || !::IsWindowVisible(focus)) FocusPageFirst(st);
+  if (page == 3) RefreshWebViewCacheInfo(st);
 }
 
 std::wstring Trimmed(const wchar_t* text) {
@@ -654,6 +686,9 @@ void LoadUiFromStaged(DialogState* st) {
 
   ::CheckRadioButton(st->hwnd, kIdSlotUi, kIdSlotMono, kIdSlotUi + st->slot);
   RefreshChainList(st);
+
+  ::SetWindowTextW(st->hWebViewDir, st->staged.webviewBaseDir.c_str());
+  if (st->page == 3) RefreshWebViewCacheInfo(st);
 }
 
 void ReadUiIntoStaged(DialogState* st) {
@@ -687,6 +722,7 @@ void ReadUiIntoStaged(DialogState* st) {
   }
   st->staged.allowOutsideImages = ::IsDlgButtonChecked(st->hwnd, kIdOutside) == BST_CHECKED;
   st->staged.enableLog = ::IsDlgButtonChecked(st->hwnd, kIdEnableLog) == BST_CHECKED;
+  st->staged.webviewBaseDir = UtilTrim(ReadText(st->hWebViewDir));
   st->staged.prewarm = ::IsDlgButtonChecked(st->hwnd, kIdPrewarm) == BST_CHECKED;
   const UINT idle = ::GetDlgItemInt(st->hwnd, kIdIdle, &ok, FALSE);
   if (ok && idle <= 1440) st->staged.idleReleaseMinutes = static_cast<int>(idle);
@@ -694,6 +730,15 @@ void ReadUiIntoStaged(DialogState* st) {
 
 bool ApplySettings(DialogState* st) {
   ReadUiIntoStaged(st);
+  const Config saved = ConfigSnapshot();
+  if (st->staged.webviewBaseDir != saved.webviewBaseDir) {
+    std::wstring error;
+    if (!ValidateWebViewDir(st->staged.webviewBaseDir, &error)) {
+      ::MessageBoxW(st->hwnd, error.c_str(), loc::T(loc::Str::WebViewCache),
+                    MB_OK | MB_ICONERROR);
+      return false;
+    }
+  }
   if (!ConfigSave(st->staged)) {
     ::MessageBoxW(st->hwnd, loc::T(loc::Str::SaveFailed), L"DopusMdViewer",
                   MB_OK | MB_ICONERROR);
@@ -702,6 +747,7 @@ bool ApplySettings(DialogState* st) {
   ViewerNotifyConfigChanged();
   WebHostPrewarm(st->staged.prewarm, st->staged.idleReleaseMinutes);
   SetDirty(st, false);
+  if (st->page == 3) RefreshWebViewCacheInfo(st);
   LogLine(L"SETTINGS: 已应用 skin=\"%s\" size=%d lh=%.2f measure=%d net=%d", st->staged.skin.c_str(),
           st->staged.font.sizePx, st->staged.font.lineHeight, st->staged.font.measureEm,
           st->staged.netImageMode);
@@ -719,6 +765,178 @@ void OpenFolder(HWND owner, const std::wstring& dir) {
     ::MessageBoxW(owner, loc::T(loc::Str::OpenFolderFailed), L"DopusMdViewer",
                   MB_OK | MB_ICONERROR);
   }
+}
+
+std::wstring ReadText(HWND hwnd) {
+  if (!hwnd) return std::wstring();
+  const int len = ::GetWindowTextLengthW(hwnd);
+  if (len <= 0) return std::wstring();
+  std::wstring text(static_cast<size_t>(len) + 1, L'\0');
+  const int got = ::GetWindowTextW(hwnd, &text[0], len + 1);
+  if (got <= 0) return std::wstring();
+  text.resize(static_cast<size_t>(got));
+  return text;
+}
+
+std::wstring WebViewBaseFromUi(DialogState* st) {
+  return UtilTrim(ReadText(st->hWebViewDir));
+}
+
+bool ResolveWebViewDir(const std::wstring& raw, std::wstring* actual) {
+  const std::wstring trimmed = UtilTrim(raw);
+  std::wstring base;
+  if (trimmed.empty()) {
+    base = UtilNormalizeLocalDir(UtilDefaultWebView2BaseDir());
+  } else {
+    base = UtilNormalizeLocalDir(trimmed);
+  }
+  if (base.empty()) return false;
+  *actual = UtilJoin(base, L"WebView2");
+  return UtilIsWebView2UserDataDir(*actual);
+}
+
+bool ValidateWebViewDir(const std::wstring& raw, std::wstring* error) {
+  std::wstring actual;
+  if (!ResolveWebViewDir(raw, &actual) || !UtilEnsureDir(actual)) {
+    if (error) *error = loc::T(loc::Str::WebViewPathInvalid);
+    return false;
+  }
+
+  wchar_t name[64];
+  ::StringCchPrintfW(name, ARRAYSIZE(name), L".mdv-write-%llu",
+                     static_cast<unsigned long long>(::GetTickCount64()));
+  const std::wstring probe = UtilJoin(actual, name);
+  HANDLE h = ::CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    if (error) *error = loc::T(loc::Str::WebViewPathInvalid);
+    return false;
+  }
+  ::CloseHandle(h);
+  return true;
+}
+
+void RefreshWebViewCacheInfo(DialogState* st) {
+  if (!st->hWebViewInfo) return;
+
+  std::wstring actual;
+  if (!ResolveWebViewDir(WebViewBaseFromUi(st), &actual)) {
+    ::SetWindowTextW(st->hWebViewInfo, loc::T(loc::Str::WebViewPathInvalid));
+    return;
+  }
+
+  const std::wstring size = UtilFormatSize(UtilDirSize(actual));
+  const std::wstring limit = UtilFormatSize(kWebViewCacheAutoCleanBytes);
+  wchar_t text[512];
+  ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(loc::Str::WebViewCacheInfo), size.c_str(),
+                     limit.c_str());
+  ::SetWindowTextW(st->hWebViewInfo, text);
+}
+
+void BrowseWebViewDir(DialogState* st) {
+  const HRESULT init = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  const bool uninit = SUCCEEDED(init);
+
+  IFileOpenDialog* dialog = nullptr;
+  HRESULT hr = ::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&dialog));
+  if (SUCCEEDED(hr) && dialog) {
+    DWORD options = 0;
+    if (SUCCEEDED(dialog->GetOptions(&options))) {
+      dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    }
+
+    std::wstring base = UtilNormalizeLocalDir(WebViewBaseFromUi(st));
+    if (base.empty()) base = UtilNormalizeLocalDir(UtilDefaultWebView2BaseDir());
+    if (!base.empty() && UtilDirExists(base)) {
+      IShellItem* item = nullptr;
+      if (SUCCEEDED(::SHCreateItemFromParsingName(base.c_str(), nullptr, IID_PPV_ARGS(&item))) &&
+          item) {
+        dialog->SetFolder(item);
+        item->Release();
+      }
+    }
+
+    if (SUCCEEDED(dialog->Show(st->hwnd))) {
+      IShellItem* item = nullptr;
+      if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+        PWSTR path = nullptr;
+        if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+          ::SetWindowTextW(st->hWebViewDir, path);
+          ::CoTaskMemFree(path);
+          SetDirty(st, true);
+          RefreshWebViewCacheInfo(st);
+        }
+        item->Release();
+      }
+    }
+    dialog->Release();
+  } else {
+    ::MessageBoxW(st->hwnd, loc::T(loc::Str::WebViewPathInvalid), loc::T(loc::Str::WebViewCache),
+                  MB_OK | MB_ICONERROR);
+  }
+
+  if (uninit) ::CoUninitialize();
+}
+
+void OpenWebViewDir(DialogState* st) {
+  std::wstring actual;
+  if (!ResolveWebViewDir(WebViewBaseFromUi(st), &actual)) {
+    ::MessageBoxW(st->hwnd, loc::T(loc::Str::WebViewPathInvalid), loc::T(loc::Str::WebViewCache),
+                  MB_OK | MB_ICONERROR);
+    return;
+  }
+  OpenFolder(st->hwnd, actual);
+  RefreshWebViewCacheInfo(st);
+}
+
+void ClearWebViewCache(DialogState* st) {
+  std::wstring actual;
+  if (!ResolveWebViewDir(WebViewBaseFromUi(st), &actual)) {
+    ::MessageBoxW(st->hwnd, loc::T(loc::Str::WebViewPathInvalid), loc::T(loc::Str::WebViewCache),
+                  MB_OK | MB_ICONERROR);
+    return;
+  }
+  if (::MessageBoxW(st->hwnd, loc::T(loc::Str::WebViewClearConfirm),
+                    loc::T(loc::Str::WebViewCache),
+                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) {
+    return;
+  }
+
+  HCURSOR old = ::SetCursor(::LoadCursorW(nullptr, IDC_WAIT));
+  const bool ok = WebHostClearUserData(actual);
+  // 旧版把缓存放在数据根下；按钮顺手把那个目录也清掉。
+  const std::wstring legacy = UtilJoin(UtilDataDir(), L"WebView2");
+  if (!legacy.empty() && UtilIsWebView2UserDataDir(legacy) &&
+      _wcsicmp(legacy.c_str(), actual.c_str()) != 0) {
+    WebHostClearUserData(legacy);
+  }
+  ::SetCursor(old);
+  if (!ok) {
+    const wchar_t* message = ViewerLiveCount() > 0 ? loc::T(loc::Str::WebViewClearCloseFirst)
+                                                   : loc::T(loc::Str::WebViewClearFailed);
+    ::MessageBoxW(st->hwnd, message, loc::T(loc::Str::WebViewCache), MB_OK | MB_ICONERROR);
+  }
+  RefreshWebViewCacheInfo(st);
+}
+
+void ShowWebViewHelp(DialogState* st) {
+  const std::wstring defaultBase = UtilNormalizeLocalDir(UtilDefaultWebView2BaseDir());
+  const std::wstring defaultDir =
+      defaultBase.empty() ? std::wstring() : UtilJoin(defaultBase, L"WebView2");
+
+  std::wstring actual;
+  const bool valid = ResolveWebViewDir(WebViewBaseFromUi(st), &actual);
+  const std::wstring shown = valid ? actual : std::wstring(L"—");
+  const std::wstring defaultShown = defaultDir.empty() ? std::wstring(L"—") : defaultDir;
+  const std::wstring limit = UtilFormatSize(kWebViewCacheAutoCleanBytes);
+
+  wchar_t text[2048];
+  ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(loc::Str::WebViewDirHelp),
+                     defaultShown.c_str(), shown.c_str(), limit.c_str());
+  const std::wstring copy = valid ? actual : std::wstring();
+  ShowTextHelp(st->hwnd, loc::T(loc::Str::WebViewCache), text, copy.c_str(),
+               loc::T(loc::Str::CopyPath), st->font);
 }
 
 void AddFontToChain(DialogState* st) {
@@ -969,14 +1187,35 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"BUTTON", L"?", BS_PUSHBUTTON | WS_TABSTOP, 504, y + 20, 26, 24,
              kIdConfigHelp);
 
+  y = 364;
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::WebViewCache), SS_LEFT, 16, y + 3, 94, 20, 0);
+  st->hWebViewDir = AddControl(st, 3, L"EDIT", L"",
+                               ES_AUTOHSCROLL | WS_TABSTOP, 114, y, 296, 24, kIdWebViewDir,
+                               WS_EX_CLIENTEDGE);
+  if (st->hWebViewDir) {
+    ::SendMessageW(st->hWebViewDir, EM_SETCUEBANNER, TRUE,
+                   reinterpret_cast<LPARAM>(L"%LOCALAPPDATA%\\DopusMdViewer"));
+  }
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::WebViewBrowse), BS_PUSHBUTTON | WS_TABSTOP, 418,
+             y, 70, 24, kIdWebViewBrowse);
+  AddControl(st, 3, L"BUTTON", L"?", BS_PUSHBUTTON | WS_TABSTOP, 496, y, 26, 24,
+             kIdWebViewHelp);
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::WebViewOpen), BS_PUSHBUTTON | WS_TABSTOP, 114,
+             y + 34, 110, 26, kIdWebViewOpen);
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::WebViewDefault), BS_PUSHBUTTON | WS_TABSTOP, 232,
+             y + 34, 110, 26, kIdWebViewDefault);
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::WebViewClear), BS_PUSHBUTTON | WS_TABSTOP, 350,
+             y + 34, 100, 26, kIdWebViewClear);
+  st->hWebViewInfo = AddControl(st, 3, L"STATIC", L"", SS_LEFT, 114, y + 66, 434, 20, 0);
+
   // 底部按钮
-  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 16, 392,
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 16, 470,
              100, 28, kIdRestore);
   st->hApply = AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Apply),
-                          BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, 322, 392, 70, 28, kIdApply);
+                          BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, 322, 470, 70, 28, kIdApply);
   AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Ok), BS_DEFPUSHBUTTON | WS_TABSTOP, 400,
-             392, 70, 28, kIdOk);
-  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Cancel), BS_PUSHBUTTON | WS_TABSTOP, 478, 392,
+             470, 70, 28, kIdOk);
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Cancel), BS_PUSHBUTTON | WS_TABSTOP, 478, 470,
              70, 28, kIdCancel);
 
   ShowPage(st, 0);
@@ -1106,6 +1345,31 @@ void OnCommand(DialogState* st, int id, int code) {
       ShowConfigHelp(st->hwnd, msg, st->font);
       return;
     }
+
+    case kIdWebViewDir:
+      if (code == EN_CHANGE) {
+        SetDirty(st, true);
+      } else if (code == EN_KILLFOCUS) {
+        RefreshWebViewCacheInfo(st);
+      }
+      return;
+    case kIdWebViewBrowse:
+      BrowseWebViewDir(st);
+      return;
+    case kIdWebViewHelp:
+      ShowWebViewHelp(st);
+      return;
+    case kIdWebViewOpen:
+      OpenWebViewDir(st);
+      return;
+    case kIdWebViewDefault:
+      ::SetWindowTextW(st->hWebViewDir, L"");
+      SetDirty(st, true);
+      RefreshWebViewCacheInfo(st);
+      return;
+    case kIdWebViewClear:
+      ClearWebViewCache(st);
+      return;
 
     default:
       return;
@@ -1271,7 +1535,7 @@ HWND SettingsShow(HWND parent) {
 
   const UINT dpi = parent ? ::GetDpiForWindow(parent) : 96;
   st->dpi = dpi ? dpi : 96;
-  RECT rc = {0, 0, ScaleOf(st, 560), ScaleOf(st, 430)};
+  RECT rc = {0, 0, ScaleOf(st, 560), ScaleOf(st, 510)};
   const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
   ::AdjustWindowRectEx(&rc, style, FALSE, 0);
   const int w = rc.right - rc.left;

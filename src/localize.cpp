@@ -68,11 +68,28 @@ const wchar_t* const kZh[kCount] = {
     /* ConfigFolderHelp */
     L"默认位置在 Opus 的用户数据目录，随 Opus 配置一起备份。\r\n\r\n"
     L"更换位置：在「设置 → 文件夹别名（Folder Aliases）」中新建名为 %s 的别名，"
-    L"指向目标文件夹。重启 Opus 后，配置、皮肤、日志和预览缓存都会改用该文件夹。\r\n\r\n"
+    L"指向目标文件夹。重启 Opus 后，配置、皮肤和日志都会改用该文件夹。\r\n\r\n"
     L"目标文件夹必须可写，不要指向需要管理员权限的文件夹（例如 Program Files）。"
     L"\r\n\r\n当前配置文件夹：\r\n%s",
+    /* WebViewCache     */ L"WebView2 缓存",
+    /* WebViewBrowse    */ L"浏览…",
+    /* WebViewOpen      */ L"打开缓存目录",
+    /* WebViewDefault   */ L"恢复默认位置",
+    /* WebViewClear     */ L"清理缓存",
+    /* WebViewCacheInfo */ L"缓存 %s；超过 %s 自动清理；修改后重启 Opus 生效",
+    /* WebViewDirHelp */
+    L"留空时使用默认位置：\r\n%s\r\n\r\n"
+    L"实际 WebView2 目录 = 所选位置 + \\WebView2：\r\n%s\r\n\r\n"
+    L"缓存可再生，超过 %s 会在下次创建预览引擎前自动清理；也可以点「清理缓存」手动删除。\r\n"
+    L"修改位置不会搬移或删除旧位置的缓存。\r\n"
+    L"不要选择同步盘、网络盘或备份目录。修改后重启 Opus 生效。",
+    /* WebViewClearConfirm   */ L"将删除 WebView2 缓存，下次预览会重新生成。继续？",
+    /* WebViewClearCloseFirst */ L"预览引擎正在使用缓存，请先关闭所有预览窗口，再清理缓存。",
+    /* WebViewClearFailed    */ L"缓存清理失败：目录仍被占用，请关闭所有预览窗口后重试。",
+    /* WebViewPathInvalid    */ L"缓存位置必须是本地绝对路径，且目录可写。",
     /* CopyAlias        */ L"复制别名",
     /* Copied           */ L"已复制",
+    /* CopyPath         */ L"复制路径",
     /* Unknown          */ L"未知",
     /* RuntimeMissing   */ L"未安装或不可用",
 

@@ -38,6 +38,7 @@
 #include <mutex>
 #include <vector>
 
+#include "config.h"
 #include "doc_source.h"
 #include "log.h"
 #include "util.h"
@@ -66,6 +67,7 @@ const UINT kCmdPrewarm = kCmdBase + 9;
 const UINT kCmdPrint = kCmdBase + 10;
 const UINT kCmdRecover = kCmdBase + 11;  // 进程失效后的自愈，wParam 1 = 连实例一起重建
 const UINT kCmdDevTools = kCmdBase + 12;  // 只给 hosttest：发一条 DevTools 方法（造崩溃用）
+const UINT kCmdClearUserData = kCmdBase + 13;  // lParam = const std::wstring*
 
 // 预热：InitEx 后等一会儿再开始，避开 Opus 自己的启动高峰。
 const UINT_PTR kTimerPrewarm = 1;
@@ -88,6 +90,7 @@ struct Host {
   ComPtr<ICoreWebView2_3> webview3;
   HWND borrower = nullptr;  // 事件接收方
   std::wstring docFolder;
+  std::wstring userDataDir;  // 当前环境实际使用的 WebView2 目录
   bool creating = false;
   bool ready = false;
   bool borrowed = false;
@@ -134,11 +137,46 @@ std::wstring WebDir() {
 }
 
 std::wstring UserDataDir() {
-  const std::wstring dataDir = UtilDataDir();
-  if (dataDir.empty()) return std::wstring();
-  const std::wstring dir = UtilJoin(dataDir, L"WebView2");
-  UtilEnsureDir(dir);
-  return dir;
+  const Config cfg = ConfigSnapshot();
+  const std::wstring dir = UtilWebView2UserDataDir(cfg.webviewBaseDir);
+  if (dir.empty()) return std::wstring();
+  if (UtilEnsureDir(dir)) return dir;
+
+  const std::wstring fallback = UtilWebView2UserDataDir(L"");
+  if (!fallback.empty() && _wcsicmp(fallback.c_str(), dir.c_str()) != 0 &&
+      UtilEnsureDir(fallback)) {
+    LogLine(L"WEBHOST: 缓存目录不可用 %s，改用 %s", dir.c_str(), fallback.c_str());
+    return fallback;
+  }
+  LogLine(L"WEBHOST: 缓存目录不可用 %s", dir.c_str());
+  return std::wstring();
+}
+
+// 只在每个进程第一次建环境前跑一次。缓存是再生的，先删再让 WebView2 重建。
+void MaybeCleanCacheOnStart(const std::wstring& userData) {
+  static bool checked = false;
+  if (checked) return;
+  checked = true;
+  if (!UtilIsWebView2UserDataDir(userData)) return;
+
+  const uint64_t size = UtilDirSize(userData, kWebViewCacheAutoCleanBytes);
+  if (size >= kWebViewCacheAutoCleanBytes) {
+    LogLine(L"WEBHOST: 缓存 %llu B 超过上限，自动清理 %s",
+            static_cast<unsigned long long>(size), userData.c_str());
+    if (UtilRemoveTree(userData)) {
+      UtilEnsureDir(userData);
+    } else {
+      LogLine(L"WEBHOST: 自动清理失败，目录可能仍被占用");
+    }
+  }
+
+  // 旧版把缓存放在数据根下；默认迁走后顺手清掉，失败下次启动再试。
+  const std::wstring legacy = UtilJoin(UtilDataDir(), L"WebView2");
+  if (_wcsicmp(legacy.c_str(), userData.c_str()) != 0 && UtilIsWebView2UserDataDir(legacy) &&
+      UtilDirExists(legacy)) {
+    LogLine(L"WEBHOST: 清理旧缓存 %s", legacy.c_str());
+    UtilRemoveTree(legacy);
+  }
 }
 
 // 用户自放的 Fixed Version 运行时：…\DopusMdViewer\Runtime\msedgewebview2.exe。
@@ -565,6 +603,7 @@ void ReleaseInstance() {
   ReleaseController();
   g_host.env.Reset();
   g_host.docFolder.clear();
+  g_host.userDataDir.clear();
   g_host.watchEmpty = 0;
   g_host.everSawViewer = false;
   g_host.sawDopusWindow = false;
@@ -891,6 +930,8 @@ void StartEnvironment(const std::wstring& runtimeDir, bool triedCustom) {
   if (!triedCustom) ::QueryPerformanceCounter(&g_host.tEnsure);
 
   const std::wstring userData = UserDataDir();
+  MaybeCleanCacheOnStart(userData);
+  g_host.userDataDir = userData;
   LogLine(L"WEBHOST: 建 Environment（运行时=%s）",
           runtimeDir.empty() ? L"系统 Evergreen" : runtimeDir.c_str());
 
@@ -1195,6 +1236,38 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       ReleaseController();
       return 1;
 
+    case kCmdClearUserData: {
+      const std::wstring* target = reinterpret_cast<const std::wstring*>(lParam);
+      if (!target || !UtilIsWebView2UserDataDir(*target)) return 0;
+
+      const bool active = !g_host.userDataDir.empty() &&
+                          _wcsicmp(g_host.userDataDir.c_str(), target->c_str()) == 0;
+      if (active) {
+        if (g_host.borrower || g_host.creating) return 0;
+        ReleaseInstance();
+      }
+
+      bool ok = false;
+      for (int i = 0; i < 30; ++i) {
+        if (!UtilDirExists(*target)) {
+          ok = true;
+          break;
+        }
+        if (UtilRemoveTree(*target)) {
+          ok = true;
+          break;
+        }
+        ::Sleep(100);
+      }
+      if (ok) ok = UtilEnsureDir(*target);
+      if (ok) {
+        LogLine(L"WEBHOST: 已清理缓存 %s", target->c_str());
+      } else {
+        LogLine(L"WEBHOST: 清理缓存失败（目录仍被占用）%s", target->c_str());
+      }
+      return ok ? 1 : 0;
+    }
+
     case kCmdPrint: {
       if (g_host.borrower != reinterpret_cast<HWND>(wParam)) return 0;
       if (!g_host.webview) return 0;
@@ -1377,6 +1450,17 @@ void WebHostPrewarm(bool enabled, int idleReleaseMinutes) {
 }
 
 bool WebHostIsReady(void) { return ::InterlockedCompareExchange(&g_readyFlag, 0, 0) != 0; }
+
+bool WebHostClearUserData(const std::wstring& userDataDir) {
+  if (!UtilIsWebView2UserDataDir(userDataDir)) return false;
+  const DWORD attr = ::GetFileAttributesW(userDataDir.c_str());
+  if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) return false;
+  LRESULT result = 0;
+  if (!SendCommand(kCmdClearUserData, 0, reinterpret_cast<LPARAM>(&userDataDir), &result)) {
+    return false;
+  }
+  return result != 0;
+}
 
 bool WebHostPost(HWND hViewer, const std::wstring& text) {
   if (!hViewer || !WebHostIsReady()) return false;
