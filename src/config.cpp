@@ -148,7 +148,7 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
   }
   if (font.contains("measure") && font["measure"].is_number_integer()) {
     const int m = font["measure"].get<int>();
-    c->font.measureEm = (m == 0) ? 0 : ClampInt(m, 8, 80, 40);
+    c->font.measureEm = (m == 0) ? 0 : ClampInt(m, 8, 200, 40);
   }
 }
 
@@ -288,7 +288,7 @@ bool ConfigSave(const Config& input) {
   if (c.font.mono.empty()) c.font.mono = DefaultMono();
   c.font.sizePx = ClampInt(c.font.sizePx, 8, 48, 15);
   c.font.lineHeight = ClampDouble(c.font.lineHeight, 1.2, 2.2, 1.65);
-  if (c.font.measureEm != 0) c.font.measureEm = ClampInt(c.font.measureEm, 8, 80, 40);
+  if (c.font.measureEm != 0) c.font.measureEm = ClampInt(c.font.measureEm, 8, 200, 40);
   c.idleReleaseMinutes = ClampInt(c.idleReleaseMinutes, 0, 1440, 3);
 
   const wchar_t* path = ConfigPath();

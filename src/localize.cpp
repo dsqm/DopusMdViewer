@@ -21,7 +21,7 @@ const wchar_t* const kZh[kCount] = {
     /* LineHeight       */ L"行高",
     /* LineHeightUnit   */ L"倍（1.20–2.20，步进 0.05）",
     /* Measure          */ L"行宽",
-    /* MeasureUnit      */ L"em（8–80）",
+    /* MeasureUnit      */ L"em（8–200）",
     /* Unlimited        */ L"不限宽",
     /* MeasureHint      */ L"行高与字号改变后，预览按当前锚点恢复位置。",
 

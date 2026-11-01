@@ -704,7 +704,7 @@ void ReadUiIntoStaged(DialogState* st) {
     st->staged.font.measureEm = 0;
   } else {
     const UINT measure = ::GetDlgItemInt(st->hwnd, kIdMeasure, &ok, FALSE);
-    if (ok && measure >= 8 && measure <= 80) st->staged.font.measureEm = static_cast<int>(measure);
+    if (ok && measure >= 8 && measure <= 200) st->staged.font.measureEm = static_cast<int>(measure);
   }
 
   st->staged.renderMermaid = ::IsDlgButtonChecked(st->hwnd, kIdRenderMermaid) == BST_CHECKED;
@@ -1031,7 +1031,7 @@ void BuildUi(DialogState* st) {
                                     UDS_NOTHOUSANDS,
                                 0, 0, 0, 0, kIdMeasureSpin);
   ::SendMessageW(st->hMeasureSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(st->hMeasure), 0);
-  ::SendMessageW(st->hMeasureSpin, UDM_SETRANGE32, 8, 80);
+  ::SendMessageW(st->hMeasureSpin, UDM_SETRANGE32, 8, 200);
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::MeasureUnit), SS_LEFT, 180, y + 3, 120, 20, 0);
   st->hUnlimited = AddControl(st, 0, L"BUTTON", loc::T(loc::Str::Unlimited),
                               BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 300, y, 120, 24,
