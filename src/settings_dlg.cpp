@@ -18,6 +18,7 @@
 #include "config.h"
 #include "localize.h"
 #include "log.h"
+#include "resource_ids.h"
 #include "skin.h"
 #include "util.h"
 #include "viewer_window.h"
@@ -139,21 +140,12 @@ void ApplyFont(HWND hwnd, HFONT font) {
 }
 
 /* ---------------- 配置文件夹说明 ----------------
-   不用 MessageBox：它的文字不能选中，别名名只能手打。这里放只读多行编辑框，
-   选中、Ctrl+C、右键复制都可用；另给一个「复制别名」按钮一键复制。 */
+   用 DialogBoxParam：可选中、Ctrl+C、右键复制都可用，另给「复制别名」一键复制。
+   不自己跑嵌套消息循环，避免和外层配置窗口的消息循环打架。 */
 
-const wchar_t kHelpClass[] = L"DopusMdViewerConfigHelp";
-
-enum { kHelpEdit = 4001, kHelpCopy, kHelpClose };
-
-struct HelpState {
-  HWND hwnd = nullptr;
-  HWND edit = nullptr;
-  HWND copy = nullptr;
-  HWND close = nullptr;
-  HFONT font = nullptr;
-  UINT dpi = 96;
+struct HelpDialogData {
   const wchar_t* text = nullptr;
+  HFONT font = nullptr;
 };
 
 bool CopyTextToClipboard(HWND owner, const wchar_t* text) {
@@ -181,180 +173,64 @@ bool CopyTextToClipboard(HWND owner, const wchar_t* text) {
   return ok;
 }
 
-void CycleHelpFocus(HelpState* st, bool backwards) {
-  if (!st) return;
-  HWND controls[] = {st->edit, st->copy, st->close};
-  HWND focus = ::GetFocus();
-  int idx = -1;
-  for (int i = 0; i < 3; ++i) {
-    if (controls[i] == focus) idx = i;
-  }
-  const int next = idx < 0 ? 0 : (idx + (backwards ? 2 : 1)) % 3;
-  ::SetFocus(controls[next]);
-}
-
-LRESULT CALLBACK HelpProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-  HelpState* st = reinterpret_cast<HelpState*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-
+INT_PTR CALLBACK HelpDlgProc(HWND dlg, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   switch (uMsg) {
-    case WM_NCCREATE: {
-      const CREATESTRUCTW* cs = reinterpret_cast<const CREATESTRUCTW*>(lParam);
-      st = static_cast<HelpState*>(cs->lpCreateParams);
-      if (st) {
-        st->hwnd = hwnd;
-        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+    case WM_INITDIALOG: {
+      const HelpDialogData* data = reinterpret_cast<const HelpDialogData*>(lParam);
+      ::SetWindowTextW(dlg, loc::T(loc::Str::ConfigFolder));
+      ::SetDlgItemTextW(dlg, IDC_HELP_TEXT, data && data->text ? data->text : L"");
+      ::SetDlgItemTextW(dlg, IDC_HELP_COPY, loc::T(loc::Str::CopyAlias));
+      ::SetDlgItemTextW(dlg, IDOK, loc::T(loc::Str::Ok));
+      if (data && data->font) {
+        HWND controls[] = {::GetDlgItem(dlg, IDC_HELP_TEXT), ::GetDlgItem(dlg, IDC_HELP_COPY),
+                           ::GetDlgItem(dlg, IDOK)};
+        for (HWND h : controls) {
+          if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(data->font), TRUE);
+        }
       }
-      // 标题靠这里转给 DefWindowProc，CreateWindowExW 的窗口名才不会丢。
-      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
-    }
-
-    case WM_CREATE: {
-      if (!st) return -1;
-      RECT rc;
-      ::GetClientRect(hwnd, &rc);
-      const int m = ScaleByDpi(st->dpi, 12);
-      const int gap = ScaleByDpi(st->dpi, 8);
-      const int bh = ScaleByDpi(st->dpi, 26);
-      const int bw = ScaleByDpi(st->dpi, 96);
-
-      st->edit = ::CreateWindowExW(
-          WS_EX_CLIENTEDGE, L"EDIT", st->text ? st->text : L"",
-          WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | ES_MULTILINE | ES_READONLY |
-              ES_AUTOVSCROLL,
-          m, m, rc.right - m * 2, rc.bottom - m * 2 - bh - gap, hwnd,
-          reinterpret_cast<HMENU>(kHelpEdit), ModuleHandle(), nullptr);
-      st->copy = ::CreateWindowExW(
-          0, L"BUTTON", loc::T(loc::Str::CopyAlias), WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-          rc.right - m - bw * 2 - gap, rc.bottom - m - bh, bw, bh, hwnd,
-          reinterpret_cast<HMENU>(kHelpCopy), ModuleHandle(), nullptr);
-      st->close = ::CreateWindowExW(
-          0, L"BUTTON", loc::T(loc::Str::Ok),
-          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, rc.right - m - bw,
-          rc.bottom - m - bh, bw, bh, hwnd, reinterpret_cast<HMENU>(kHelpClose), ModuleHandle(),
-          nullptr);
-
-      HWND controls[] = {st->edit, st->copy, st->close};
-      for (HWND h : controls) ApplyFont(h, st->font);
-      return 0;
+      HWND edit = ::GetDlgItem(dlg, IDC_HELP_TEXT);
+      if (edit) ::SetFocus(edit);
+      return TRUE;
     }
 
     case WM_COMMAND:
-      if (!st) return 0;
-      if (LOWORD(wParam) == kHelpCopy && HIWORD(wParam) == BN_CLICKED) {
-        if (CopyTextToClipboard(hwnd, kDataAliasName) && st->copy) {
-          ::SetWindowTextW(st->copy, loc::T(loc::Str::Copied));
-          ::SetTimer(hwnd, 1, 1200, nullptr);
+      if (LOWORD(wParam) == IDC_HELP_COPY && HIWORD(wParam) == BN_CLICKED) {
+        if (CopyTextToClipboard(dlg, kDataAliasName)) {
+          ::SetDlgItemTextW(dlg, IDC_HELP_COPY, loc::T(loc::Str::Copied));
+          ::SetTimer(dlg, 1, 1200, nullptr);
         }
-      } else if (LOWORD(wParam) == kHelpClose) {
-        ::DestroyWindow(hwnd);
+        return TRUE;
       }
-      return 0;
+      if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+        ::EndDialog(dlg, 0);
+        return TRUE;
+      }
+      return FALSE;
 
     case WM_TIMER:
-      if (st && wParam == 1) {
-        ::KillTimer(hwnd, 1);
-        if (st->copy) ::SetWindowTextW(st->copy, loc::T(loc::Str::CopyAlias));
+      if (wParam == 1) {
+        ::KillTimer(dlg, 1);
+        ::SetDlgItemTextW(dlg, IDC_HELP_COPY, loc::T(loc::Str::CopyAlias));
+        return TRUE;
       }
-      return 0;
+      return FALSE;
 
     case WM_CLOSE:
-      ::DestroyWindow(hwnd);
-      return 0;
+      ::EndDialog(dlg, 0);
+      return TRUE;
 
     default:
-      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+      return FALSE;
   }
 }
 
-bool RegisterHelpClass(void) {
-  static bool registered = false;
-  if (registered) return true;
-
-  WNDCLASSEXW wc = {};
-  wc.cbSize = sizeof(wc);
-  wc.lpfnWndProc = HelpProc;
-  wc.hInstance = ModuleHandle();
-  wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-  wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-  wc.lpszClassName = kHelpClass;
-
-  if (::RegisterClassExW(&wc) || ::GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
-    registered = true;
-    return true;
-  }
-  return false;
-}
-
-void ShowConfigHelp(HWND owner, const wchar_t* text, HFONT font, UINT dpi) {
-  if (!text) return;
-  if (!RegisterHelpClass()) {
+void ShowConfigHelp(HWND owner, const wchar_t* text, HFONT font) {
+  HelpDialogData data;
+  data.text = text;
+  data.font = font;
+  if (::DialogBoxParamW(ModuleHandle(), MAKEINTRESOURCEW(IDD_CONFIG_HELP), owner, HelpDlgProc,
+                        reinterpret_cast<LPARAM>(&data)) == -1) {
     ::MessageBoxW(owner, text, loc::T(loc::Str::ConfigFolder), MB_OK | MB_ICONINFORMATION);
-    return;
-  }
-
-  HelpState st;
-  st.font = font;
-  st.dpi = dpi ? dpi : 96;
-  st.text = text;
-
-  RECT rc = {0, 0, ScaleByDpi(st.dpi, 480), ScaleByDpi(st.dpi, 300)};
-  const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
-  ::AdjustWindowRectEx(&rc, style, FALSE, 0);
-  const int w = rc.right - rc.left;
-  const int h = rc.bottom - rc.top;
-
-  int x = 0;
-  int y = 0;
-  if (owner) {
-    RECT orc;
-    if (::GetWindowRect(owner, &orc)) {
-      x = orc.left + ((orc.right - orc.left) - w) / 2;
-      y = orc.top + ((orc.bottom - orc.top) - h) / 2;
-    }
-  }
-
-  HWND hwnd = ::CreateWindowExW(0, kHelpClass, loc::T(loc::Str::ConfigFolder), style, x, y, w, h,
-                                owner, nullptr, ModuleHandle(), &st);
-  if (!hwnd) return;
-
-  if (owner) ::EnableWindow(owner, FALSE);
-  ::ShowWindow(hwnd, SW_SHOW);
-  ::SetForegroundWindow(hwnd);
-  if (st.edit) ::SetFocus(st.edit);
-
-  MSG msg;
-  while (::IsWindow(hwnd)) {
-    const BOOL got = ::GetMessageW(&msg, nullptr, 0, 0);
-    if (got <= 0) {
-      if (got == 0) ::PostQuitMessage(static_cast<int>(msg.wParam));
-      if (::IsWindow(hwnd)) ::DestroyWindow(hwnd);
-      break;
-    }
-    if (msg.message == WM_KEYDOWN) {
-      if (msg.wParam == VK_ESCAPE) {
-        ::DestroyWindow(hwnd);
-        continue;
-      }
-      if (msg.wParam == VK_RETURN) {
-        if (msg.hwnd == st.copy) {
-          ::SendMessageW(st.copy, BM_CLICK, 0, 0);
-        } else if (msg.hwnd == st.close) {
-          ::DestroyWindow(hwnd);
-        }
-        continue;
-      }
-      if (msg.wParam == VK_TAB) {
-        CycleHelpFocus(&st, (::GetKeyState(VK_SHIFT) & 0x8000) != 0);
-        continue;
-      }
-    }
-    ::TranslateMessage(&msg);
-    ::DispatchMessageW(&msg);
-  }
-
-  if (owner && ::IsWindow(owner)) {
-    ::EnableWindow(owner, TRUE);
-    ::SetActiveWindow(owner);
   }
 }
 
@@ -1221,7 +1097,7 @@ void OnCommand(DialogState* st, int id, int code) {
       wchar_t msg[1024];
       ::StringCchPrintfW(msg, ARRAYSIZE(msg), loc::T(loc::Str::ConfigFolderHelp), kDataAliasName,
                          dir.empty() ? loc::T(loc::Str::NoFolder) : dir.c_str());
-      ShowConfigHelp(st->hwnd, msg, st->font, st->dpi);
+      ShowConfigHelp(st->hwnd, msg, st->font);
       return;
     }
 
@@ -1317,6 +1193,13 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         delete st;
       }
       return 0;
+
+    case WM_NCDESTROY:
+      // Opus 的 DVP_Configure 宿主靠这个 WM_QUIT 结束配置流程；
+      // SDK 的 RAR / CSV 示例都在 WM_NCDESTROY 里发。
+      LogLine(L"SETTINGS: 窗口已销毁，向 Opus 配置循环发 WM_QUIT");
+      ::PostQuitMessage(0);
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
 
     default:
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);

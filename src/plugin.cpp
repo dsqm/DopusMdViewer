@@ -212,7 +212,9 @@ extern "C" HWND DVP_Configure(HWND hWndParent, HWND hWndNotify, DWORD dwNotifyDa
   (void)hWndNotify;
   (void)dwNotifyData;
   LogLine(L"DVP_Configure parent=%p", hWndParent);
-  return SettingsShow(hWndParent);
+  HWND hwnd = SettingsShow(hWndParent);
+  LogLine(L"DVP_Configure -> %p", hwnd);
+  return hwnd;
 }
 
 extern "C" HWND DVP_CreateViewer(HWND hWndParent, LPRECT lpRc, DWORD dwFlags) {

@@ -2,6 +2,17 @@
 // RC compiler is invoked with the same INCLUDE paths as the C++ build.
 
 #include <windows.h>
+#include "src/resource_ids.h"
+
+IDD_CONFIG_HELP DIALOGEX 0, 0, 260, 150
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "DopusMdViewer"
+FONT 9, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    EDITTEXT        IDC_HELP_TEXT, 7, 7, 246, 110, ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL | WS_BORDER | WS_TABSTOP
+    PUSHBUTTON      "Copy", IDC_HELP_COPY, 140, 125, 50, 14
+    DEFPUSHBUTTON   "OK", IDOK, 196, 125, 50, 14
+END
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION    0,1,0,0
