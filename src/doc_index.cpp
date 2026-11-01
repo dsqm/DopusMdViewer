@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <cstring>
 
+#include "log.h"
+
 namespace doc {
 
 namespace {
@@ -81,7 +83,9 @@ struct LineView {
     return c;
   }
 
-  bool IsBlank() const { return !truncated && FirstNonSpace() >= plen; }
+  // 空白行判定不能看 truncated：256 个前导空格后面跟着内容的是缩进代码块，
+  // 而全空白的超长行不管多长都是空白行——后者才是真实文档里会出现的。
+  bool IsBlank() const { return FirstNonSpace() >= plen; }
 
   bool Contains(Char c) const {
     for (uint32_t i = 0; i < plen; ++i) {
@@ -866,7 +870,16 @@ void BlockIndex::Reserve(uint64_t fileSize, uint64_t reserveBytes) {
 void BlockIndex::PushBlock(uint64_t start, uint64_t len, uint8_t kindFlags, uint32_t lines) {
   if (sealed_) return;
   const uint32_t page = static_cast<uint32_t>(start >> kPageShift);
-  if (static_cast<size_t>(page) + 2 >= pageBase_.size()) return;
+  if (static_cast<size_t>(page) + 2 >= pageBase_.size()) {
+    // 文件在建索引期间变大了：页表按 Begin 时的 fileSize 预留，装不下的块只能丢。
+    // 索引从此与文件内容不一致，必须让上层看到，不能悄悄吞掉。
+    if (!overflow_) {
+      overflow_ = true;
+      LogLine(L"DOCIDX: 块超出预留页表（page %u / %zu），索引已不完整", page,
+              pageBase_.size());
+    }
+    return;
+  }
 
   const uint32_t i = BlockCount();
   offInPage_.push_back(static_cast<uint16_t>(start & (kPageSize - 1)));
@@ -1000,6 +1013,7 @@ struct IndexBuilder::Impl final : BlockScanner<char>::Sink,
   std::vector<wchar_t> conv;
   bool haveCarry = false;
   unsigned char carry = 0;
+  uint64_t bomSkipped = 0;  // BOM 可能跨 Feed 到达（小块喂入时），逐字节累计跳过
 
   void Push(uint64_t start, uint64_t end, uint8_t flags, uint32_t lines) override {
     const uint64_t s = baseBytes + start * unitBytes;
@@ -1056,8 +1070,12 @@ void IndexBuilder::Feed(const void* data, size_t bytes) {
   if (s.consumed + n > s.limit) n = static_cast<size_t>(s.limit - s.consumed);
   if (n == 0) return;
 
-  if (s.consumed == 0 && s.enc.bomBytes) {
-    const size_t skip = std::min<size_t>(s.enc.bomBytes, n);
+  if (s.bomSkipped < s.enc.bomBytes) {
+    // BOM 必须按字节累计跳过：首块比 BOM 短时（4 KB 与 4 MB 切块结果一致的
+    // 契约），剩下的 BOM 字节要在后续 Feed 里继续跳，不能只看第一次。
+    const size_t skip = static_cast<size_t>(
+        std::min<uint64_t>(s.enc.bomBytes - s.bomSkipped, n));
+    s.bomSkipped += skip;
     s.consumed += skip;
     p += skip;
     n -= skip;

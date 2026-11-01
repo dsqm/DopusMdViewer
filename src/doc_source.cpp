@@ -228,7 +228,8 @@ bool ScanToLine(HANDLE h, LineCache* c, uint32_t line, bool wide, bool bigEndian
       }
     }
     if (stop) break;
-    pos += k;  // 本块没有（更多）换行：沿长行继续往前读
+    pos += k;
+    if (k == 0) break;  // 文件在字符单元中间被截断：剩不足一个单元，别在这里打转
   }
 
   if (pos >= c->blockEnd && c->totalLines == 0) {
@@ -271,6 +272,7 @@ bool SeekLine(HANDLE h, LineCache* c, uint32_t from, bool wide, bool bigEndian,
       }
     }
     pos += i;
+    if (i == 0) break;  // 文件在字符单元中间被截断：剩不足一个单元
     if (reached) break;
   }
   if (line != from) return false;
@@ -279,12 +281,15 @@ bool SeekLine(HANDLE h, LineCache* c, uint32_t from, bool wide, bool bigEndian,
 }
 
 // 从 start（某行行首）读 count 行；got 含块尾没有换行的最后一行。
+// reachedEnd 只有真的读到块尾才是 true：1 MB 窗口装满提前返回时必须是 false，
+// 否则上层会把 totalLines 写死，巨型块更深的行永远取不到。
 bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide,
-               bool bigEndian, std::string* raw, uint32_t* gotLines) {
+               bool bigEndian, std::string* raw, uint32_t* gotLines, bool* reachedEnd) {
   const size_t unit = wide ? 2 : 1;
   std::vector<unsigned char> buf(1u << 20);
   uint64_t pos = start;
   uint32_t got = 0;
+  bool end = false;
 
   while (got < count && pos < c->blockEnd && raw->size() < kMaxWindowBytes) {
     const size_t cap = static_cast<size_t>(
@@ -326,16 +331,19 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
     if (chunkStart + n >= c->blockEnd) {
       const size_t tailLen = n - lineStart;
       if (tailLen > 0) {
-        if (raw->size() + tailLen > kMaxWindowBytes) break;
-        raw->append(reinterpret_cast<const char*>(buf.data() + lineStart), tailLen);
-        ++got;
+        if (raw->size() + tailLen > kMaxWindowBytes) {
+          // 行还在，只是内容放不进窗口：计数不能丢，否则 totalLines 少一行。
+          ++got;
+        }
       }
       pos = c->blockEnd;
+      end = true;
       break;
     }
     pos = chunkStart + i;
   }
   *gotLines = got;
+  if (reachedEnd) *reachedEnd = end;
   return true;
 }
 
@@ -402,6 +410,15 @@ doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& nee
                            OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
   if (h == INVALID_HANDLE_VALUE) return result;
 
+  // 整词匹配要看命中后一个单元，它在顺序读的前面，只能定位读：用独立句柄，
+  // 不在同步句柄上玩 OVERLAPPED（规范外用法，个别文件系统会动顺序指针）。
+  HANDLE hp = INVALID_HANDLE_VALUE;
+  if (wholeWord) {
+    hp = ::CreateFileW(path.c_str(), GENERIC_READ,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                       OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  }
+
   LARGE_INTEGER fsize = {};
   ::GetFileSizeEx(h, &fsize);
   const uint64_t fileUnits = static_cast<uint64_t>(fsize.QuadPart) / 2;
@@ -442,19 +459,19 @@ doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& nee
     const uint64_t startUnit = nextUnit - carryLen;
     bufStartUnit = startUnit;
 
-    // 整词匹配要看命中后一个单元：它在下一个读块里，用偏移读一次（不动顺序指针）。
+    // 整词匹配要看命中后一个单元：它在下一个读块里，用独立句柄定位读一次。
     int nextAfter = -1;
     const bool moreData = nextUnit + units < fileUnits;
-    if (wholeWord && moreData) {
-      OVERLAPPED ov = {};
-      const uint64_t off = (nextUnit + units) * 2;
-      ov.Offset = static_cast<DWORD>(off);
-      ov.OffsetHigh = static_cast<DWORD>(off >> 32);
-      unsigned char pair[2] = {};
-      DWORD got2 = 0;
-      if (::ReadFile(h, pair, 2, &got2, &ov) && got2 == 2) {
-        nextAfter = bigEndian ? static_cast<int>((pair[0] << 8) | pair[1])
-                              : static_cast<int>(pair[0] | (pair[1] << 8));
+    if (wholeWord && moreData && hp != INVALID_HANDLE_VALUE) {
+      LARGE_INTEGER p = {};
+      p.QuadPart = static_cast<LONGLONG>((nextUnit + units) * 2);
+      if (::SetFilePointerEx(hp, p, nullptr, FILE_BEGIN)) {
+        unsigned char pair[2] = {};
+        DWORD got2 = 0;
+        if (::ReadFile(hp, pair, 2, &got2, nullptr) && got2 == 2) {
+          nextAfter = bigEndian ? static_cast<int>((pair[0] << 8) | pair[1])
+                                : static_cast<int>(pair[0] | (pair[1] << 8));
+        }
       }
     }
 
@@ -498,6 +515,7 @@ doc::SearchHits SearchWideFile(const std::wstring& path, const std::wstring& nee
     carry.assign(buf.end() - static_cast<ptrdiff_t>(keep), buf.end());
   }
   ::CloseHandle(h);
+  if (hp != INVALID_HANDLE_VALUE) ::CloseHandle(hp);
   result.truncated = result.total > result.offsets.size();
   return result;
 }
@@ -594,6 +612,11 @@ void FillBlockUnits(HANDLE h, const doc::EncodingInfo& enc, uint64_t blockStart,
           break;
         }
       }
+      // 段尾正好停在 DBCS lead byte 上（trail 还没读进来）时退掉这个字节：
+      // 让 lead 归下一个读段，别让本段把残缺序列折算成一个假单元。trail 已在
+      // 段内时边界是完整的，不能再退（GBK 的 trail 可能同时是合法 lead）。
+      if (use == got && use > 0 && ::IsDBCSLeadByteEx(cp, buf[use - 1])) --use;
+      if (use == 0) break;  // 整段只有一个 lead byte：pos 无法前进，别打转
       const int n = ::MultiByteToWideChar(cp, 0, reinterpret_cast<LPCCH>(buf.data()),
                                           static_cast<int>(use), nullptr, 0);
       if (n > 0) units += static_cast<uint32_t>(n);
@@ -1088,9 +1111,10 @@ bool ServeLines(const std::wstring& uri, std::string* body, int* status) {
   bool readOk = true;
   if (ok && (total == 0 || from < total)) {
     const uint32_t want = total ? std::min<uint32_t>(count, total - from) : count;
-    readOk = ReadLines(h, &c, startOff, want, wide, bigEndian, &raw, &got);
-    if (readOk && got < want && c.totalLines == 0) {
-      // 读到块尾：行数到此为止
+    bool reachedEnd = false;
+    readOk = ReadLines(h, &c, startOff, want, wide, bigEndian, &raw, &got, &reachedEnd);
+    // 只有真读到块尾才能定总行数：窗口装满提前返回时后面还有行。
+    if (readOk && got < want && c.totalLines == 0 && reachedEnd) {
       c.totalLines = from + got;
     }
   } else if (ok && total != 0 && from >= total) {

@@ -85,6 +85,29 @@ inline uint64_t Utf8Boundary(const unsigned char* p, uint64_t len, uint64_t targ
   return pos;
 }
 
+// Legacy（DBCS/GB18030）切点回退：切点落在多字节字符中间就退到该字符的起点，
+// 让整个字符归下一块。Utf8Boundary 在这里不适用——DBCS 的 trail byte 常落在
+// 0x40-0x7E，UTF-8 续字节检查认不出来。局限：trail byte 本身也可能同时是合法
+// lead byte，回退最多 4 步可能多退，只影响极端长行的切点位置。
+inline uint64_t LegacyBoundary(const unsigned char* p, uint64_t len, uint64_t target, UINT cp) {
+  uint64_t pos = std::min<uint64_t>(target, len);
+  if (pos == 0 || pos >= len) return pos;
+  for (int back = 0; back < 4 && pos > 0; ++back) {
+    const unsigned char c = p[pos - 1];
+    if (::IsDBCSLeadByteEx(cp, c)) {
+      --pos;  // 前一字节是 lead：整个字符推给下一块
+      continue;
+    }
+    if (cp == 54936 && c >= 0x30 && c <= 0x39 && pos >= 2 && p[pos - 2] >= 0x81 &&
+        p[pos - 2] <= 0xFE) {
+      --pos;  // GB18030 四字节序列的 b2/b4：继续往回找 lead
+      continue;
+    }
+    break;
+  }
+  return pos;
+}
+
 // UTF-8 与 Legacy 的换行都是单字节 0x0A（这些编码的多字节序列都不含 0x0A）。
 inline LineCut FindLineEnd8(const unsigned char* p, size_t len, uint64_t targetRel,
                             uint64_t slack) {
@@ -98,6 +121,24 @@ inline LineCut FindLineEnd8(const unsigned char* p, size_t len, uint64_t targetR
     }
   }
   cut.pos = Utf8Boundary(p, len, targetRel);
+  cut.atLineStart = false;
+  return cut;
+}
+
+// 同 FindLineEnd8，但找不到换行时按 DBCS 边界回退（UTF-8 与 Legacy 只差这
+// 一步；找换行的主路径完全一样）。
+inline LineCut FindLineEndLegacy(const unsigned char* p, size_t len, uint64_t targetRel,
+                                 uint64_t slack, UINT cp) {
+  LineCut cut;
+  const uint64_t limit = std::min<uint64_t>(len, targetRel + slack + 1);
+  for (uint64_t i = targetRel; i < limit; ++i) {
+    if (p[i] == 0x0A) {
+      cut.pos = i + 1;
+      cut.atLineStart = true;
+      return cut;
+    }
+  }
+  cut.pos = LegacyBoundary(p, len, targetRel, cp);
   cut.atLineStart = false;
   return cut;
 }

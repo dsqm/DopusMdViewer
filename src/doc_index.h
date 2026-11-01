@@ -89,6 +89,8 @@ class BlockIndex {
 
   uint32_t BlockCount() const { return static_cast<uint32_t>(offInPage_.size()); }
   bool Empty() const { return offInPage_.empty(); }
+  // 文件比 Begin 时大、页表装不下新块时会丢块并置此标志（索引与文件不再一致）。
+  bool overflowed() const { return overflow_; }
 
   uint64_t Start(uint32_t i) const;
   uint64_t End(uint32_t i) const { return Start(i) + Len(i); }
@@ -138,6 +140,7 @@ class BlockIndex {
   uint64_t fileSize_ = 0;
   uint32_t pageCount_ = 0;
   bool sealed_ = false;
+  bool overflow_ = false;
 };
 
 // 大纲节点固定 16 B：标题行起点与行内文本区间都在源字节坐标系里。

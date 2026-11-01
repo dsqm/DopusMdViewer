@@ -122,11 +122,18 @@ bool RegexScanUtf16(const std::wstring& path, uint64_t startOffset, bool bigEndi
   }
   pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
   pcre2_match_context* mctx = pcre2_match_context_create(nullptr);
-  if (mctx) {
-    pcre2_set_match_limit(mctx, 10000000);
-    pcre2_set_depth_limit(mctx, 1000);
-  }
   pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
+  if (!mctx || !md) {
+    // 分配失败继续跑的话，pcre2_match 只会静默报错，搜索结果不可信。
+    if (md) pcre2_match_data_free(md);
+    if (mctx) pcre2_match_context_free(mctx);
+    pcre2_code_free(re);
+    ::CloseHandle(h);
+    if (error) *error = L"内存分配失败，无法执行正则";
+    return false;
+  }
+  pcre2_set_match_limit(mctx, 10000000);
+  pcre2_set_depth_limit(mctx, 1000);
 
   std::vector<unsigned char> raw;
   std::vector<uint16_t> units;
@@ -265,11 +272,17 @@ bool RegexScanLegacy(const std::wstring& path, uint64_t startOffset, uint32_t co
   }
   pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
   pcre2_match_context* mctx = pcre2_match_context_create(nullptr);
-  if (mctx) {
-    pcre2_set_match_limit(mctx, 10000000);
-    pcre2_set_depth_limit(mctx, 1000);
-  }
   pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
+  if (!mctx || !md) {
+    if (md) pcre2_match_data_free(md);
+    if (mctx) pcre2_match_context_free(mctx);
+    pcre2_code_free(re);
+    ::CloseHandle(h);
+    if (error) *error = L"内存分配失败，无法执行正则";
+    return false;
+  }
+  pcre2_set_match_limit(mctx, 10000000);
+  pcre2_set_depth_limit(mctx, 1000);
 
   std::vector<unsigned char> raw;
   std::vector<uint16_t> wide;
@@ -290,7 +303,7 @@ bool RegexScanLegacy(const std::wstring& path, uint64_t startOffset, uint32_t co
     uint64_t chunkEnd = rawEnd;
     bool chunkLineStart = true;
     if (rawEnd < fileSize) {
-      const LineCut cut = FindLineEnd8(raw.data(), got, rawEnd - chunkStart, kLineSlack);
+      const LineCut cut = FindLineEndLegacy(raw.data(), got, rawEnd - chunkStart, kLineSlack, cp);
       chunkEnd = chunkStart + cut.pos;
       chunkLineStart = cut.atLineStart;
     }
@@ -304,7 +317,8 @@ bool RegexScanLegacy(const std::wstring& path, uint64_t startOffset, uint32_t co
     if (chunkEnd < fileSize) {
       const uint64_t target = std::min<uint64_t>(chunkEnd + kLookahead, fileSize);
       if (target < fileSize) {
-        const LineCut cut = FindLineEnd8(raw.data(), got, target - chunkStart, kLineSlack);
+        const LineCut cut =
+            FindLineEndLegacy(raw.data(), got, target - chunkStart, kLineSlack, cp);
         subjectEnd = chunkStart + cut.pos;
       }
     }

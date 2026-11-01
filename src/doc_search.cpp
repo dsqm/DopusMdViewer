@@ -37,8 +37,8 @@ inline bool IsAsciiWordByte(int c) {
 // 因此既不漏跨块命中，也不重复计数。
 // 整词匹配时尾部改留 m 字节、窗口多读 1 字节：命中后那个字符没读到时先不下结论，
 // 下一轮从命中起点重扫一次；前一个字符不在缓冲区内，靠 prevByte 跨块带着走。
-void SearchRange(HANDLE h, uint64_t begin, uint64_t end, uint64_t fileSize,
-                 const std::string& pat, bool caseSensitive, bool wholeWord,
+void SearchRange(HANDLE h, const std::wstring& path, uint64_t begin, uint64_t end,
+                 uint64_t fileSize, const std::string& pat, bool caseSensitive, bool wholeWord,
                  RangeResult* out, const std::atomic<bool>* cancel) {
   const size_t m = pat.size();
   if (m == 0 || begin >= end || m > fileSize) return;
@@ -71,15 +71,23 @@ void SearchRange(HANDLE h, uint64_t begin, uint64_t end, uint64_t fileSize,
   pos.QuadPart = static_cast<LONGLONG>(begin);
   if (!::SetFilePointerEx(h, pos, nullptr, FILE_BEGIN)) return;
 
-  // 起点前一个字节一定在缓冲窗口之外，单独用偏移读一次（不动顺序指针）。
+  // 起点前一个字节一定在缓冲窗口之外，单独开一个句柄定位读：顺序句柄不能玩
+  // OVERLAPPED 定位（规范外用法，个别文件系统会动顺序指针），也不能挪主句柄。
   int prevByte = -1;
   if (wholeWord && begin > 0) {
-    OVERLAPPED ov = {};
-    ov.Offset = static_cast<DWORD>(begin - 1);
-    ov.OffsetHigh = static_cast<DWORD>((begin - 1) >> 32);
-    unsigned char b = 0;
-    DWORD got = 0;
-    if (::ReadFile(h, &b, 1, &got, &ov) && got == 1) prevByte = b;
+    HANDLE hp = ::CreateFileW(path.c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (hp != INVALID_HANDLE_VALUE) {
+      LARGE_INTEGER p = {};
+      p.QuadPart = static_cast<LONGLONG>(begin - 1);
+      if (::SetFilePointerEx(hp, p, nullptr, FILE_BEGIN)) {
+        unsigned char b = 0;
+        DWORD gotPeek = 0;
+        if (::ReadFile(hp, &b, 1, &gotPeek, nullptr) && gotPeek == 1) prevByte = b;
+      }
+      ::CloseHandle(hp);
+    }
   }
 
   std::vector<unsigned char> buf(static_cast<size_t>(overlap) + kChunk);
@@ -105,9 +113,8 @@ void SearchRange(HANDLE h, uint64_t begin, uint64_t end, uint64_t fileSize,
 
     const size_t n = carry + got;
     if (n < m) {
-      // 还没凑够一个模式长度：把已读内容整体留作 carry
+      // 还没凑够一个模式长度：已读内容整体留在 buf[0..n)，起点不变，下轮接着凑。
       carry = n;
-      bufferStart += got;
       continue;
     }
 
@@ -204,7 +211,7 @@ SearchHits SearchFileBytes(const std::wstring& path, const std::string& needle, 
                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
       if (h == INVALID_HANDLE_VALUE) return;
-      SearchRange(h, begin, end, fileSize, needle, caseSensitive, wholeWord,
+      SearchRange(h, path, begin, end, fileSize, needle, caseSensitive, wholeWord,
                   &parts[static_cast<size_t>(i)], cancel);
       ::CloseHandle(h);
     });
