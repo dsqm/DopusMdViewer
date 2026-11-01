@@ -51,10 +51,11 @@ const server = createServer(async (req, res) => {
   try {
     let body = await readFile(file)
 
-    // 开发模式要 fetch 本地文档与皮肤，放开同源连接；其余指令原样保留
+    // 开发模式要 fetch 本地文档与皮肤，放开同源连接；其余指令原样保留。
+    // 整条 connect-src 换掉，不依赖线上那份 CSP 的具体取值。
     if (path.basename(file) === 'shell.html') {
       body = Buffer.from(
-        body.toString('utf8').replace("connect-src 'none'", "connect-src 'self'"),
+        body.toString('utf8').replace(/connect-src[^;]*;/, "connect-src 'self';"),
         'utf8')
     }
 

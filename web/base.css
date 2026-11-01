@@ -9,7 +9,7 @@
    ============================================================ */
 
 :root {
-  /* —— 变量契约（28 个） —— */
+  /* —— 变量契约（31 个） —— */
   --md-bg: #ffffff;
   --md-bg-alt: #f6f8fa;
   --md-fg: #1f2328;
@@ -39,6 +39,10 @@
   --md-scrollbar-hover: #adb5bd;
   --md-outline-bg: #ffffff;
   --md-outline-fg: #1f2328;
+
+  --md-icon: #1f2328;
+  --md-icon-hover: #0969da;
+  --md-icon-bg: #ffffff;
 
   --md-danger: #cf222e;
 
@@ -179,6 +183,7 @@ body.dev #doc {
   #print-root img, #print-root svg { max-width: 100% !important; height: auto !important; }
   #print-root pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   #print-root .blk--big, #print-root .big-frame { position: static; height: auto; overflow: visible; }
+  .mdv-copy { display: none !important; }
 }
 
 ::selection { background: var(--md-selection); }
@@ -597,6 +602,109 @@ pre.mermaid-src {
   background: transparent;
 }
 
+/* ---------------- 图标与图标按钮 ----------------
+   图标定义只有一份（shell.html 的 #mdv-sprite），按钮用 <use href="#id"> 引用。
+   形状固定，颜色靠 currentColor 继承：皮肤改 --md-icon 就能整体换色。 */
+
+.mdv-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+.mdv-i {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 只给读屏用的文本 */
+.mdv-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.mdv-ibtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--md-border);
+  border-radius: calc(var(--md-radius) * 0.7);
+  background: var(--md-icon-bg);
+  color: var(--md-icon);
+  cursor: pointer;
+}
+
+.mdv-ibtn:hover { color: var(--md-icon-hover); border-color: var(--md-fg-muted); }
+
+/* ---------------- 代码块与表格的复制按钮 ----------------
+   包一层 .mdv-cb 只为定位：块里原有的 pre / table 外边距搬到这层上，
+   内部清零，几何与加按钮之前完全一致。 */
+
+.mdv-cb {
+  position: relative;
+  margin: var(--md-space-block) 0;
+}
+
+.mdv-cb > pre,
+.mdv-cb > table { margin: 0; }
+
+/* 表格按内容收缩，按钮才贴着表格右上角而不是窗口右边 */
+.mdv-cb--table {
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* 按钮压在上角，给最后一列表头留出位置，免得盖住表头文字 */
+.mdv-cb--table tr:first-child > :last-child { padding-right: 2.4em; }
+
+.mdv-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--md-border);
+  border-radius: calc(var(--md-radius) * 0.7);
+  background: var(--md-icon-bg);
+  color: var(--md-icon);
+  cursor: pointer;
+  opacity: 0;
+  /* 透明时不挡选字：鼠标还没进块的时候它不该吃掉这块区域的点击 */
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.mdv-cb:hover .mdv-copy,
+.mdv-copy:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.mdv-copy:hover {
+  color: var(--md-icon-hover);
+  border-color: var(--md-fg-muted);
+}
+
+.mdv-copy[data-done="1"] { color: var(--md-icon-hover); }
+
+@media (prefers-reduced-motion: reduce) {
+  .mdv-copy { transition: none; }
+}
+
 /* ---------------- 搜索条与大纲 ---------------- */
 
 #tools {
@@ -625,6 +733,27 @@ pre.mermaid-src {
 #tools button:hover,
 #find button:hover,
 .outline-head button:hover { border-color: var(--md-fg-muted); }
+
+/* 图标按钮：盖掉上面那条给文字按钮的内边距，改成正方块 */
+#tools button.mdv-ibtn,
+#find button.mdv-ibtn,
+.outline-head button.mdv-ibtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: var(--md-icon-bg);
+  color: var(--md-icon);
+}
+
+#tools button.mdv-ibtn:hover,
+#find button.mdv-ibtn:hover,
+.outline-head button.mdv-ibtn:hover { color: var(--md-icon-hover); }
+
+/* 设置里关掉的按钮不占位 */
+#tools button[hidden] { display: none; }
 
 #find {
   position: fixed;
@@ -664,7 +793,7 @@ pre.mermaid-src {
   color: var(--md-fg-muted);
 }
 
-#find button { padding: 1px 6px; }
+#find button { padding: 1px 6px; height: 24px; }
 #find button:disabled { opacity: 0.45; cursor: default; }
 
 #find .tog.on {

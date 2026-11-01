@@ -99,7 +99,12 @@ std::wstring MakeCfg(const Config& config) {
                config.renderKatex ? L"1" : L"0",
                config.renderHighlight ? L"1" : L"0",
                config.renderInlineHtml ? L"1" : L"0",
-               config.renderLocalImages ? L"1" : L"0"});
+               config.renderLocalImages ? L"1" : L"0",
+               config.copyCodeBlock ? L"1" : L"0",
+               config.copyTable ? L"1" : L"0",
+               config.tableCopyMode == 1 ? L"1" : L"0",
+               config.showFindButton ? L"1" : L"0",
+               config.showOutlineButton ? L"1" : L"0"});
 }
 
 std::wstring MakeClear(void) { return L"clear"; }

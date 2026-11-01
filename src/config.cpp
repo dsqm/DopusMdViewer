@@ -44,6 +44,11 @@ void SetDefaults(Config* c) {
   c->renderHighlight = true;
   c->renderInlineHtml = true;
   c->renderLocalImages = true;
+  c->copyCodeBlock = true;
+  c->copyTable = true;
+  c->tableCopyMode = 0;
+  c->showFindButton = true;
+  c->showOutlineButton = true;
   c->enableLog = false;
   c->webviewBaseDir.clear();
   c->prewarm = false;
@@ -126,6 +131,15 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
     readBool("highlight", &c->renderHighlight);
     readBool("inlineHtml", &c->renderInlineHtml);
     readBool("localImages", &c->renderLocalImages);
+    readBool("copyCodeBlock", &c->copyCodeBlock);
+    readBool("copyTable", &c->copyTable);
+    readBool("showFindButton", &c->showFindButton);
+    readBool("showOutlineButton", &c->showOutlineButton);
+  }
+
+  if (root.contains("tableCopyFormat") && root["tableCopyFormat"].is_string()) {
+    const std::string v = root["tableCopyFormat"].get<std::string>();
+    c->tableCopyMode = (v == "markdown") ? 1 : 0;
   }
 
   if (root.contains("skin") && root["skin"].is_string()) {
@@ -290,6 +304,7 @@ bool ConfigSave(const Config& input) {
   c.font.lineHeight = ClampDouble(c.font.lineHeight, 1.2, 2.2, 1.65);
   if (c.font.measureEm != 0) c.font.measureEm = ClampInt(c.font.measureEm, 8, 200, 40);
   c.idleReleaseMinutes = ClampInt(c.idleReleaseMinutes, 0, 1440, 3);
+  if (c.tableCopyMode != 1) c.tableCopyMode = 0;
 
   const wchar_t* path = ConfigPath();
   if (!path || !*path) {
@@ -339,7 +354,12 @@ bool ConfigSave(const Config& input) {
   render["highlight"] = c.renderHighlight;
   render["inlineHtml"] = c.renderInlineHtml;
   render["localImages"] = c.renderLocalImages;
+  render["copyCodeBlock"] = c.copyCodeBlock;
+  render["copyTable"] = c.copyTable;
+  render["showFindButton"] = c.showFindButton;
+  render["showOutlineButton"] = c.showOutlineButton;
   root["render"] = render;
+  root["tableCopyFormat"] = c.tableCopyMode == 1 ? "markdown" : "tsv";
 
   const std::string bytes = root.dump(2);
   if (!WriteConfigAtomically(path, bytes)) {
@@ -348,11 +368,12 @@ bool ConfigSave(const Config& input) {
   }
   LogSetEnabled(c.enableLog);
   LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
-          L"net=%d outside=%d render=%d%d%d%d%d log=%d prewarm=%d idle=%d",
+          L"net=%d outside=%d render=%d%d%d%d%d copy=%d%d/%d tools=%d%d log=%d prewarm=%d idle=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
           c.netImageMode, c.allowOutsideImages ? 1 : 0, c.renderMermaid ? 1 : 0,
           c.renderKatex ? 1 : 0, c.renderHighlight ? 1 : 0, c.renderInlineHtml ? 1 : 0,
-          c.renderLocalImages ? 1 : 0, c.enableLog ? 1 : 0, c.prewarm ? 1 : 0,
-          c.idleReleaseMinutes);
+          c.renderLocalImages ? 1 : 0, c.copyCodeBlock ? 1 : 0, c.copyTable ? 1 : 0,
+          c.tableCopyMode, c.showFindButton ? 1 : 0, c.showOutlineButton ? 1 : 0,
+          c.enableLog ? 1 : 0, c.prewarm ? 1 : 0, c.idleReleaseMinutes);
   return true;
 }

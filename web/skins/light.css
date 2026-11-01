@@ -1,6 +1,6 @@
 /* name: GitHub Light
    id: light — 默认皮肤，同时是皮肤模板。
-   37 个变量全部列出；只想要配色时改这里就够，
+   40 个变量全部列出；只想要配色时改这里就够，
    要改排版再往下写选择器。字体不归皮肤：font-family / font-size /
    line-height / 行宽由 <style id="fx"> 最后写出并压住。 */
 
@@ -53,6 +53,11 @@
   --md-scrollbar-hover: #adb5bd;
   --md-outline-bg: #ffffff;
   --md-outline-fg: #1f2328;
+
+  /* —— 图标（工具条按钮与复制按钮） —— */
+  --md-icon: #1f2328;
+  --md-icon-hover: #0969da;
+  --md-icon-bg: #ffffff;
 
   /* —— 形状 —— */
   --md-radius: 6px;

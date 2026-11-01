@@ -63,6 +63,11 @@ enum {
   kIdNetHost,
   kIdNetOff,
   kIdOutside,
+  kIdCopyCode = 3310,
+  kIdCopyTable,
+  kIdCopyFormat,
+  kIdFindBtn,
+  kIdOutlineBtn,
   kIdVersion = 3400,
   kIdWebView,
   kIdGiant,
@@ -120,6 +125,11 @@ struct DialogState {
   HWND hPreviewNote = nullptr;
 
   HWND hRender[5] = {};
+  HWND hCopyCode = nullptr;
+  HWND hCopyTable = nullptr;
+  HWND hCopyFormat = nullptr;
+  HWND hFindBtn = nullptr;
+  HWND hOutlineBtn = nullptr;
   HWND hNetDoc = nullptr;
   HWND hNetHost = nullptr;
   HWND hNetOff = nullptr;
@@ -631,6 +641,11 @@ void EnableMeasure(DialogState* st, bool enabled) {
   ::EnableWindow(st->hMeasureSpin, enabled);
 }
 
+// 表格复制按钮关掉时，复制格式没有意义，跟着置灰。
+void EnableCopyFormat(DialogState* st, bool enabled) {
+  if (st->hCopyFormat) ::EnableWindow(st->hCopyFormat, enabled ? TRUE : FALSE);
+}
+
 // “应用”只在有未保存改动时可用；应用成功后立刻变灰。
 void SetDirty(DialogState* st, bool dirty) {
   st->dirty = dirty;
@@ -672,6 +687,18 @@ void LoadUiFromStaged(DialogState* st) {
   ::CheckDlgButton(st->hwnd, kIdRenderLocal,
                    st->staged.renderLocalImages ? BST_CHECKED : BST_UNCHECKED);
 
+  ::CheckDlgButton(st->hwnd, kIdCopyCode,
+                   st->staged.copyCodeBlock ? BST_CHECKED : BST_UNCHECKED);
+  ::CheckDlgButton(st->hwnd, kIdCopyTable, st->staged.copyTable ? BST_CHECKED : BST_UNCHECKED);
+  ::CheckDlgButton(st->hwnd, kIdFindBtn,
+                   st->staged.showFindButton ? BST_CHECKED : BST_UNCHECKED);
+  ::CheckDlgButton(st->hwnd, kIdOutlineBtn,
+                   st->staged.showOutlineButton ? BST_CHECKED : BST_UNCHECKED);
+  if (st->hCopyFormat) {
+    ::SendMessageW(st->hCopyFormat, CB_SETCURSEL, st->staged.tableCopyMode == 1 ? 1 : 0, 0);
+  }
+  EnableCopyFormat(st, st->staged.copyTable);
+
   const int netId =
       st->staged.netImageMode == 0 ? kIdNetOff : (st->staged.netImageMode == 2 ? kIdNetDoc : kIdNetHost);
   ::CheckRadioButton(st->hwnd, kIdNetDoc, kIdNetOff, netId);
@@ -712,6 +739,14 @@ void ReadUiIntoStaged(DialogState* st) {
   st->staged.renderHighlight = ::IsDlgButtonChecked(st->hwnd, kIdRenderHighlight) == BST_CHECKED;
   st->staged.renderInlineHtml = ::IsDlgButtonChecked(st->hwnd, kIdRenderHtml) == BST_CHECKED;
   st->staged.renderLocalImages = ::IsDlgButtonChecked(st->hwnd, kIdRenderLocal) == BST_CHECKED;
+  st->staged.copyCodeBlock = ::IsDlgButtonChecked(st->hwnd, kIdCopyCode) == BST_CHECKED;
+  st->staged.copyTable = ::IsDlgButtonChecked(st->hwnd, kIdCopyTable) == BST_CHECKED;
+  st->staged.showFindButton = ::IsDlgButtonChecked(st->hwnd, kIdFindBtn) == BST_CHECKED;
+  st->staged.showOutlineButton = ::IsDlgButtonChecked(st->hwnd, kIdOutlineBtn) == BST_CHECKED;
+  if (st->hCopyFormat) {
+    const int format = static_cast<int>(::SendMessageW(st->hCopyFormat, CB_GETCURSEL, 0, 0));
+    st->staged.tableCopyMode = (format == 1) ? 1 : 0;
+  }
 
   if (::IsDlgButtonChecked(st->hwnd, kIdNetDoc) == BST_CHECKED) {
     st->staged.netImageMode = 2;
@@ -1094,6 +1129,30 @@ void BuildUi(DialogState* st) {
                                 16, y + i * 26, 300, 24, renders[i].id);
   }
 
+  // 右列：左边那列决定「渲染什么」，这一列决定「界面上多出哪些控件」。
+  // 都是开关，但语义不同，分两列比接在下面一长串更好找。
+  st->hCopyCode = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderCopyCode),
+                             BS_AUTOCHECKBOX | WS_TABSTOP, 340, y, 200, 24, kIdCopyCode);
+  st->hCopyTable = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderCopyTable),
+                              BS_AUTOCHECKBOX | WS_TABSTOP, 340, y + 26, 200, 24, kIdCopyTable);
+  AddControl(st, 2, L"STATIC", loc::T(loc::Str::RenderCopyFormat), SS_LEFT, 356, y + 55, 180, 20,
+             0);
+  st->hCopyFormat = AddControl(st, 2, L"COMBOBOX", L"",
+                               CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 356,
+                               y + 76, 174, 120, kIdCopyFormat);
+  st->hFindBtn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderFindButton),
+                            BS_AUTOCHECKBOX | WS_TABSTOP, 340, y + 108, 200, 24, kIdFindBtn);
+  st->hOutlineBtn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderOutlineButton),
+                               BS_AUTOCHECKBOX | WS_TABSTOP, 340, y + 134, 200, 24,
+                               kIdOutlineBtn);
+  if (st->hCopyFormat) {
+    ::SendMessageW(st->hCopyFormat, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(loc::T(loc::Str::CopyFormatTsv)));
+    ::SendMessageW(st->hCopyFormat, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(loc::T(loc::Str::CopyFormatMarkdown)));
+    ::SendMessageW(st->hCopyFormat, CB_SETCURSEL, 0, 0);
+  }
+
   y = 190;
   AddControl(st, 2, L"STATIC", loc::T(loc::Str::NetAskWhen), SS_LEFT, 16, y, 300, 20, 0);
   st->hNetDoc = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::NetPerDoc),
@@ -1317,12 +1376,26 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdRenderHighlight:
     case kIdRenderHtml:
     case kIdRenderLocal:
+    case kIdCopyCode:
+    case kIdFindBtn:
+    case kIdOutlineBtn:
     case kIdNetDoc:
     case kIdNetHost:
     case kIdNetOff:
     case kIdOutside:
     case kIdEnableLog:
       if (code == BN_CLICKED) SetDirty(st, true);
+      return;
+
+    case kIdCopyTable:
+      if (code == BN_CLICKED) {
+        EnableCopyFormat(st, ::IsDlgButtonChecked(st->hwnd, kIdCopyTable) == BST_CHECKED);
+        SetDirty(st, true);
+      }
+      return;
+
+    case kIdCopyFormat:
+      if (code == CBN_SELCHANGE) SetDirty(st, true);
       return;
 
     case kIdOpenLog: {

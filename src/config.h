@@ -33,6 +33,14 @@ struct Config {
   bool renderHighlight;
   bool renderInlineHtml;
   bool renderLocalImages;
+  // 代码块 / 表格右上角的复制按钮。默认开。
+  bool copyCodeBlock;
+  bool copyTable;
+  // 表格复制格式：0 = TSV 纯文本，1 = Markdown 源码。
+  int tableCopyMode;
+  // 右上角工具条上的两个按钮。默认开；两个都关掉时整条工具条不显示。
+  bool showFindButton;
+  bool showOutlineButton;
   // 记录诊断日志。默认关闭。
   bool enableLog;
   // WebView2 缓存的父目录；空 = %LOCALAPPDATA%\DopusMdViewer。实际目录是 <此项>\WebView2。

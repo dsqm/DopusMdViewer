@@ -46,6 +46,11 @@
   --md-outline-bg: #fdf6e3;
   --md-outline-fg: #586e75;
 
+  /* —— 图标（工具条按钮与复制按钮） —— */
+  --md-icon: #586e75;
+  --md-icon-hover: #268bd2;
+  --md-icon-bg: #fdf6e3;
+
   --md-radius: 4px;
   --md-space-block: 1em;
 }

@@ -213,6 +213,21 @@ void CopyRenderedText(ViewerState* st, int reason, const std::wstring& text) {
   }
 }
 
+// 代码块 / 表格右上角的复制按钮（clip）：页面只给「代码」「表格」这样的标签和正文，
+// 提示文案统一在这里拼，免得页面里再散一份状态栏文案。
+void CopyLabeledText(ViewerState* st, const std::wstring& what, const std::wstring& text) {
+  if (text.empty()) {
+    SetStatus(st, L"没有可复制的内容");
+    return;
+  }
+  if (!SetClipboardText(st->hwndSelf, text)) {
+    SetStatus(st, L"复制失败：剪贴板被占用");
+    return;
+  }
+  LogLine(L"VIEWER: 复制%s %zu 字符", what.c_str(), text.size());
+  SetStatus(st, L"已复制%s（%zu 字符）", what.c_str(), text.size());
+}
+
 // 皮肤与字体永远成对推送：先皮肤，再 fx（fx 最后注入且写全量槽位，压住皮肤）。
 void PushChrome(ViewerState* st) {
   if (!st->hasHost || st->webFailed || !WebHostIsReady()) return;
@@ -479,6 +494,14 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     const std::wstring text = rest.size() > flag.size() + 1 ? rest.substr(flag.size() + 1)
                                                              : std::wstring();
     CopyRenderedText(st, _wtoi(flag.c_str()), text);
+    return;
+  }
+
+  if (type == L"clip") {
+    const std::wstring what = msg::SecondField(rest);
+    const std::wstring text = rest.size() > what.size() + 1 ? rest.substr(what.size() + 1)
+                                                            : std::wstring();
+    CopyLabeledText(st, what, text);
     return;
   }
 

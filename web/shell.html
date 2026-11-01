@@ -18,12 +18,25 @@
 </head>
 
 <body class="mdv-root">
+<!-- 图标定义只放一份：按钮用 <use href="#id"> 引用。形状写死在这里，
+     颜色由 CSS 的 currentColor 继承（皮肤通过 --md-icon 控制）。
+     24 的 viewBox + 16px 显示 = Lucide 的 1.5px 视觉线宽。 -->
+<svg id="mdv-sprite" class="mdv-sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-find" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.34-4.34"/></symbol>
+  <symbol id="i-outline" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+</svg>
+
 <div id="doc"></div>
 <div id="sb" hidden><div id="sb-thumb"></div></div>
 
 <div id="tools" class="ui mdv-ui" hidden>
-  <button type="button" data-act="find">搜索</button>
-  <button type="button" data-act="outline">大纲</button>
+  <button type="button" class="mdv-ibtn" data-act="find" title="搜索 (Ctrl+F)" aria-label="搜索"><svg class="mdv-i"><use href="#i-find"></use></svg></button>
+  <button type="button" class="mdv-ibtn" data-act="outline" title="大纲" aria-label="大纲"><svg class="mdv-i"><use href="#i-outline"></use></svg></button>
 </div>
 
 <div id="find" class="ui mdv-ui" hidden>
@@ -32,18 +45,20 @@
   <button id="find-case" type="button" class="tog" title="区分大小写">Aa</button>
   <button id="find-word" type="button" class="tog" title="整词匹配">W</button>
   <button id="find-regex" type="button" class="tog" title="正则匹配">.*</button>
-  <button id="find-prev" type="button" title="上一个 (Shift+Enter)">↑</button>
-  <button id="find-next" type="button" title="下一个 (Enter)">↓</button>
-  <button id="find-close" type="button" title="关闭 (Esc)">×</button>
+  <button id="find-prev" type="button" class="mdv-ibtn" title="上一个 (Shift+Enter)" aria-label="上一个"><svg class="mdv-i"><use href="#i-up"></use></svg></button>
+  <button id="find-next" type="button" class="mdv-ibtn" title="下一个 (Enter)" aria-label="下一个"><svg class="mdv-i"><use href="#i-down"></use></svg></button>
+  <button id="find-close" type="button" class="mdv-ibtn" title="关闭 (Esc)" aria-label="关闭"><svg class="mdv-i"><use href="#i-close"></use></svg></button>
 </div>
 
 <aside id="outline" class="ui mdv-ui" hidden>
   <div class="outline-head">
     <span>大纲</span>
-    <button id="outline-close" type="button" title="关闭 (Esc)">×</button>
+    <button id="outline-close" type="button" class="mdv-ibtn" title="关闭 (Esc)" aria-label="关闭"><svg class="mdv-i"><use href="#i-close"></use></svg></button>
   </div>
   <div id="outline-list" class="outline-list"></div>
 </aside>
+
+<div id="mdv-live" class="mdv-sr" aria-live="polite"></div>
 
 <script src="app.js"></script>
 <script src="ui-ext.js"></script>

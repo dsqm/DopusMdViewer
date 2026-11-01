@@ -160,6 +160,17 @@ function utf8Bytes(text) {
   return new TextEncoder().encode(text).length
 }
 
+// 图标只引用 sprite 里的一份定义；符号自带 viewBox，外层不必再写。
+function iconSvg(id) {
+  return '<svg class="mdv-i" aria-hidden="true" focusable="false"><use href="#' + id + '"></use></svg>'
+}
+
+function copyButtonHtml(kind, extraAttrs) {
+  const label = kind === 'table' ? '复制表格' : '复制代码'
+  return '<button type="button" class="mdv-copy" data-k="' + kind + '"' + (extraAttrs || '') +
+    ' title="' + label + '" aria-label="' + label + '">' + iconSvg('i-copy') + '</button>'
+}
+
 md.renderer.rules.fence = (tokens, idx) => {
   const token = tokens[idx]
   const info = (token.info || '').trim()
@@ -189,7 +200,41 @@ md.renderer.rules.fence = (tokens, idx) => {
       + Math.round(bytes / 1024) + ' KiB），已关闭高亮</div>'
     : ''
 
-  return '<pre>' + note + '<code class="hljs ' + cls + '">' + body + '</code></pre>\n'
+  // 复制按钮取的是 <code> 的 textContent：hljs 只加 span 不改字符，
+  // 所以拿到的就是源码原文，不用另存一份。
+  const btn = state.render.copyCode ? copyButtonHtml('code') : ''
+  return '<div class="mdv-cb">' + btn
+    + '<pre>' + note + '<code class="hljs ' + cls + '">' + body + '</code></pre></div>\n'
+}
+
+// 表格：按钮挂在 </table> 后面，但绝对定位在包层右上角，所以视觉上在表格角上。
+// Markdown 源码靠 table_close 的 map 回源文档切片，渲染规则里拿不到原文。
+const defaultTableOpen = md.renderer.rules.table_open ||
+  ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
+const defaultTableClose = md.renderer.rules.table_close ||
+  ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
+
+md.renderer.rules.table_open = (tokens, idx, options, env, self) =>
+  '<div class="mdv-cb mdv-cb--table">' + defaultTableOpen(tokens, idx, options, env, self)
+
+md.renderer.rules.table_close = (tokens, idx, options, env, self) => {
+  // markdown-it 只给 table_open 挂 map（table_close 的 map 是空的），
+  // 而结束行号是解析完才回填进 open 那个数组的——所以要回头找 open。
+  let open = idx - 1
+  while (open >= 0 && tokens[open].type !== 'table_open') open--
+  const map = open >= 0 ? tokens[open].map : null
+  let btn = ''
+  if (state.render.copyTable && map && env) {
+    const lines = ' data-l0="' + map[0] + '" data-l1="' + map[1] + '"'
+    if (Number.isInteger(env.blockIndex)) {
+      // 线上路径：逐块解析，行号相对本块，点的时候按块号回源
+      btn = copyButtonHtml('table', ' data-src="b" data-i="' + env.blockIndex + '"' + lines)
+    } else if (typeof env.docText === 'string') {
+      // 开发模式整篇解析：行号相对全文，源码就在手里
+      btn = copyButtonHtml('table', ' data-src="d"' + lines)
+    }
+  }
+  return defaultTableClose(tokens, idx, options, env, self) + btn + '</div>'
 }
 
 /* ---------------- 清洗与 URL 改写 ---------------- */
@@ -333,7 +378,10 @@ function sanitize(html) {
   return DOMPurify.sanitize(html, {
     WHOLE_DOCUMENT: false,
     RETURN_DOM_FRAGMENT: false,
-    ADD_ATTR: ['data-mermaid', 'data-external', 'data-state'],
+    // use 不在默认 SVG 白名单里，href 也只对 a 放行：复制按钮的 <use href="#i-copy">
+    // 不加这两项会被整条剥掉，只剩一个空 <svg>
+    ADD_TAGS: ['use'],
+    ADD_ATTR: ['data-mermaid', 'data-external', 'data-state', 'href'],
     FORBID_TAGS: ['style', 'link', 'meta', 'base'],
     FORBID_ATTR: ['srcset'],
   })
@@ -353,7 +401,16 @@ const state = {
     highlight: true,
     inlineHtml: true,
     localImages: true,
+    copyCode: true,      // 代码块右上角的复制按钮（写进块 HTML，改了要重渲染）
+    copyTable: true,     // 表格右上角的复制按钮（同上）
+    tableCopyMd: false,  // 表格复制 Markdown 源码而不是 TSV；纯点击时行为，不进 HTML
   },
+  chrome: {
+    find: true,     // 工具条搜索按钮
+    outline: true,  // 工具条大纲按钮
+  },
+  // 整篇渲染（开发模式）时的全文源码；线上走逐块渲染，这里一直是 null
+  docText: null,
 }
 
 const MATH_RULES = ['math_inline', 'math_inline_block', 'math_block']
@@ -660,6 +717,8 @@ function renderBlockHtml(text, flags, i) {
   let html
   try {
     const env = blockEnv()
+    // 表格复制按钮要带块号，点击时才回源文档按 token.map 切 Markdown 源码
+    env.blockIndex = i
     const slug = SLUG.byBlock.get(i)
     if ((flags & 0x10) || slug) {
       const tokens = md.parse(text, env)
@@ -1545,10 +1604,10 @@ function resetVirtual() {
   OUT.loaded = false
   OUT.loading = false
   if (outlineEl) outlineEl.hidden = true
-  if (toolsEl) toolsEl.hidden = true
 
   V.docId++
   V.active = false
+  syncTools()
   if (V.pumpRaf) cancelAnimationFrame(V.pumpRaf)
   if (V.placeRaf) cancelAnimationFrame(V.placeRaf)
   if (V.raf) cancelAnimationFrame(V.raf)
@@ -1630,7 +1689,7 @@ function applyIndex(base, prefix, est, fileSize, enc, lastVisible, complete) {
     bigMetrics()
   }
 
-  if (toolsEl) toolsEl.hidden = false
+  syncTools()
   requestBlocks(0, Math.min(30, Math.max(1, prefix || 1)), 'init')
   loadDefs()
   loadOutline()
@@ -2186,6 +2245,109 @@ async function copyRendered() {
   }
 }
 
+/* ---------------- 代码块 / 表格的复制按钮 ----------------
+   按钮 HTML 由渲染规则产出，点击在 document 上统一代理：块会被虚拟滚动反复
+   重绘，逐个绑监听既多余也留不住。 */
+
+const COPY_DONE_MS = 1500
+
+function cellTextOf(cell) {
+  let out = ''
+  const walk = (node) => {
+    for (let n = node.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3) out += n.nodeValue
+      else if (n.nodeName === 'BR') out += ' '
+      else if (n.nodeType === 1) walk(n)
+    }
+  }
+  walk(cell)
+  // 单元格里的换行与制表符会破坏 TSV 的行列结构，统一压成单个空格
+  return out.replace(/\s+/g, ' ').trim()
+}
+
+function tableAsTsv(wrap) {
+  const table = wrap.querySelector('table')
+  if (!table) return ''
+  const rows = []
+  for (const tr of table.querySelectorAll('tr')) {
+    const cells = []
+    for (const cell of tr.children) {
+      if (cell.tagName !== 'TD' && cell.tagName !== 'TH') continue
+      cells.push(cellTextOf(cell))
+    }
+    if (cells.length) rows.push(cells.join('\t'))
+  }
+  return rows.join('\n')
+}
+
+// Markdown 源码只能回源文档切：渲染后的 DOM 里已经没有 | --- | 这类语法。
+async function tableAsMarkdown(btn) {
+  const l0 = parseInt(btn.dataset.l0, 10)
+  const l1 = parseInt(btn.dataset.l1, 10)
+  if (!Number.isInteger(l0) || !Number.isInteger(l1)) {
+    throw new Error('这张表格没有源码位置')
+  }
+  if (btn.dataset.src === 'd') {
+    // 开发模式：整篇解析，行号相对全文
+    if (typeof state.docText !== 'string') throw new Error('文档源码不可用')
+    return state.docText.split(/\r?\n/).slice(l0, l1).join('\n')
+  }
+  const i = parseInt(btn.dataset.i, 10)
+  if (!Number.isInteger(i)) throw new Error('这张表格没有源码位置')
+  const docId = V.docId
+  const res = await fetch(BLOCKS_URL + '?from=' + i + '&count=1', { cache: 'no-store' })
+  if (!res.ok) throw new Error('HTTP ' + res.status)
+  if (docId !== V.docId) throw new Error('文档已切换')
+  const item = parseFrames(await res.arrayBuffer()).find((it) => it.i === i)
+  if (!item) throw new Error('块内容已不可用')
+  return item.text.split(/\r?\n/).slice(l0, l1).join('\n')
+}
+
+function markCopied(btn) {
+  const use = btn.querySelector('use')
+  if (use) use.setAttribute('href', '#i-check')
+  btn.dataset.done = '1'
+  if (btn.resetTimer) clearTimeout(btn.resetTimer)
+  btn.resetTimer = setTimeout(() => {
+    if (use) use.setAttribute('href', '#i-copy')
+    delete btn.dataset.done
+  }, COPY_DONE_MS)
+  const live = document.getElementById('mdv-live')
+  if (live) live.textContent = '已复制'
+}
+
+async function copyFromButton(btn) {
+  const wrap = btn.closest('.mdv-cb')
+  if (!wrap) return
+  const isTable = btn.dataset.k === 'table'
+  let text = ''
+  try {
+    if (isTable) {
+      text = state.render.tableCopyMd ? await tableAsMarkdown(btn) : tableAsTsv(wrap)
+    } else {
+      const code = wrap.querySelector('pre > code')
+      text = code ? code.textContent : ''
+    }
+  } catch (err) {
+    postRaw('status|复制失败：' + String((err && err.message) || err))
+    return
+  }
+  text = text.replace(/\r\n/g, '\n').replace(/\n+$/, '')
+  if (!text) {
+    postRaw('status|没有可复制的内容')
+    return
+  }
+  postRaw('clip|' + (isTable ? '表格' : '代码') + '|' + text)
+  markCopied(btn)
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target && e.target.closest ? e.target.closest('.mdv-copy') : null
+  if (!btn) return
+  e.preventDefault()
+  copyFromButton(btn)
+})
+
 /* ---------------- 搜索与大纲 ---------------- */
 
 function foldAscii(text) {
@@ -2325,7 +2487,7 @@ function openFind() {
   if (!V.active) return
   FIND.open = true
   findEl.hidden = false
-  if (toolsEl) toolsEl.hidden = true
+  syncTools()
   findInput.focus()
   findInput.select()
 }
@@ -2348,7 +2510,7 @@ function closeFind() {
   FIND.current = null
   if (findEl) findEl.hidden = true
   if (findInput) findInput.blur()
-  if (V.active && toolsEl && outlineEl && outlineEl.hidden) toolsEl.hidden = false
+  syncTools()
   clearHitMarks()
   updateFindCount()
 }
@@ -2879,14 +3041,27 @@ function toggleOutline() {
     return
   }
   outlineEl.hidden = false
-  if (toolsEl) toolsEl.hidden = true
+  syncTools()
   renderOutline()
   if (!OUT.loaded && !OUT.loading) loadOutline()
 }
 
 function closeOutline() {
   if (outlineEl) outlineEl.hidden = true
-  if (V.active && toolsEl && (!findEl || findEl.hidden)) toolsEl.hidden = false
+  syncTools()
+}
+
+// 工具条：按设置决定露出哪几个按钮；两个都关掉（或搜索条/大纲开着）就整条收起。
+function syncTools() {
+  if (!toolsEl) return
+  const findBtn = toolsEl.querySelector('[data-act="find"]')
+  const outlineBtn = toolsEl.querySelector('[data-act="outline"]')
+  if (findBtn) findBtn.hidden = !state.chrome.find
+  if (outlineBtn) outlineBtn.hidden = !state.chrome.outline
+  const anyBtn = state.chrome.find || state.chrome.outline
+  const findOpen = findEl && !findEl.hidden
+  const outlineOpen = outlineEl && !outlineEl.hidden
+  toolsEl.hidden = !V.active || !anyBtn || findOpen || outlineOpen
 }
 
 function onOutlineClick(e) {
@@ -2991,8 +3166,14 @@ function applyRenderConfig(flags) {
     highlight: !!flags.highlight,
     inlineHtml: !!flags.inlineHtml,
     localImages: !!flags.localImages,
+    copyCode: !!flags.copyCode,
+    copyTable: !!flags.copyTable,
+    tableCopyMd: !!flags.tableCopyMd,
   }
-  const changed = Object.keys(next).some((k) => state.render[k] !== next[k])
+  // 只有进块 HTML 的开关需要重渲染；表格复制格式是点击时的事
+  const HTML_KEYS = ['mermaid', 'katex', 'highlight', 'inlineHtml', 'localImages',
+    'copyCode', 'copyTable']
+  const changed = HTML_KEYS.some((k) => state.render[k] !== next[k])
   state.render = next
 
   if (md.options.html !== next.inlineHtml) md.set({ html: next.inlineHtml })
@@ -3004,6 +3185,13 @@ function applyRenderConfig(flags) {
       // 规则缺席（插件版本变化）时忽略
     }
   }
+
+  const chrome = { find: flags.findBtn !== false, outline: flags.outlineBtn !== false }
+  if (chrome.find !== state.chrome.find || chrome.outline !== state.chrome.outline) {
+    state.chrome = chrome
+    syncTools()
+  }
+
   if (changed && V.active) {
     htmlCacheClear()
     rerenderResidents()
@@ -3349,7 +3537,8 @@ function renderDocument(source, docBase) {
   if (docBase) state.docBase = docBase
 
   const body = stripFrontMatter(source)
-  const html = sanitize(md.render(body, { docBase: state.docBase }))
+  state.docText = body
+  const html = sanitize(md.render(body, { docBase: state.docBase, docText: body }))
   docEl.innerHTML = html
   processNetImages(docEl)
 
@@ -3453,12 +3642,19 @@ function onHostMessage(event) {
 
   if (type === 'cfg') {
     const f = rest.split('|')
+    // 后 5 项是后加的：老宿主不发这几项时按「全开、TSV」处理
+    const flag = (i) => (f[i] === undefined ? true : f[i] === '1')
     applyRenderConfig({
       mermaid: f[0] === '1',
       katex: f[1] === '1',
       highlight: f[2] === '1',
       inlineHtml: f[3] === '1',
       localImages: f[4] === '1',
+      copyCode: flag(5),
+      copyTable: flag(6),
+      tableCopyMd: f[7] === '1',
+      findBtn: flag(8),
+      outlineBtn: flag(9),
     })
     return
   }
@@ -3685,7 +3881,8 @@ if (window.chrome && window.chrome.webview) {
   }
 }
 
-window.__mdv = { md, renderDocument, applySkin, applyFx, state, resolveDocUrl, DOC_HOST, V, SLUG }
+window.__mdv = { md, renderDocument, applySkin, applyFx, applyRenderConfig, state, resolveDocUrl,
+  DOC_HOST, V, SLUG }
 
 // 只给 hosttest 用：准备打印容器并回流规模，不弹对话框
 window.__mdv.printTest = () => buildPrintView().then((root) => {
