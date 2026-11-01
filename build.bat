@@ -86,7 +86,6 @@ echo [OK] %PROJ%bin\DopusMdViewer.dll
 echo 导出表（应为 6 个 DVP_ 函数）：
 "%DUMPBIN%" /exports "%PROJ%bin\DopusMdViewer.dll" | findstr /i "DVP_ number of"
 echo.
-echo 下一步：install.bat 复制到 Opus 的 Viewers 目录
 pause
 exit /b 0
 
