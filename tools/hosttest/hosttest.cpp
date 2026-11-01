@@ -354,7 +354,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"(function(){var b=document.querySelector('[data-act=\"find\"]');if(b)b.click();"
             L"%svar inp=document.getElementById('find-input');inp.value='%s';"
             L"inp.dispatchEvent(new Event('input',{bubbles:true}));"
-            L"function rep(tag){var m=[].map.call(document.querySelectorAll('mark.hit'),"
+            L"function rep(tag){var m=[].map.call(document.querySelectorAll('mark.hit,.hit--block'),"
             L"function(x){return x.textContent;});"
             L"window.chrome.webview.postMessage('event|find|'+tag"
             L"+' count='+document.getElementById('find-count').textContent"

@@ -400,6 +400,7 @@ const V = {
   initializing: false,
   indexAt: 0,
   drag: null,
+  flashBlock: -1,        // 待闪烁的块号（锚点跳转后还没渲染出来时先记下）
 }
 
 const decoder = new TextDecoder('utf-8')
@@ -457,6 +458,7 @@ const SLUG_TAG = /<[!\/a-z].*?>/gi
 const SLUG_DROP = /[\u2000-\u206F\u2E00-\u2E7F\\'!"#$%&()*+,./:;<=>?@[\]^`{|}~]/g
 
 let docEl = null
+let loadingEl = null
 let sbEl = null
 let thumbEl = null
 let toolsEl = null
@@ -482,6 +484,7 @@ function bindDom() {
   findRegexBtn = document.getElementById('find-regex')
   outlineEl = document.getElementById('outline')
   outlineList = document.getElementById('outline-list')
+  loadingEl = document.getElementById('loading')
 }
 
 /* ---------------- 几何 ---------------- */
@@ -937,9 +940,13 @@ function renderItem(item) {
   rec.el.innerHTML = html
   processNetImages(rec.el)
   setHeight(i, rec.el.offsetHeight)
+  if (V.flashBlock === i) {
+    V.flashBlock = -1
+    animateBlock(rec.el)
+  }
   queueMermaid(rec.el, V.docId)
   if (FIND.pending && FIND.pending.b === i) maybeApplyHit()
-  else if (FIND.current && FIND.current.b === i) applyHitMark(rec.el, FIND.current.off, false)
+  else if (FIND.current && FIND.current.b === i) applyHitMark(rec.el, rec.text, FIND.current.off, false)
 }
 
 /* ---------------- 巨型块：分段 + 块内行窗口 ----------------
@@ -1332,6 +1339,11 @@ function schedulePlace() {
 }
 
 function place() {
+  if (loadingEl) {
+    // 换文档后到首屏块渲染出来之前，WebView2 里是旧画面或空白，给一层占位说明。
+    const want = !!V.initializing
+    if (loadingEl.hidden === want) loadingEl.hidden = !want
+  }
   if (!V.active || !docEl) return
   V.vh = window.innerHeight
   const scrollable = Math.max(0, V.totalH - V.vh)
@@ -1538,6 +1550,7 @@ function applyIndex(base, prefix, est, fileSize, enc, lastVisible, complete) {
   V.anchorSet = false
   V.indexAt = performance.now()
   V.initializing = true
+  if (loadingEl) loadingEl.hidden = false
   V.pendingFullCount = 0
   if (V.bigPending) {
     V.big = V.bigPending
@@ -1861,8 +1874,9 @@ function selEdgeTick() {
   else if (overBottom > 0) dy = Math.min(overBottom, SEL_EDGE) * 0.45
   if (!dy) return
 
-  const sel = window.getSelection()
-  if (!sel || !sel.rangeCount || sel.getRangeAt(0).collapsed) return
+  // 先续上下一帧，再干活：下面任何一条 return 都不会把滚动链打断
+  // （此前选区还是 collapsed 就直接 return，链断掉，指针不动就不再滚）。
+  SEL.raf = requestAnimationFrame(selEdgeTick)
 
   const scrollable = Math.max(0, V.totalH - V.vh)
   const before = V.target
@@ -1871,13 +1885,14 @@ function selEdgeTick() {
   if (V.target === before) return
   place()
 
+  const sel = window.getSelection()
+  if (!sel || !sel.rangeCount) return
   if (document.caretRangeFromPoint) {
     const r = document.caretRangeFromPoint(SEL.x, Math.min(Math.max(y, 1), window.innerHeight - 1))
     if (r && docEl && docEl.contains(r.startContainer)) {
       try { sel.extend(r.startContainer, r.startOffset) } catch { /* 忽略越界 */ }
     }
   }
-  SEL.raf = requestAnimationFrame(selEdgeTick)
 }
 
 function armSelScroll() {
@@ -2157,6 +2172,7 @@ function isWordCharAt(text, i) {
 }
 
 function clearHitMarks() {
+  for (const el of document.querySelectorAll('.hit--block')) el.classList.remove('hit--block')
   for (const mark of document.querySelectorAll('mark.hit')) {
     const parent = mark.parentNode
     if (!parent) continue
@@ -2188,6 +2204,21 @@ function wrapTextRange(root, start, end) {
     mark.className = 'hit hit--current'
     range.surroundContents(mark)
   }
+}
+
+// 锚点跳转后给目标块一次短促的闪烁：否则只有滚动位置变了，看不出跳到哪。
+function animateBlock(el) {
+  const target = el.firstElementChild || el
+  target.classList.remove('hit--flash')
+  void target.offsetWidth   // 强制回流，动画能重放
+  target.classList.add('hit--flash')
+  setTimeout(() => target.classList.remove('hit--flash'), 1200)
+}
+
+function flashBlock(i) {
+  const rec = V.resident.get(i)
+  if (rec && rec.el) animateBlock(rec.el)
+  else V.flashBlock = i
 }
 
 function jumpToOffset(y) {
@@ -2401,7 +2432,7 @@ function maybeApplyHit() {
   if (!rec || !rec.el || !rec.text) return
   FIND.pending = null
   FIND.current = hit
-  applyHitMark(rec.el, hit.off)
+  applyHitMark(rec.el, rec.text, hit.off)
 }
 
 // 在巨型块的行窗口里给命中行包 mark。行窗口是异步取的，所以由 place() 每帧调一次：
@@ -2477,23 +2508,93 @@ function nearestHit(el, unitOff) {
   return { start: best, len: FIND.query.length }
 }
 
-function applyHitMark(el, unitOff, center = true) {
+// 命中在「块源码」里的区间。字面搜索由后端给的偏移 + 针脚长度决定；正则得自己在源码
+// 上跑一遍——后端只给偏移，不给匹配长度。
+function sourceMatchSpan(src, unitOff) {
+  if (!FIND.re) return { start: unitOff, len: FIND.query.length }
+  const ms = regexMatches(src, FIND.query, FIND.cs)
+  if (!ms.length) return null
+  let best = ms[0]
+  for (const m of ms) {
+    if (Math.abs(m.start - unitOff) < Math.abs(best.start - unitOff)) best = m
+  }
+  return best
+}
+
+// 渲染后的文本是块源码的「子序列」：`#`、`|`、`**`、围栏标记这些语法字符不出现在文本里，
+// 所以按字符顺序贪心对齐即可，被丢掉的源码字符自然跳过。
+// 空白要单独跳过：生成的 HTML（表格、列表）在标签之间带排版换行与缩进，这些空白在
+// textContent 里存在，源码里却没有对应字符，不跳过就会把后面的对齐全带偏。
+// 返回 [{ t, s }]：t 是渲染文本下标，s 是该字符在源码里的下标。
+function alignSourceToText(src, text) {
+  const map = []
+  let p = 0
+  for (let t = 0; t < text.length; t++) {
+    const c = text.charCodeAt(t)
+    if (c === 32 || c === 9 || c === 10 || c === 13) continue
+    let q = p
+    while (q < src.length && src.charCodeAt(q) !== c) q++
+    if (q >= src.length) break
+    map.push({ t, s: q })
+    p = q + 1
+  }
+  return map
+}
+
+// 源码区间 → 渲染文本区间。命中主要落在语法字符上（渲染后只剩零星一两字）时返回 null，
+// 交给整块标注：否则表格、标题这类块会被包出半截高亮。
+function textRangeOfSourceSpan(el, src, from, to) {
+  if (!src || to <= from) return null
+  const map = alignSourceToText(src, el.textContent || '')
+  let a = -1
+  let b = -1
+  for (const m of map) {
+    if (m.s >= from && m.s < to) {
+      if (a < 0) a = m.t
+      b = m.t + 1
+    }
+  }
+  if (a < 0) return null
+  if ((b - a) * 2 < to - from) return null
+  return [a, b]
+}
+
+function applyHitMark(el, src, unitOff, center = true) {
   clearHitMarks()
   if (!FIND.query) return
-  const hit = nearestHit(el, unitOff)
-  if (!hit) return
-  wrapTextRange(el, hit.start, hit.start + hit.len)
+  const span = sourceMatchSpan(src || '', unitOff)
+  let node = null
+  let range = null
+  if (span) range = textRangeOfSourceSpan(el, src, span.start, span.start + span.len)
+  if (range) {
+    wrapTextRange(el, range[0], range[1])
+    node = el.querySelector('mark.hit')
+  }
+  if (!node) {
+    // 源码偏移对不上渲染文本（正则里 JS 编不过的写法、整段命中的是语法字符）：
+    // 退回老办法，在渲染文本里找最近的一处。
+    const hit = nearestHit(el, unitOff)
+    if (hit) {
+      wrapTextRange(el, hit.start, hit.start + hit.len)
+      node = el.querySelector('mark.hit')
+    }
+  }
+  if (!node) {
+    // 命中整个落在语法字符上（例如 `^## ` 的 `## `）：渲染文本里没有对应字符，
+    // 包出来只会剩半截。改成标出整块，并说明命中的是行首语法。
+    const target = el.firstElementChild || el
+    target.classList.add('hit--block')
+    node = target
+  }
   if (!center) return
-  const mark = el.querySelector('mark.hit')
-  if (!mark) return
-  const rect = mark.getBoundingClientRect()
+  const rect = node.getBoundingClientRect()
   jumpToOffset(V.off + rect.top - V.vh * 0.4)
 }
 
 function reapplyCurrentHit() {
   if (!FIND.current || !V.active) return
   const rec = V.resident.get(FIND.current.b)
-  if (rec && rec.el && rec.text) applyHitMark(rec.el, FIND.current.off, false)
+  if (rec && rec.el && rec.text) applyHitMark(rec.el, rec.text, FIND.current.off, false)
 }
 
 function resetFind() {
@@ -3269,8 +3370,12 @@ document.addEventListener('click', (e) => {
     let slug = frag
     try { slug = decodeURIComponent(frag) } catch { /* 保留原文 */ }
     const block = SLUG.bySlug.get(slug)
-    if (block !== undefined) jumpToOffset(pos(block) - V.vh * 0.1)
-    else report('anchor-missing', slug)
+    if (block !== undefined) {
+      jumpToOffset(pos(block) - V.vh * 0.1)
+      flashBlock(block)
+    } else {
+      report('anchor-missing', slug)
+    }
     return
   }
   postRaw('open|' + href)

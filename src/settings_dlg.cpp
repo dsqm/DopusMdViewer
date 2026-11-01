@@ -171,14 +171,45 @@ void SubclassControl(DialogState* st, HWND hwnd) {
 std::vector<HWND> TabStops(DialogState* st) {
   std::vector<HWND> out;
   if (!st || !st->hwnd) return out;
+
+  // 页签组单独处理：四个单选按钮是一组，Windows 会在 BM_SETCHECK 之后搬动甚至清掉
+  // 同组按钮的 WS_TABSTOP，靠样式位枚举会整组漏掉（实测第一个 Tab 直接落到皮肤下拉，
+  // 于是 ←/→ 换页在键盘上永远用不上）。这里按「当前选中的那个」占一个站位，放最前。
+  HWND tab = nullptr;
+  for (int i = 0; i < kPages; ++i) {
+    HWND t = ::GetDlgItem(st->hwnd, kIdTabAppearance + i);
+    if (t && ::IsWindowVisible(t) && ::IsWindowEnabled(t) &&
+        ::SendMessageW(t, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+      tab = t;
+      break;
+    }
+  }
+  if (!tab) tab = ::GetDlgItem(st->hwnd, kIdTabAppearance);
+  if (tab) out.push_back(tab);
+
   // GW_CHILD 的顺序就是创建顺序（这些子窗口不重叠、谁也不改 z 序），
   // 正好是 Tab 该走的顺序：页签 → 当页控件 → 底部按钮。
   for (HWND h = ::GetWindow(st->hwnd, GW_CHILD); h; h = ::GetWindow(h, GW_HWNDNEXT)) {
+    const int id = ::GetDlgCtrlID(h);
+    if (id >= kIdTabAppearance && id <= kIdTabAdvanced) continue;  // 页签已在最前
     if (!(::GetWindowLongPtrW(h, GWL_STYLE) & WS_TABSTOP)) continue;
     if (!::IsWindowVisible(h) || !::IsWindowEnabled(h)) continue;
     out.push_back(h);
   }
   return out;
+}
+
+// 键盘导航时把「显示焦点提示」的 UI 状态打开。这不是对话框，没有对话框管理器替我们
+// 切换这个状态：鼠标点过任何控件之后 UISF_HIDEFOCUS 一直停在“隐藏”，于是 Tab 过去
+// 看不见虚线焦点框（方向键换页时因为整页重绘才偶然看得见）。
+void ShowFocusCues(DialogState* st, HWND target) {
+  if (!st) return;
+  const WPARAM clear = MAKEWPARAM(UIS_CLEAR, UISF_HIDEFOCUS);
+  ::SendMessageW(st->hwnd, WM_CHANGEUISTATE, clear, 0);
+  if (target) {
+    ::SendMessageW(target, WM_CHANGEUISTATE, clear, 0);
+    ::InvalidateRect(target, nullptr, TRUE);
+  }
 }
 
 // 焦点移到下一个/上一个 tab stop；顺带把编辑框内容全选，省得用户先按 Ctrl+A。
@@ -194,6 +225,7 @@ void MoveFocus(DialogState* st, int dir) {
   int next = idx < 0 ? (dir > 0 ? 0 : n - 1) : ((idx + dir) % n + n) % n;
   HWND target = stops[static_cast<size_t>(next)];
   ::SetFocus(target);
+  ShowFocusCues(st, target);
   wchar_t cls[32] = {};
   ::GetClassNameW(target, cls, ARRAYSIZE(cls));
   if (::lstrcmpiW(cls, L"Edit") == 0) ::SendMessageW(target, EM_SETSEL, 0, -1);
@@ -204,6 +236,7 @@ void FocusFirst(DialogState* st) {
   std::vector<HWND> stops = TabStops(st);
   if (stops.empty()) return;
   ::SetFocus(stops.front());
+  ShowFocusCues(st, stops.front());
   if (::GetFocus() != stops.front()) LogLine(L"SETTINGS: 第一个可聚焦控件没拿到焦点");
 }
 
@@ -215,6 +248,7 @@ void FocusPageFirst(DialogState* st) {
     const int id = ::GetDlgCtrlID(h);
     if (id >= kIdTabAppearance && id <= kIdTabAdvanced) continue;
     ::SetFocus(h);
+    ShowFocusCues(st, h);
     return;
   }
   FocusFirst(st);
@@ -260,7 +294,9 @@ bool HandleDialogKey(DialogState* st, HWND hwnd, WPARAM vk) {
         const int page = (vk == VK_LEFT) ? st->page - 1 : st->page + 1;
         if (page < 0 || page >= kPages) return true;  // 到头了就别wrap
         ShowPage(st, page);
-        ::SetFocus(::GetDlgItem(st->hwnd, kIdTabAppearance + page));
+        HWND tab = ::GetDlgItem(st->hwnd, kIdTabAppearance + page);
+        ::SetFocus(tab);
+        ShowFocusCues(st, tab);
       }
       return true;
     default:
@@ -958,7 +994,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     case WM_KEYDOWN:
       // 焦点落在窗口本身（还没 Tab 进任何控件）时，键消息只会到这里
       if (st && HandleDialogKey(st, hwnd, wParam)) return 0;
-      break;
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
 
     case WM_NOTIFY: {
       const NMHDR* hdr = reinterpret_cast<const NMHDR*>(lParam);

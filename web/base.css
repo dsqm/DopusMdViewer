@@ -305,6 +305,33 @@ mark {
 mark.hit { background: var(--md-hit); }
 mark.hit--current { background: var(--md-hit-current); }
 
+/* 命中落在语法字符上（`^## ` 的 `## `）：渲染文本里没有对应字符，标出整块。
+   用 box-shadow 画左侧竖条，不占布局、不引起重排。 */
+.hit--block {
+  background: var(--md-hit);
+  box-shadow: inset 3px 0 0 var(--md-hit-current);
+}
+
+/* 锚点跳转后的短促闪烁：只有滚动位置变了的话看不出跳到哪 */
+@keyframes mdv-flash {
+  from { background: var(--md-hit-current); }
+  to { background: transparent; }
+}
+.hit--flash { animation: mdv-flash 1.1s ease-out; }
+
+/* 换文档后到首屏块渲染完之前的占位：WebView2 里这时还是旧画面或空白 */
+#loading {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--md-bg);
+  color: var(--md-fg-muted);
+}
+#loading[hidden] { display: none; }
+
 /* ---------------- 列表 ---------------- */
 
 ul, ol { margin: var(--md-space-block) 0; padding-left: 1.9em; }
