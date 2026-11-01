@@ -1,6 +1,6 @@
 @echo off
 rem build-ced.bat - build vendored compact_enc_det (Apache-2.0, no cmake).
-rem Object cache: bin\obj-ced\{compact_enc_det,compact_enc_det_hint_code,encodings,languages}.obj
+rem Object cache: build\obj-ced\{compact_enc_det,compact_enc_det_hint_code,encodings,languages}.obj
 rem Delete that folder or set CED_REBUILD=1 to force a rebuild.
 setlocal
 set "MSVC_VER=14.44.35207"
@@ -16,13 +16,13 @@ set "CED=%PROJ%third_party\compact_enc_det"
 
 if not exist "%CL%" echo   missing cl.exe & exit /b 1
 if not exist "%CED%\compact_enc_det\compact_enc_det.h" echo   missing third_party\compact_enc_det & exit /b 1
-if exist "bin\obj-ced\.stamp" if not "%CED_REBUILD%"=="1" (
+if exist "build\obj-ced\.stamp" if not "%CED_REBUILD%"=="1" (
   echo   cached
   exit /b 0
 )
 
 set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um"
-if not exist "bin\obj-ced" mkdir "bin\obj-ced"
+if not exist "build\obj-ced" mkdir "build\obj-ced"
 
 rem /bigobj: compact_enc_det.cc pulls in ~720 KB of generated tables (one huge TU).
 rem /W0: third-party code; CED is not warning-clean and we do not patch it.
@@ -30,9 +30,9 @@ set FILES=compact_enc_det\compact_enc_det compact_enc_det\compact_enc_det_hint_c
 
 for %%F in (%FILES%) do (
   echo   %%F
-  "%CL%" /nologo /c /MT /O2 /W0 /EHsc /bigobj /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE /DNOMINMAX /I "%CED%" /Fo"bin\obj-ced\%%~nxF.obj" "%CED%\%%F.cc" || exit /b 1
+  "%CL%" /nologo /c /MT /O2 /W0 /EHsc /bigobj /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE /DNOMINMAX /I "%CED%" /Fo"build\obj-ced\%%~nxF.obj" "%CED%\%%F.cc" || exit /b 1
 )
 
-echo done> "bin\obj-ced\.stamp"
+echo done> "build\obj-ced\.stamp"
 echo   built 4 objects
 exit /b 0

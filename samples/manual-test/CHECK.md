@@ -68,7 +68,7 @@ python samples\manual-test\gen-search.py     → %TEMP%\mdvsearch\  (big-fence-h
 
 ## 七、设置窗口（全程不碰鼠标）
 
-Opus 的查看器插件配置里打开，或跑 `bin\hosttest.exe settings`（同构窗口，改键位时用这个更快）。
+Opus 的查看器插件配置里打开，或跑 `build\tools\hosttest.exe settings`（同构窗口，改键位时用这个更快）。
 
 | # | 操作 | 预期 |
 |---|---|---|

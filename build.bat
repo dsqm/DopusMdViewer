@@ -42,17 +42,18 @@ set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%SDKINC%\w
 set "LIB=%MSVC%\lib\x64;%SDKLIB%\ucrt\x64;%SDKLIB%\um\x64"
 
 pushd "%PROJ%"
-if not exist "bin\obj" mkdir "bin\obj"
+if not exist "bin" mkdir "bin"
+if not exist "build\obj" mkdir "build\obj"
 
 echo.
 echo [2/5] 编译源文件...
 rem 通配符收集 src 下全部 .cpp，新增文件不用改脚本
-"%CL%" /nologo /c /MT /O2 /W4 /EHsc /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /utf-8 /DPCRE2_STATIC /Ithird_party\pcre2\include "/Fo:bin\obj\\" "src\*.cpp"
+"%CL%" /nologo /c /MT /O2 /W4 /EHsc /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /utf-8 /DPCRE2_STATIC /Ithird_party\pcre2\include "/Fo:build\obj\\" "src\*.cpp"
 if errorlevel 1 goto :fail
 
 echo.
 echo [3/5] 编译版本资源...
-"%RC%" /nologo "/fo%PROJ%bin\obj\resource.res" "%PROJ%resource.rc"
+"%RC%" /nologo "/fo%PROJ%build\obj\resource.res" "%PROJ%resource.rc"
 if errorlevel 1 goto :fail
 
 echo.
@@ -68,8 +69,8 @@ if errorlevel 1 goto :fail
 echo.
 echo [4/5] 链接 DLL...
 "%LINK%" /nologo /DLL /MACHINE:X64 /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /OPT:REF /OPT:ICF ^
-  "/DEF:%PROJ%DopusMdViewer.def" "/OUT:%PROJ%bin\DopusMdViewer.dll" ^
-  "bin\obj\*.obj" "bin\obj\resource.res" "bin\obj-ced\*.obj" "bin\obj-pcre2\8\*.obj" "bin\obj-pcre2\16\*.obj" "bin\obj-pcre2\common\*.obj" ^
+  "/DEF:%PROJ%DopusMdViewer.def" "/OUT:%PROJ%bin\DopusMdViewer.dll" "/IMPLIB:%PROJ%build\obj\DopusMdViewer.lib" ^
+  "build\obj\*.obj" "build\obj\resource.res" "build\obj-ced\*.obj" "build\obj-pcre2\8\*.obj" "build\obj-pcre2\16\*.obj" "build\obj-pcre2\common\*.obj" ^
   "%W2LIB%" kernel32.lib user32.lib gdi32.lib ole32.lib oleaut32.lib ^
   shell32.lib shlwapi.lib advapi32.lib psapi.lib version.lib comctl32.lib
 if errorlevel 1 goto :fail
