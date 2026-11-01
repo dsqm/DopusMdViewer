@@ -580,11 +580,23 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
   docsrc::CloseIfOwner(st->hwndSelf);
 
   if (!st->hasHost) {
-    // 宿主在另一个查看器手里：先记住路径，收回宿主时再开索引。
-    LogLine(L"VIEWER: 宿主不在本窗口，先不建索引（%s）", pszPath);
-    SetStatus(st, L"%s — %llu B（预览正显示在另一个窗口）", UtilLeafName(pszPath),
-              st->ullFileSize);
-    return;
+    if (WebHostHostExists()) {
+      // 宿主在别的查看器手里：先记住路径，收回宿主时再开索引。
+      LogLine(L"VIEWER: 宿主不在本窗口，先不建索引（%s）", pszPath);
+      SetStatus(st, L"%s — %llu B（预览正显示在另一个窗口）", UtilLeafName(pszPath),
+                st->ullFileSize);
+      return;
+    }
+    // 宿主线程/窗口还没建好（建线程有几秒窗口期）：这里补借一次，失败再转空白。
+    if (WebHostBorrow(st->hwndSelf, ClientRectOf(st->hwndSelf))) {
+      st->hasHost = true;
+      LogLine(L"VIEWER: 补借宿主成功");
+    } else {
+      LogLine(L"VIEWER: 宿主不可用，先不建索引（%s）", pszPath);
+      SetStatus(st, L"%s — %llu B（预览正显示在另一个窗口）", UtilLeafName(pszPath),
+                st->ullFileSize);
+      return;
+    }
   }
 
   OpenDoc(st);

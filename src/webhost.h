@@ -87,3 +87,10 @@ bool WebHostShowPrintUI(HWND hViewer);
 // 实际会用的 WebView2 运行时：「自定义 153.0.4234.48」/「系统 153.0.4234.48」；
 // 自定义那份建不起来时给出「系统 …（已回退）」；完全没有返回空串。设置界面“关于”用。
 std::wstring WebHostRuntimeInfo(void);
+
+// 宿主窗口此刻是否存在（不管被哪个查看器借用）。
+bool WebHostHostExists(void);
+
+// 插件 Uninit 时收尾：停掉宿主线程与搜索线程并等待退出（进程内不能留下
+// 指向本 DLL 的线程，Opus 随时可能 FreeLibrary）。
+void WebHostShutdown(void);

@@ -36,6 +36,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <vector>
 
 #include "config.h"
@@ -68,6 +69,7 @@ const UINT kCmdPrint = kCmdBase + 10;
 const UINT kCmdRecover = kCmdBase + 11;  // 进程失效后的自愈，wParam 1 = 连实例一起重建
 const UINT kCmdDevTools = kCmdBase + 12;  // 只给 hosttest：发一条 DevTools 方法（造崩溃用）
 const UINT kCmdClearUserData = kCmdBase + 13;  // lParam = const std::wstring*
+const UINT kCmdCleanupDone = kCmdBase + 14;  // 缓存清理线程完成（无参数）
 
 // 预热：InitEx 后等一会儿再开始，避开 Opus 自己的启动高峰。
 const UINT_PTR kTimerPrewarm = 1;
@@ -110,6 +112,11 @@ struct Host {
 
 Host g_host;
 
+// 实例世代：每次 ReleaseController/ReleaseInstance 递增。WebView2 的异步完成回调
+// 可能晚于释放到达（在途的 CreateController/CreateEnvironment），回调入口比对
+// 世代，不符就把传入对象作废，避免旧对象赋回 g_host 造成孤儿实例。
+uint64_t g_gen = 0;
+
 // 用过的查看器的顶层祖先（Lister / 独立查看器窗口）。最后一个关掉后释放实例。
 HWND g_roots[kMaxRoots] = {};
 int g_rootsCount = 0;
@@ -124,11 +131,21 @@ int g_historyCount = 0;
 // 跨线程读取的标志与句柄。
 volatile LONG g_readyFlag = 0;
 volatile LONG g_hasThread = 0;
+// 宿主线程/搜索线程句柄与失败标志：Uninit 收尾要等线程真正退出后 Opus 才能
+// FreeLibrary，否则线程还在执行已卸载的代码。
+HANDLE g_hHostThread = nullptr;
+HANDLE g_hSearchThread = nullptr;
+HANDLE g_readyEvent = nullptr;
+volatile LONG g_threadFailed = 0;
 // 预热配置在宿主线程还没建起来时也要记住（预热关闭时 InitEx 不会建线程）。
 volatile LONG g_cfgPrewarm = 0;
 volatile LONG g_cfgIdleMinutes = 3;
 // 自定义运行时建不起来、已回退到系统运行时（设置界面的关于页据此标注）。
 volatile LONG g_runtimeFallback = 0;
+// 缓存清理在后台线程做：目录大小要递归扫盘，放宿主线程会卡住所有查看器的
+// Borrow/Post。清理期间建环境的请求先记下来，完成后在宿主线程上续上。
+volatile LONG g_cleanupBusy = 0;
+bool g_envQueuedAfterCleanup = false;  // 只在宿主线程访问
 DWORD g_threadId = 0;
 HWND g_threadHost = nullptr;
 
@@ -153,10 +170,8 @@ std::wstring UserDataDir() {
 }
 
 // 只在每个进程第一次建环境前跑一次。缓存是再生的，先删再让 WebView2 重建。
+// 注意：目录大小要递归扫盘，只能跑在后台线程（StartCacheCleanAsync）。
 void MaybeCleanCacheOnStart(const std::wstring& userData) {
-  static bool checked = false;
-  if (checked) return;
-  checked = true;
   if (!UtilIsWebView2UserDataDir(userData)) return;
 
   const uint64_t size = UtilDirSize(userData, kWebViewCacheAutoCleanBytes);
@@ -179,6 +194,38 @@ void MaybeCleanCacheOnStart(const std::wstring& userData) {
   }
 }
 
+DWORD WINAPI CacheCleanThreadProc(LPVOID param) {
+  std::unique_ptr<std::wstring> dir(static_cast<std::wstring*>(param));
+  if (dir) MaybeCleanCacheOnStart(*dir);
+  HWND host = g_threadHost;
+  if (host && ::IsWindow(host)) {
+    ::PostMessageW(host, kCmdCleanupDone, 0, 0);
+  } else {
+    ::InterlockedExchange(&g_cleanupBusy, 0);
+  }
+  return 0;
+}
+
+void StartCacheCleanAsync() {
+  static bool checked = false;  // 只在宿主线程访问：每进程只清一次
+  if (checked) return;
+  checked = true;
+
+  const std::wstring userData = UserDataDir();
+  if (!UtilIsWebView2UserDataDir(userData)) return;
+
+  ::InterlockedExchange(&g_cleanupBusy, 1);
+  std::wstring* param = new (std::nothrow) std::wstring(userData);
+  HANDLE h = param ? ::CreateThread(nullptr, 0, CacheCleanThreadProc, param, 0, nullptr) : nullptr;
+  if (h) {
+    ::CloseHandle(h);  // 一次性任务，靠 kCmdCleanupDone 回宿主线程
+  } else {
+    delete param;
+    ::InterlockedExchange(&g_cleanupBusy, 0);
+    LogLine(L"WEBHOST: 缓存清理线程创建失败 err=%lu，跳过本次清理", ::GetLastError());
+  }
+}
+
 // 用户自放的 Fixed Version 运行时：…\DopusMdViewer\Runtime\msedgewebview2.exe。
 // 只认这一层，不递归扫描——多层扫描要回答「两份该用哪份」，没有确定答案。
 // 结果按进程缓存：换运行时本来就要重启 Opus，没必要每次建实例都去摸盘。
@@ -198,12 +245,18 @@ void PostEvent(int kind, const wchar_t* text) {
   HWND target = g_host.borrower;
   if (!target || !::IsWindow(target)) return;
 
-  MDV_EVENT* evt = new MDV_EVENT();
+  // 这里跑在 WRL 回调里：分配失败宁可丢事件，也不能让 bad_alloc 逃出 DLL。
+  MDV_EVENT* evt = new (std::nothrow) MDV_EVENT();
+  if (!evt) return;
   evt->kind = kind;
   evt->text = nullptr;
   if (text && *text) {
     const size_t cch = wcslen(text) + 1;
-    evt->text = new wchar_t[cch];
+    evt->text = new (std::nothrow) wchar_t[cch];
+    if (!evt->text) {
+      delete evt;
+      return;
+    }
     ::StringCchCopyW(evt->text, cch, text);
   }
 
@@ -367,7 +420,7 @@ void CompleteSearch(PendingSearch& ps, const std::string& body, int status) {
         SUCCEEDED(g_host.env->CreateWebResourceResponse(
             stream.Get(), status, L"OK",
             L"Content-Type: application/octet-stream\r\nCache-Control: no-store\r\n"
-            L"Access-Control-Allow-Origin: *\r\n",
+            L"Access-Control-Allow-Origin: https://mdprev.localhost\r\n",
             &response)) &&
         response) {
       ps.args->put_Response(response.Get());
@@ -414,7 +467,8 @@ DWORD WINAPI SearchThreadProc(LPVOID) {
     }
     if (stale) continue;  // 已经有人顶替，或者正在退出
 
-    SearchDone* done = new SearchDone();
+    SearchDone* done = new (std::nothrow) SearchDone();
+    if (!done) continue;
     done->id = id;
     done->status = status;
     done->body.swap(body);
@@ -431,7 +485,10 @@ void EnsureSearchThread() {
   if (::InterlockedCompareExchange(&g_searchStarted, 1, 0) != 0) return;
   HANDLE h = ::CreateThread(nullptr, 0, SearchThreadProc, nullptr, 0, nullptr);
   if (h) {
-    ::CloseHandle(h);  // 与进程同寿命，不需要 join
+    // 与宿主线程同寿命；Uninit 收尾时要等它退出，句柄不能丢。
+    HANDLE old = ::InterlockedExchangePointer(reinterpret_cast<volatile PVOID*>(&g_hSearchThread),
+                                              h);
+    if (old) ::CloseHandle(old);
   } else {
     ::InterlockedExchange(&g_searchStarted, 0);
     LogLine(L"WEBHOST: 搜索线程创建失败 err=%lu", ::GetLastError());
@@ -577,6 +634,9 @@ void ApplySettings(ICoreWebView2* webview) {
 }
 
 void ReleaseController() {
+  // 在途的异步完成回调拿旧对象也进不来（世代不符直接作废），这里同步复位。
+  ++g_gen;
+  g_host.creating = false;
   // 先把在等的搜索请求收尾：controller 关掉后这些 deferral 就再也没有机会完成。
   CancelSearches();
   if (g_host.controller) {
@@ -616,7 +676,12 @@ void StartEnvironment(const std::wstring& runtimeDir, bool triedCustom);
 
 // triedCustom 表示这一轮用的是用户自放的运行时；它建不起来时不能直接判死——
 // 放错一个目录不该让整个预览不可用，回退系统运行时再试一次。
-void OnEnvironmentReady(HRESULT hr, ICoreWebView2Environment* env, bool triedCustom) {
+void OnEnvironmentReady(HRESULT hr, ICoreWebView2Environment* env, bool triedCustom,
+                        uint64_t gen) {
+  // 实例在这轮建环境期间被回收（空闲释放/自愈/WatchTick）：本次回调整体作废，
+  // env 由回调自身释放，不能赋回 g_host。
+  if (gen != g_gen) return;
+
   if (FAILED(hr) || !env) {
     if (triedCustom) {
       LogLine(L"WEBHOST: 自定义运行时不可用 hr=0x%08X，回退系统运行时",
@@ -668,11 +733,17 @@ void CreateController() {
   if (!g_host.host || !g_host.env) return;
   g_host.creating = true;
   ::QueryPerformanceCounter(&g_host.tController);
+  const uint64_t gen = g_gen;
 
   const HRESULT hr = g_host.env->CreateCoreWebView2Controller(
       g_host.host,
       Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-          [](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
+          [gen](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
+            // 释放发生在建 controller 期间：本次回调作废，controller 原地释放。
+            if (gen != g_gen) {
+              if (controller) controller->Close();
+              return S_OK;
+            }
             g_host.creating = false;
             if (FAILED(result) || !controller) {
               wchar_t szMsg[160];
@@ -812,7 +883,7 @@ void CreateController() {
                       const std::wstring headers =
                           L"Content-Type: " + contentType + L"\r\n" +
                           L"Cache-Control: no-store\r\n" +
-                          L"Access-Control-Allow-Origin: *\r\n";
+                          L"Access-Control-Allow-Origin: " + kAppHost + L"\r\n";
 
                       ComPtr<ICoreWebView2WebResourceResponse> response;
                       if (g_host.env && stream) {
@@ -928,9 +999,9 @@ void CreateController() {
 void StartEnvironment(const std::wstring& runtimeDir, bool triedCustom) {
   g_host.creating = true;
   if (!triedCustom) ::QueryPerformanceCounter(&g_host.tEnsure);
+  const uint64_t gen = g_gen;
 
   const std::wstring userData = UserDataDir();
-  MaybeCleanCacheOnStart(userData);
   g_host.userDataDir = userData;
   LogLine(L"WEBHOST: 建 Environment（运行时=%s）",
           runtimeDir.empty() ? L"系统 Evergreen" : runtimeDir.c_str());
@@ -939,21 +1010,31 @@ void StartEnvironment(const std::wstring& runtimeDir, bool triedCustom) {
       runtimeDir.empty() ? nullptr : runtimeDir.c_str(),
       userData.empty() ? nullptr : userData.c_str(), nullptr,
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-          [triedCustom](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
-            OnEnvironmentReady(result, env, triedCustom);
+          [triedCustom, gen](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            OnEnvironmentReady(result, env, triedCustom, gen);
             return S_OK;
           })
           .Get());
 
-  if (FAILED(hr)) OnEnvironmentReady(hr, nullptr, triedCustom);
+  if (FAILED(hr)) OnEnvironmentReady(hr, nullptr, triedCustom, gen);
 }
 
 void EnsureEnvironment() {
+  if (g_cleanupBusy) {
+    g_envQueuedAfterCleanup = true;
+    return;
+  }
   if (g_host.env) {
     if (!g_host.controller && !g_host.creating) CreateController();
     return;
   }
   if (g_host.creating) return;
+
+  StartCacheCleanAsync();
+  if (g_cleanupBusy) {
+    g_envQueuedAfterCleanup = true;
+    return;
+  }
 
   const std::wstring& runtimeDir = UserRuntimeDir();
   StartEnvironment(runtimeDir, !runtimeDir.empty());
@@ -1237,6 +1318,8 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       return 1;
 
     case kCmdClearUserData: {
+      // 目录本身的删除由调用线程做（WebHostClearUserData），宿主线程只负责释放
+      // 正在使用的实例，最多一两毫秒，不做 Sleep 重试。
       const std::wstring* target = reinterpret_cast<const std::wstring*>(lParam);
       if (!target || !UtilIsWebView2UserDataDir(*target)) return 0;
 
@@ -1246,27 +1329,16 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         if (g_host.borrower || g_host.creating) return 0;
         ReleaseInstance();
       }
-
-      bool ok = false;
-      for (int i = 0; i < 30; ++i) {
-        if (!UtilDirExists(*target)) {
-          ok = true;
-          break;
-        }
-        if (UtilRemoveTree(*target)) {
-          ok = true;
-          break;
-        }
-        ::Sleep(100);
-      }
-      if (ok) ok = UtilEnsureDir(*target);
-      if (ok) {
-        LogLine(L"WEBHOST: 已清理缓存 %s", target->c_str());
-      } else {
-        LogLine(L"WEBHOST: 清理缓存失败（目录仍被占用）%s", target->c_str());
-      }
-      return ok ? 1 : 0;
+      return 1;
     }
+
+    case kCmdCleanupDone:
+      ::InterlockedExchange(&g_cleanupBusy, 0);
+      if (g_envQueuedAfterCleanup) {
+        g_envQueuedAfterCleanup = false;
+        EnsureEnvironment();
+      }
+      return 0;
 
     case kCmdPrint: {
       if (g_host.borrower != reinterpret_cast<HWND>(wParam)) return 0;
@@ -1283,10 +1355,11 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
     case kCmdRecover: {
       // 实例已经被回收过就什么都不用做：POST 可能来两次（ProcessFailed 与
-      // BrowserProcessExited 都会报浏览器进程退出）。
+      // BrowserProcessExited 都会报浏览器进程退出）。但还有查看器在借用时不能
+      // 直接丢掉——env/webview 为空说明实例刚被收走，得整份重建。
       const bool full = wParam != 0;
-      if (full && !g_host.env) return 0;
-      if (!full && !g_host.webview) return 0;
+      if (full && !g_host.env && !g_host.borrower) return 0;
+      if (!full && !g_host.webview && !g_host.borrower) return 0;
       if (!RecoveryAllowed()) {
         LogLine(L"WEBHOST: 恢复次数超预算，停止自愈");
         Fail(L"预览引擎反复崩溃，已停止自动恢复（重启 Opus 后再试）");
@@ -1343,6 +1416,8 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       g_host.host = nullptr;
       g_threadHost = nullptr;
       LogLine(L"WEBHOST: 宿主窗口被销毁");
+      // 宿主窗口只在收尾时销毁：让线程的消息泵跟着退出，Uninit 才能等线程落地。
+      ::PostQuitMessage(0);
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
 
     default:
@@ -1370,6 +1445,7 @@ DWORD WINAPI HostThreadProc(LPVOID param) {
 
   if (!::RegisterClassExW(&wc) && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
     LogLine(L"WEBHOST: RegisterClassExW 失败 err=%lu", ::GetLastError());
+    ::InterlockedExchange(&g_threadFailed, 1);
     ::SetEvent(readyEvent);
     return 1;
   }
@@ -1386,7 +1462,10 @@ DWORD WINAPI HostThreadProc(LPVOID param) {
           g_host.idleReleaseMinutes);
   ::SetEvent(readyEvent);
 
-  if (!g_host.host) return 1;
+  if (!g_host.host) {
+    ::InterlockedExchange(&g_threadFailed, 1);
+    return 1;
+  }
 
   MSG msg;
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -1400,29 +1479,36 @@ DWORD WINAPI HostThreadProc(LPVOID param) {
 }
 
 // 建线程（只建一次）。返回宿主窗口句柄，失败返回 nullptr。
+// 注意：并发的第二个调用者会跳过建线程直接等 readyEvent——宿主线程从建线程到
+// 建好窗口有几秒窗口期，不等待的话借用方会拿到 null 然后永远空白。
 HWND EnsureHostThread() {
-  if (::InterlockedCompareExchange(&g_hasThread, 1, 0) == 0) {
-    HANDLE readyEvent = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!readyEvent) {
-      ::InterlockedExchange(&g_hasThread, 0);
-      return nullptr;
-    }
+  if (::InterlockedCompareExchange(&g_threadFailed, 0, 0) != 0) return nullptr;
 
+  // 事件在 CAS 之前建好，后来者才能等到同一个事件。
+  if (!g_readyEvent) {
+    HANDLE ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (ev) {
+      if (::InterlockedCompareExchangePointer(
+              reinterpret_cast<volatile PVOID*>(&g_readyEvent), ev, nullptr) != nullptr) {
+        ::CloseHandle(ev);  // 别的线程先建好了
+      }
+    }
+  }
+  if (!g_readyEvent) return nullptr;
+
+  if (::InterlockedCompareExchange(&g_hasThread, 1, 0) == 0) {
     DWORD tid = 0;
-    HANDLE hThread = ::CreateThread(nullptr, 0, HostThreadProc, readyEvent, 0, &tid);
+    HANDLE hThread = ::CreateThread(nullptr, 0, HostThreadProc, g_readyEvent, 0, &tid);
     if (!hThread) {
-      ::CloseHandle(readyEvent);
       ::InterlockedExchange(&g_hasThread, 0);
       LogLine(L"WEBHOST: CreateThread 失败 err=%lu", ::GetLastError());
       return nullptr;
     }
-    ::CloseHandle(hThread);  // 与进程同寿命，不需要 join
-
-    ::WaitForSingleObject(readyEvent, 5000);
-    ::CloseHandle(readyEvent);
+    g_hHostThread = hThread;  // 与进程同寿命；Uninit 收尾时等它退出
     g_threadId = tid;
   }
 
+  ::WaitForSingleObject(g_readyEvent, 5000);
   return g_threadHost;
 }
 
@@ -1456,10 +1542,30 @@ bool WebHostClearUserData(const std::wstring& userDataDir) {
   const DWORD attr = ::GetFileAttributesW(userDataDir.c_str());
   if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) return false;
   LRESULT result = 0;
-  if (!SendCommand(kCmdClearUserData, 0, reinterpret_cast<LPARAM>(&userDataDir), &result)) {
-    return false;
+  SendCommand(kCmdClearUserData, 0, reinterpret_cast<LPARAM>(&userDataDir), &result);
+  if (result == 0) return false;  // 目录正被本进程占用（借出中/建环境中）
+
+  // 删除与重试在调用线程上做：宿主线程不能被 Sleep 循环占住，调用方（设置界面）
+  // 本来就挂着等待光标同步等结果。
+  bool ok = false;
+  for (int i = 0; i < 30; ++i) {
+    if (!UtilDirExists(userDataDir)) {
+      ok = true;
+      break;
+    }
+    if (UtilRemoveTree(userDataDir)) {
+      ok = true;
+      break;
+    }
+    ::Sleep(100);
   }
-  return result != 0;
+  if (ok) ok = UtilEnsureDir(userDataDir);
+  if (ok) {
+    LogLine(L"WEBHOST: 已清理缓存 %s", userDataDir.c_str());
+  } else {
+    LogLine(L"WEBHOST: 清理缓存失败（目录仍被占用）%s", userDataDir.c_str());
+  }
+  return ok;
 }
 
 bool WebHostPost(HWND hViewer, const std::wstring& text) {
@@ -1529,6 +1635,39 @@ bool WebHostCallDevTools(HWND hViewer, const std::wstring& method) {
     return false;
   }
   return result != 0;
+}
+
+// 宿主窗口是否存在（不管在谁手里）。false = 宿主线程没起来或窗口已销毁。
+bool WebHostHostExists(void) {
+  HWND host = g_threadHost;
+  return host && ::IsWindow(host);
+}
+
+// 插件 Uninit 时收尾：销毁宿主窗口（线程随之退出）并等待宿主/搜索线程落地。
+// Opus 之后可能 FreeLibrary——线程还活着就会执行已卸载的代码，必须等干净。
+void WebHostShutdown(void) {
+  if (::InterlockedCompareExchange(&g_hasThread, 0, 0) == 0) return;
+  LogLine(L"WEBHOST: 插件卸载，收掉宿主线程");
+
+  const HWND host = g_threadHost;
+  if (host && ::IsWindow(host)) ::PostMessageW(host, WM_CLOSE, 0, 0);
+  if (g_hHostThread) {
+    ::WaitForSingleObject(g_hHostThread, 5000);
+    ::CloseHandle(g_hHostThread);
+    g_hHostThread = nullptr;
+  }
+  // 搜索线程在 WM_NCDESTROY 里收到退出标志，这里只等它跑完手头的扫描。
+  if (g_hSearchThread) {
+    ::WaitForSingleObject(g_hSearchThread, 5000);
+    ::CloseHandle(g_hSearchThread);
+    g_hSearchThread = nullptr;
+  }
+
+  ::InterlockedExchange(&g_hasThread, 0);
+  ::InterlockedExchange(&g_threadFailed, 0);
+  g_threadId = 0;
+  g_threadHost = nullptr;
+  if (g_readyEvent) ::ResetEvent(g_readyEvent);  // 下次重建时让等待者重新等
 }
 
 std::wstring WebHostRuntimeInfo(void) {

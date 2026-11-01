@@ -150,6 +150,10 @@ extern "C" void DVP_Uninit(void) {
           ::InterlockedCompareExchange(&g_initCalls, 0, 0),
           ::InterlockedCompareExchange(&g_initExCalls, 0, 0), live);
 
+  // Opus 卸载插件后可能 FreeLibrary：宿主/搜索线程还在跑就会执行已卸载的代码。
+  // 代价是重新 Init 后第一次预览要冷启动，换来卸载路径的确定安全。
+  WebHostShutdown();
+
   g_hwndOpusMsgWindow = nullptr;
 }
 
