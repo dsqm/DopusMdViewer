@@ -151,8 +151,13 @@ extern "C" void DVP_Uninit(void) {
           ::InterlockedCompareExchange(&g_initExCalls, 0, 0), live);
 
   // Opus 卸载插件后可能 FreeLibrary：宿主/搜索线程还在跑就会执行已卸载的代码。
-  // 代价是重新 Init 后第一次预览要冷启动，换来卸载路径的确定安全。
-  WebHostShutdown();
+  // 但实测 Opus 在插件仍加载时也会频繁成对调 Init/Uninit（跨进程、甚至 init=0），
+  // 还有查看器活着时绝不能收——收掉等于把正在显示的预览连锅端。
+  if (ViewerLiveCount() > 0) {
+    LogLine(L"DVP_Uninit: 仍有 %ld 个查看器存活，保留预览引擎不收尾", live);
+  } else {
+    WebHostShutdown();
+  }
 
   g_hwndOpusMsgWindow = nullptr;
 }
