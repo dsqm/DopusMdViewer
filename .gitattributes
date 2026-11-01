@@ -1,9 +1,13 @@
 # 源码与 web 资产：UTF-8 + LF
 * text=auto eol=lf
 
-# 启动脚本必须保持 ANSI(GBK) + CRLF。git 只做行尾转换，不改编码，
-# 所以这里不用 working-tree-encoding —— 那个一旦被别的工具写坏就没法还原。
+# 启动脚本在工作区保持 ANSI(GBK) + CRLF。
+# GBK 文件交给 working-tree-encoding：仓库里存 UTF-8（diff 可读），检出时转回 GBK。
+# 编辑这两个文件时必须按 GBK 保存；存成 UTF-8 会被 Git 当作 GBK 解码。
+# build-encdetect.bat 本身是 UTF-8，不套这项转换。
 *.bat text eol=crlf
+build.bat       text working-tree-encoding=GBK eol=crlf
+build-pcre2.bat text working-tree-encoding=GBK eol=crlf
 
 # vendored 的 WebView2 SDK 保持字节一致，不让 git 改行尾
 sdk/** -text

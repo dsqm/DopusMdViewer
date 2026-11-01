@@ -3,14 +3,14 @@ chcp 936 >nul
 setlocal
 
 rem ============================================================
-rem  DopusMdViewer - ÊÖ¹¤¹¹½¨½Å±¾£¨x64 / UNICODE / ¾²Ì¬ CRT£©
-rem  ÓÃ·¨£ºË«»÷±¾ÎÄ¼ş£¬¹¹½¨ web\ Ç°¶Ë²¢Êä³ö bin\DopusMdViewer.dll
-rem  ÒÀÀµ£ºsdk\webview2£¨WebView2 SDK£¬Ëæ¹¤³Ì·Ö·¢£©
-rem        ..\SDK\Headers£¨Directory Opus ²é¿´Æ÷²å¼şÍ·ÎÄ¼ş£©
-rem        webbuild\node_modules£¨npm install Ò»´Î£»¹¹½¨ÓÃÄÚÖÃ esbuild.exe£¬²»ĞèÒª node£©
+rem  DopusMdViewer - æ‰‹å·¥æ„å»ºè„šæœ¬ï¼ˆx64 / UNICODE / é™æ€ CRTï¼‰
+rem  ç”¨æ³•ï¼šåŒå‡»æœ¬æ–‡ä»¶ï¼Œæ„å»º web\ å‰ç«¯å¹¶è¾“å‡º bin\DopusMdViewer.dll
+rem  ä¾èµ–ï¼šsdk\webview2ï¼ˆWebView2 SDKï¼Œéšå·¥ç¨‹åˆ†å‘ï¼‰
+rem        ..\SDK\Headersï¼ˆDirectory Opus æŸ¥çœ‹å™¨æ’ä»¶å¤´æ–‡ä»¶ï¼‰
+rem        webbuild\node_modulesï¼ˆnpm install ä¸€æ¬¡ï¼›æ„å»ºç”¨å†…ç½® esbuild.exeï¼Œä¸éœ€è¦ nodeï¼‰
 rem ============================================================
 
-rem ---- ¹¤¾ßÁ´°æ±¾£ºVS2022 »ò Windows SDK Éı¼¶ºó¸ÄÕâÁ½ĞĞ ----
+rem ---- å·¥å…·é“¾ç‰ˆæœ¬ï¼šVS2022 æˆ– Windows SDK å‡çº§åæ”¹è¿™ä¸¤è¡Œ ----
 set "MSVC_VER=14.44.35207"
 set "SDK_VER=10.0.26100.0"
 set "VS_ROOT=C:\VS2022"
@@ -30,19 +30,19 @@ set "OPUSINC=%PROJ%..\SDK\Headers"
 set "ESBUILD=%PROJ%webbuild\node_modules\@esbuild\win32-x64\esbuild.exe"
 
 echo.
-echo [1/8] ¼ì²é¹¤¾ßÁ´...
-if not exist "%CL_EXE%"        echo   ÕÒ²»µ½ cl.exe   %CL_EXE%        & goto :fail
-if not exist "%LINK_EXE%"      echo   ÕÒ²»µ½ link.exe %LINK_EXE%      & goto :fail
-if not exist "%RC%"        echo   ÕÒ²»µ½ rc.exe   %RC%        & goto :fail
-if not exist "%W2INC%\WebView2.h" echo   È±ÉÙ WebView2 SDK Í·ÎÄ¼ş %W2INC% & goto :fail
-if not exist "%W2LIB%"     echo   È±ÉÙ WebView2LoaderStatic.lib %W2LIB% & goto :fail
-if not exist "%OPUSINC%\viewer plugins.h" echo   È±ÉÙ Opus ²å¼şÍ·ÎÄ¼ş %OPUSINC% & goto :fail
-if not exist "%PROJ%webbuild\src\app.js" echo   È±ÉÙ webbuild\src\app.js & goto :fail
-if not exist "%PROJ%webbuild\src\mermaid.entry.mjs" echo   È±ÉÙ webbuild\src\mermaid.entry.mjs & goto :fail
-if not exist "%ESBUILD%" echo   È±ÉÙ esbuild£¬ÏÈÔÚ webbuild ÅÜ npm install & goto :fail
-if not exist "%PROJ%webbuild\node_modules\katex\dist\katex.min.css" echo   È±ÉÙ KaTeX ×ÊÔ´£¬ÏÈÔÚ webbuild ÅÜ npm install & goto :fail
+echo [1/8] æ£€æŸ¥å·¥å…·é“¾...
+if not exist "%CL_EXE%"        echo   æ‰¾ä¸åˆ° cl.exe   %CL_EXE%        & goto :fail
+if not exist "%LINK_EXE%"      echo   æ‰¾ä¸åˆ° link.exe %LINK_EXE%      & goto :fail
+if not exist "%RC%"        echo   æ‰¾ä¸åˆ° rc.exe   %RC%        & goto :fail
+if not exist "%W2INC%\WebView2.h" echo   ç¼ºå°‘ WebView2 SDK å¤´æ–‡ä»¶ %W2INC% & goto :fail
+if not exist "%W2LIB%"     echo   ç¼ºå°‘ WebView2LoaderStatic.lib %W2LIB% & goto :fail
+if not exist "%OPUSINC%\viewer plugins.h" echo   ç¼ºå°‘ Opus æ’ä»¶å¤´æ–‡ä»¶ %OPUSINC% & goto :fail
+if not exist "%PROJ%webbuild\src\app.js" echo   ç¼ºå°‘ webbuild\src\app.js & goto :fail
+if not exist "%PROJ%webbuild\src\mermaid.entry.mjs" echo   ç¼ºå°‘ webbuild\src\mermaid.entry.mjs & goto :fail
+if not exist "%ESBUILD%" echo   ç¼ºå°‘ esbuildï¼Œå…ˆåœ¨ webbuild è·‘ npm install & goto :fail
+if not exist "%PROJ%webbuild\node_modules\katex\dist\katex.min.css" echo   ç¼ºå°‘ KaTeX èµ„æºï¼Œå…ˆåœ¨ webbuild è·‘ npm install & goto :fail
 
-rem Ô´ÎÄ¼şÊÇ UTF-8 ÎŞ BOM ÇÒº¬ÖĞÎÄ×¢ÊÍ£º/utf-8 ²»¿ÉÊ¡£¬·ñÔò°´ 936 ½â¶Á»á±¨Ò»¶Ñ¼ÙÓï·¨´íÎó
+rem æºæ–‡ä»¶æ˜¯ UTF-8 æ—  BOM ä¸”å«ä¸­æ–‡æ³¨é‡Šï¼š/utf-8 ä¸å¯çœï¼Œå¦åˆ™æŒ‰ 936 è§£è¯»ä¼šæŠ¥ä¸€å †å‡è¯­æ³•é”™è¯¯
 set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%SDKINC%\winrt;%OPUSINC%;%W2INC%;%PROJ%third_party;%PROJ%third_party\compact_enc_det"
 set "LIB=%MSVC%\lib\x64;%SDKLIB%\ucrt\x64;%SDKLIB%\um\x64"
 
@@ -51,8 +51,8 @@ if not exist "bin" mkdir "bin"
 if not exist "build\obj" mkdir "build\obj"
 
 echo.
-echo [2/8] ¹¹½¨Ç°¶Ë...
-rem ²ÎÊıÓë webbuild\build.mjs ±£³ÖÒ»ÖÂ
+echo [2/8] æ„å»ºå‰ç«¯...
+rem å‚æ•°ä¸ webbuild\build.mjs ä¿æŒä¸€è‡´
 "%ESBUILD%" webbuild\src\app.js --bundle --outfile=web\app.js --format=iife --target=chrome110 --minify --legal-comments=none --charset=utf8 --log-level=warning
 if errorlevel 1 goto :fail
 "%ESBUILD%" webbuild\src\mermaid.entry.mjs --bundle --outfile=web\mermaid.js --format=iife --global-name=mermaid --target=chrome110 --minify --legal-comments=none --charset=utf8 --log-level=warning
@@ -64,13 +64,13 @@ xcopy /y /q "webbuild\node_modules\katex\dist\fonts\*.woff2" "web\fonts\" >nul
 if errorlevel 1 goto :fail
 
 echo.
-echo [3/8] ±àÒëÔ´ÎÄ¼ş...
-rem Í¨Åä·ûÊÕ¼¯ src ÏÂÈ«²¿ .cpp£¬ĞÂÔöÎÄ¼ş²»ÓÃ¸Ä½Å±¾
+echo [3/8] ç¼–è¯‘æºæ–‡ä»¶...
+rem é€šé…ç¬¦æ”¶é›† src ä¸‹å…¨éƒ¨ .cppï¼Œæ–°å¢æ–‡ä»¶ä¸ç”¨æ”¹è„šæœ¬
 "%CL_EXE%" /nologo /c /MT /O2 /W4 /EHsc /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /D_WIN32_WINNT=0x0A00 /utf-8 /DPCRE2_STATIC /Ithird_party\pcre2\include "/Fo:build\obj\\" "src\*.cpp"
 if errorlevel 1 goto :fail
 
 echo.
-echo [4/8] ±àÒë°æ±¾×ÊÔ´...
+echo [4/8] ç¼–è¯‘ç‰ˆæœ¬èµ„æº...
 "%RC%" /nologo "/fo%PROJ%build\obj\resource.res" "%PROJ%resource.rc"
 if errorlevel 1 goto :fail
 
@@ -85,7 +85,7 @@ call "%PROJ%build-ced.bat"
 if errorlevel 1 goto :fail
 
 echo.
-echo [7/8] Á´½Ó DLL...
+echo [7/8] é“¾æ¥ DLL...
 "%LINK_EXE%" /nologo /DLL /MACHINE:X64 /SUBSYSTEM:WINDOWS /INCREMENTAL:NO /OPT:REF /OPT:ICF ^
   "/DEF:%PROJ%DopusMdViewer.def" "/OUT:%PROJ%bin\DopusMdViewer.dll" "/IMPLIB:%PROJ%build\obj\DopusMdViewer.lib" ^
   "build\obj\*.obj" "build\obj\resource.res" "build\obj-ced\*.obj" "build\obj-pcre2\8\*.obj" "build\obj-pcre2\16\*.obj" "build\obj-pcre2\common\*.obj" ^
@@ -94,15 +94,15 @@ echo [7/8] Á´½Ó DLL...
 if errorlevel 1 goto :fail
 
 echo.
-echo [8/8] Í¬²½ web ×ÊÔ´...
-rem robocopy ·µ»Ø 0-7 ¶¼Ëã³É¹¦£¨1 ±íÊ¾ÓĞÎÄ¼ş±»¸´ÖÆ£©£¬Ö»ÓĞ >=8 ²ÅÊÇÊ§°Ü
+echo [8/8] åŒæ­¥ web èµ„æº...
+rem robocopy è¿”å› 0-7 éƒ½ç®—æˆåŠŸï¼ˆ1 è¡¨ç¤ºæœ‰æ–‡ä»¶è¢«å¤åˆ¶ï¼‰ï¼Œåªæœ‰ >=8 æ‰æ˜¯å¤±è´¥
 robocopy "%PROJ%web" "%PROJ%bin\DopusMdViewer" /MIR /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 goto :fail
 
 popd
 echo.
 echo [OK] %PROJ%bin\DopusMdViewer.dll
-echo µ¼³ö±í£¨Ó¦Îª 7 ¸ö DVP_ º¯Êı£©£º
+echo å¯¼å‡ºè¡¨ï¼ˆåº”ä¸º 7 ä¸ª DVP_ å‡½æ•°ï¼‰ï¼š
 "%DUMPBIN%" /exports "%PROJ%bin\DopusMdViewer.dll" | findstr /i "DVP_ number of"
 echo.
 pause
@@ -111,6 +111,6 @@ exit /b 0
 :fail
 popd
 echo.
-echo [Ê§°Ü] ¼ûÉÏ·½´íÎóĞÅÏ¢¡£
+echo [å¤±è´¥] è§ä¸Šæ–¹é”™è¯¯ä¿¡æ¯ã€‚
 pause
 exit /b 1

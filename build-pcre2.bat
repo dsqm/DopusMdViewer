@@ -24,8 +24,8 @@ set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%PCRE%\inc
 if not exist "build\obj-pcre2" mkdir "build\obj-pcre2"
 if not exist "build\obj-pcre2\chartables.c" copy /y "%PCRE%\src\pcre2_chartables.c.dist" "build\obj-pcre2\chartables.c" >nul
 
-rem pcre2_jit_match/misc ÓÉ pcre2_jit_compile.c °üº¬£¬pcre2_ucptables ÓÉ pcre2_tables.c °üº¬£¬
-rem ²»ÄÜµ¥¶À±àÒë£»pcre2_chkdint Ö»ÓĞ¿í 8/16 ¶¼ÓÃÍ¬Ò»·İ·ûºÅ£¬µ¥¶À±àÒ»´Î¡£
+rem pcre2_jit_match/misc ç”± pcre2_jit_compile.c åŒ…å«ï¼Œpcre2_ucptables ç”± pcre2_tables.c åŒ…å«ï¼Œ
+rem ä¸èƒ½å•ç‹¬ç¼–è¯‘ï¼›pcre2_chkdint åªæœ‰å®½ 8/16 éƒ½ç”¨åŒä¸€ä»½ç¬¦å·ï¼Œå•ç‹¬ç¼–ä¸€æ¬¡ã€‚
 set FILES=pcre2_auto_possess pcre2_compile pcre2_compile_class pcre2_config pcre2_context pcre2_convert pcre2_dfa_match pcre2_error pcre2_extuni pcre2_find_bracket pcre2_jit_compile pcre2_maketables pcre2_match pcre2_match_data pcre2_newline pcre2_ord2utf pcre2_pattern_info pcre2_script_run pcre2_serialize pcre2_string_utils pcre2_study pcre2_substitute pcre2_substring pcre2_tables pcre2_ucd pcre2_valid_utf pcre2_xclass
 
 for %%W in (8 16) do (
