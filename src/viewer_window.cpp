@@ -466,7 +466,11 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
 
   if (type == L"sel") {
     // 宿主决定「复制」是否可用时要问 TESTSELECTION，这里记下页面报的实况。
-    st->hasSelection = (rest == L"1");
+    const bool on = (rest == L"1");
+    if (on != st->hasSelection) {
+      st->hasSelection = on;
+      LogLine(L"VIEWER: 选区 %s", on ? L"有" : L"无");
+    }
     return;
   }
 

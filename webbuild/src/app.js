@@ -458,7 +458,6 @@ const SLUG_TAG = /<[!\/a-z].*?>/gi
 const SLUG_DROP = /[\u2000-\u206F\u2E00-\u2E7F\\'!"#$%&()*+,./:;<=>?@[\]^`{|}~]/g
 
 let docEl = null
-let loadingEl = null
 let sbEl = null
 let thumbEl = null
 let toolsEl = null
@@ -484,7 +483,6 @@ function bindDom() {
   findRegexBtn = document.getElementById('find-regex')
   outlineEl = document.getElementById('outline')
   outlineList = document.getElementById('outline-list')
-  loadingEl = document.getElementById('loading')
 }
 
 /* ---------------- 几何 ---------------- */
@@ -1338,28 +1336,7 @@ function schedulePlace() {
   })
 }
 
-// 首屏通常几十毫秒就出来，立刻显示浮层只会闪一下；只有真卡住才让它露出来。
-let loadingTimer = 0
-
-function armLoading() {
-  if (!loadingEl) return
-  if (loadingTimer) clearTimeout(loadingTimer)
-  loadingTimer = setTimeout(() => {
-    loadingTimer = 0
-    if (V.initializing && loadingEl) loadingEl.hidden = false
-  }, 200)
-}
-
-function disarmLoading() {
-  if (loadingTimer) {
-    clearTimeout(loadingTimer)
-    loadingTimer = 0
-  }
-  if (loadingEl && !loadingEl.hidden) loadingEl.hidden = true
-}
-
 function place() {
-  if (loadingEl && !V.initializing) disarmLoading()
   if (!V.active || !docEl) return
   V.vh = window.innerHeight
   const scrollable = Math.max(0, V.totalH - V.vh)
@@ -1519,7 +1496,6 @@ function resetVirtual() {
   }
   if (sbEl) sbEl.hidden = true
   V.initializing = false
-  disarmLoading()
   V.anchorSet = false
   V.big = new Map()
   V.bigPending = null
@@ -1567,7 +1543,6 @@ function applyIndex(base, prefix, est, fileSize, enc, lastVisible, complete) {
   V.anchorSet = false
   V.indexAt = performance.now()
   V.initializing = true
-  armLoading()
   V.pendingFullCount = 0
   if (V.bigPending) {
     V.big = V.bigPending
@@ -1809,7 +1784,6 @@ function onThumbUp(e) {
 
 const SEL = {
   down: false, x: 0, y: 0, raf: 0, warned: false, all: false, allLo: 0, allHi: 0,
-  anchorBlock: -1,   // 拖选起点所在块：整个拖选期间钉住，块被回收就会塌陷
   reported: false,   // 上一次上报给宿主的「有没有选区」
 }
 
@@ -1822,47 +1796,27 @@ function blockIndexOfNode(node) {
   return Number.isInteger(i) ? i : null
 }
 
-function applyPins(next) {
-  let same = next.size === V.pinned.size
-  if (same) {
-    for (const i of next) {
-      if (!V.pinned.has(i)) {
-        same = false
-        break
-      }
-    }
-  }
-  if (same) return
-  V.pinned = next
-  V.pinsDirty = true
-  schedulePlace()
-}
-
-// 屏幕坐标落在哪个块上（拖选起点要用它钉住锚点块）
-function blockIndexOfPoint(x, y) {
-  if (!document.caretRangeFromPoint) return -1
-  const r = document.caretRangeFromPoint(x, Math.min(Math.max(y, 1), window.innerHeight - 1))
-  if (!r || !docEl || !docEl.contains(r.startContainer)) return -1
-  const i = blockIndexOfNode(r.startContainer)
-  return i === null ? -1 : i
-}
-
 function refreshPins() {
   if (!V.active) {
     V.pinned.clear()
     return
   }
-  // 拖选进行中始终钉住起点块：起点块一旦被换出，浏览器选区会整段塌掉，
-  // 表现为「拖到一半选区全没了」。
-  const keep = SEL.down && SEL.anchorBlock >= 0 ? SEL.anchorBlock : -1
   const sel = window.getSelection()
   if (!sel || !sel.rangeCount) {
-    applyPins(keep >= 0 ? new Set([keep]) : new Set())
+    if (V.pinned.size) {
+      V.pinned.clear()
+      V.pinsDirty = true
+      schedulePlace()
+    }
     return
   }
   const range = sel.getRangeAt(0)
   if (range.collapsed) {
-    applyPins(keep >= 0 ? new Set([keep]) : new Set())
+    if (V.pinned.size) {
+      V.pinned.clear()
+      V.pinsDirty = true
+      schedulePlace()
+    }
     return
   }
   const a = blockIndexOfNode(range.startContainer)
@@ -1949,8 +1903,6 @@ function onSelDown(e) {
   SEL.down = true
   SEL.x = e.clientX
   SEL.y = e.clientY
-  SEL.anchorBlock = blockIndexOfPoint(e.clientX, e.clientY)
-  if (SEL.anchorBlock >= 0) refreshPins()
 }
 
 function onSelMove(e) {
@@ -1963,7 +1915,6 @@ function onSelMove(e) {
 function onSelUp() {
   SEL.down = false
   SEL.warned = false
-  SEL.anchorBlock = -1
   if (SEL.raf) cancelAnimationFrame(SEL.raf)
   SEL.raf = 0
 }
