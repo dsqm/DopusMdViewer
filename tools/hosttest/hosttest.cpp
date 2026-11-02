@@ -31,6 +31,7 @@ const UINT_PTR kCycleTimerId = 3;
 const UINT_PTR kTwoTimerId = 4;
 const UINT_PTR kTwoCloseTimerId = 5;
 const UINT_PTR kScrollTimerId = 6;
+const UINT_PTR kSweepTimerId = 32;
 const UINT_PTR kSettingsTimerId = 7;
 const UINT_PTR kDumpTimerId = 8;
 const UINT_PTR kSeamTimerId = 9;
@@ -73,6 +74,8 @@ UINT g_shotAfterMs = kShotAfterDefaultMs;
 bool g_cycle = false;  // 中途销毁查看器再建一个，复现"切走再切回"
 bool g_twoThreads = false;  // 第二个查看器开在另一个线程上，复现预览窗格 + 独立查看器
 bool g_scroll = false;      // 5 秒后滚动到底，验虚拟滚动与滚动条
+bool g_sweep = false;       // 连续滚过整篇，回传帧时间分位数（长表滚动流畅度）
+UINT g_sweepDelayMs = 6000; // 开始扫过的时刻：1.5s 量「补块期间滚动」，6s 量补完之后
 bool g_settings = false;    // 3 秒后打开设置窗口，验 DVP_Configure 与 config 写盘
 bool g_dump = false;        // 5 秒后把视口/常驻块/段几何回传到日志
 bool g_seam = false;        // 5 秒后滚到第 10 万行（第一段与第二段的接缝）
@@ -288,6 +291,41 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         const wchar_t* method = g_crashBrowser ? L"Browser.crash" : L"Page.crash";
         const bool ok = g_viewer && WebHostCallDevTools(g_viewer, method);
         LogLine(L"TEST: 请求崩溃 %s -> %s", method, ok ? L"已发出" : L"失败");
+      } else if (wParam == kSweepTimerId) {
+        // 两段滚动各量一次帧时间：慢速 320px/帧、快速 2400px/帧（快速会跨块跳跃、
+        // 触发回收与重新建块）。事件名带 perf：宿主对 perf 事件一律写日志。
+        ::KillTimer(hwnd, kSweepTimerId);
+        const wchar_t* script =
+            L"(function(){var V=window.__mdv.V;if(!V){"
+            L"window.chrome.webview.postMessage('event|perf|noV');return;}"
+            L"var long=0;try{new PerformanceObserver(function(l){"
+            L"long+=l.getEntries().length}).observe({entryTypes:['longtask']})}catch(e){}"
+            L"function top(){window.dispatchEvent(new WheelEvent('wheel',{deltaY:-1000000000,"
+            L"deltaMode:0,bubbles:true,cancelable:true}))}"
+            L"function rep(tag,frames,long0){frames.sort(function(a,b){return a-b});"
+            L"var q=function(p){return Math.round(frames[Math.min(frames.length-1,"
+            L"Math.floor(frames.length*p))])};var o25=0,o50=0;"
+            L"for(var k=0;k<frames.length;k++){if(frames[k]>25)o25++;if(frames[k]>50)o50++;}"
+            L"window.chrome.webview.postMessage('event|perf|'+tag+' n='+frames.length+"
+            L"' p50='+q(0.5)+' p90='+q(0.9)+' p99='+q(0.99)+"
+            L"' max='+Math.round(frames[frames.length-1])+' over25='+o25+' over50='+o50+"
+            L"' long='+(long-long0)+' off='+Math.round(V.off)+' total='+Math.round(V.totalH)+"
+            L"' hs='+[0,1,2].map(function(k){return Math.round(V.heights[k]||0)}).join('/'))}"
+            L"function phase(px,ms,tag,next){var frames=[],long0=long,last=performance.now(),"
+            L"t0=last;function step(t){frames.push(t-last);last=t;"
+            L"window.dispatchEvent(new WheelEvent('wheel',{deltaY:px,deltaMode:0,"
+            L"bubbles:true,cancelable:true}));"
+            L"if(t-t0<ms){requestAnimationFrame(step);return}rep(tag,frames,long0);next&&next()}"
+            L"requestAnimationFrame(step)}"
+            L"function stat(tag){var r=V.resident.get(1),bt=r&&r.table;"
+            L"window.chrome.webview.postMessage('event|perf|'+tag+' next='+(bt?bt.next:-1)+"
+            L"' done='+(bt&&bt.done?1:0)+' busy='+(bt&&bt.busy?1:0)+"
+            L"' idle='+(bt&&bt.idle?1:0)+' scan='+(bt&&bt.loadingTo?1:0)+"
+            L"' off='+Math.round(V.off)+' total='+Math.round(V.totalH))}"
+            L"top();setTimeout(function(){phase(320,3000,'slow',function(){top();"
+            L"setTimeout(function(){phase(2400,3000,'fast',function(){"
+            L"setTimeout(function(){stat('late')},8000)})},1600)})},1600)})()";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kScrollTimerId) {
         // 通过页面脚本走一遍 wheel 路径：更新 target、收敛动画、重新摆位、取块。
         ::KillTimer(hwnd, kScrollTimerId);
@@ -591,6 +629,9 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"cycle")) g_cycle = true;
   if (*p && wcsstr(p, L"two")) g_twoThreads = true;
   if (*p && wcsstr(p, L"scroll")) g_scroll = true;
+  if (*p && wcsstr(p, L"sweep")) g_sweep = true;
+  if (g_sweep) { const wchar_t* sx = wcsstr(p, L"sweepat=");
+    if (sx) { int v = _wtoi(sx + 8); if (v > 0) g_sweepDelayMs = static_cast<UINT>(v); } }
   if (*p && wcsstr(p, L"settings")) g_settings = true;
   if (*p && wcsstr(p, L"dump")) g_dump = true;
   if (*p && wcsstr(p, L"seam")) g_seam = true;
@@ -702,6 +743,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   if (g_twoThreads) {
     ::SetTimer(g_hwndMain, kTwoTimerId, kTwoAfterMs, nullptr);
     ::SetTimer(g_hwndMain, kTwoCloseTimerId, kTwoCloseAfterMs, nullptr);
+  }
+  if (g_sweep) {
+    ::SetTimer(g_hwndMain, kSweepTimerId, g_sweepDelayMs, nullptr);
   }
   if (g_scroll) {
     ::SetTimer(g_hwndMain, kScrollTimerId, kScrollAfterMs, nullptr);

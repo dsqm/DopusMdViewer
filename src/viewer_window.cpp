@@ -471,7 +471,7 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
       SetStatus(st, L"%s — %llu B", UtilLeafName(st->szFile), st->ullFileSize);
     } else if (kind.find(L"error") != std::wstring::npos || kind == L"csp" ||
                kind == L"skin-invalid" || kind == L"mermaid-unavailable" ||
-               kind == L"anchor-missing") {
+               kind == L"anchor-missing" || kind == L"perf") {
       LogLine(L"VIEWER: 页面事件 \"%s\" %s", kind.c_str(), detail.c_str());
     }
     return;

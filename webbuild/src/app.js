@@ -469,6 +469,7 @@ const V = {
   raf: 0,
   lastTick: 0,
   lastWheelAt: 0,
+  lastScrollAt: 0,         // 最后一次用户滚动：补块任务据此让路
   trackH: 0,             // 滚动条轨道高度缓存（0 = 需要重读）
   thumbH: '',
   thumbTop: '',
@@ -605,10 +606,12 @@ function heightOf(i) {
   // 巨型表格的高度只能实测（单元格换行让行高不固定），实测前按行数估一个，
   // 否则滚动条位置会随着分块陆续到位一路跳。
   if (V.bigTable.has(i)) {
-    // 实测到 0 说明首块还没到（外层容器空着），继续用估算值
+    // ★ 只有 setHeight 能改块高：这里一旦按内部状态（行高、是否补完）算出别的数，
+    // Fenwick 的增量维护就和它对不上，总高会算成负数。
+    // 补块过程中的高度由 setHeight 写成「已测行高 × 总行数」的外推值。
     if (V.measured[i] && V.heights[i] > 0) return V.heights[i]
     const m = V.bigTable.get(i)
-    return BT_EST_HEAD + Math.max(1, m.lines) * BT_EST_ROW
+    return BT_EST_HEAD + Math.max(1, (m && m.lines) || 1) * BT_EST_ROW
   }
   return V.measured[i] ? V.heights[i] : V.defaultH
 }
@@ -674,7 +677,9 @@ function setHeight(i, h) {
   const delta = h - old
   if (delta === 0) return
   fwAdd(i, delta)
-  V.totalH += delta
+  // 总高按树算，不用累加：h 有时是占位值（巨型表格还没插内容就被量到 0），
+  // 累加会把 totalH 减成负数，滚动条直接卡死在顶部。
+  V.totalH = topPad() + fwSum(V.blockCount) + bottomPad()
   if (V.topsDirty) {
     if (i < V.topsFrom) V.topsFrom = i
   } else {
@@ -882,7 +887,24 @@ function ensureObserver() {
       if (!rec) continue
       // 巨型表格观察的是内部的 host（块本身的高度由它决定），其余块观察块元素
       if (rec.el !== entry.target && !(rec.table && rec.table.host === entry.target)) continue
-      setHeight(i, entry.target.offsetHeight)
+      const h = entry.target.offsetHeight
+      if (rec.table) {
+        if (h <= 0) continue
+        const bt = rec.table
+        if (bt.done) {
+          setHeight(i, h)
+          continue
+        }
+        // 补块途中：用「已补部分的平均行高」外推整表。这样滚动条随补块一起长，
+        // 而不是补完那一刻从估算值跳到实测值（那一跳会把视口内容整体推走）。
+        if (bt.rows > 0) {
+          bt.rowH = Math.max(10, (h - bt.headH) / bt.rows)
+          const lines = Math.max(1, (V.bigTable.get(i) || {}).lines || 1)
+          setHeight(i, bt.headH + lines * bt.rowH)
+        }
+        continue
+      }
+      setHeight(i, h)
     }
   })
 }
@@ -1562,6 +1584,7 @@ function place() {
     V.topsDirty = false
   }
   updateBigWindows()
+  bigTableEnsureVisible()
   applyBigHitMark()
   updateScrollbar()
   V.anchorId = first
@@ -1855,6 +1878,7 @@ function onWheel(e) {
   const now = performance.now()
   const trackpad = Math.abs(delta) < 40 && now - V.lastWheelAt < 60
   V.lastWheelAt = now
+  V.lastScrollAt = now
   const scrollable = Math.max(0, V.totalH - V.vh)
   V.target = Math.min(Math.max(V.target + delta, 0), scrollable)
   if (trackpad) {
@@ -1937,6 +1961,7 @@ function onTrackDown(e) {
   const maxTop = Math.max(1, rect.height - thumbH)
   const ratio = Math.min(1, Math.max(0, (e.clientY - rect.top - thumbH / 2) / maxTop))
   const scrollable = Math.max(0, V.totalH - V.vh)
+  V.lastScrollAt = performance.now()
   V.off = V.target = ratio * scrollable
   place()
 }
@@ -1955,6 +1980,7 @@ function onThumbMove(e) {
   const maxTop = Math.max(1, trackH - thumbH)
   const scrollable = Math.max(0, V.totalH - V.vh)
   const dy = e.clientY - V.drag.y
+  V.lastScrollAt = performance.now()
   V.off = V.target = Math.min(Math.max(V.drag.off + (dy / maxTop) * scrollable, 0), scrollable)
   place()
 }
@@ -2515,6 +2541,7 @@ function flashBlock(i) {
 
 function jumpToOffset(y) {
   if (!V.active) return
+  V.lastScrollAt = performance.now()
   const max = Math.max(0, V.totalH - V.vh)
   V.off = Math.min(Math.max(0, y), max)
   V.target = V.off
@@ -2986,7 +3013,10 @@ async function bigTableMeasure(i, rec) {
   for (const t2 of after.table.host.querySelectorAll('table.bt-table')) {
     bigTableFixWidth(t2, after.table)
   }
-  setHeight(i, after.table.host.offsetHeight)
+  // 此刻只有第一批行：按已测行高外推整表高度，滚动条立刻是整表长度，
+  // 后台补块期间用户也能滚到任意位置（未补到的地方由视口优先补块追上）
+  const lines = Math.max(1, (V.bigTable.get(i) || {}).lines || 1)
+  setHeight(i, BT_EST_HEAD + lines * after.table.rowH)
 }
 
 function bigTableMount(i) {
@@ -3024,6 +3054,7 @@ function bigTableMount(i) {
       rowH: BT_EST_ROW, headH: BT_EST_HEAD, colW: null, width: 0,
     },
   }
+  rec.table.t0 = performance.now()
   V.resident.set(i, rec)
   ensureObserver()
   resizeObserver.observe(host)
@@ -3060,6 +3091,8 @@ function bigTableDone(i, rec) {
     // 补之前的 setHeight 可能落在初始化期（只存高度不写树），这里整体重算一次
     rebuildFenwick()
     schedulePlace()
+    report('perf', 'filled rows=' + bt.rows + ' ms=' + Math.round(performance.now() - bt.t0) +
+      ' h=' + Math.round(bt.host.offsetHeight))
   }
   if (FIND.bigHit && FIND.bigHit.b === i) applyBigHitMark()
 }
@@ -3129,7 +3162,6 @@ async function bigTableFill(i) {
     }
   }
   if (from === 0) bigTableMeasure(i, cur)
-  else if (t.rows % (BT_ROWS * 4) === 0) setHeight(i, t.host.offsetHeight)
   if (part.lines.length < want) {
     bigTableDone(i, cur)
     return
@@ -3137,7 +3169,24 @@ async function bigTableFill(i) {
   bigTableSchedule(i)
 }
 
-// 后台补：每个空闲任务补一块。滚动到表格深处时由 place() 之外的路径直接催（见 loadTo）
+// 视口正在看的那一块还没补到：补过去（每次只走一块，由 loadingTo 自己限流）。
+// 后台补块在滚动期间会让路，这里保证「正在看的地方」不会长时间空着。
+function bigTableEnsureVisible() {
+  if (!V.bigTable.size) return
+  if (Math.abs(V.target - V.off) > V.vh * 1.5) return
+  for (const [i, rec] of V.resident) {
+    const bt = rec.table
+    if (!bt || bt.done || bt.loadingTo) continue
+    const top = pos(i)
+    const bh = heightOf(i)
+    if (V.off + V.vh <= top || V.off >= top + bh) continue
+    const rowH = bt.rowH > 0 ? bt.rowH : BT_EST_ROW
+    const ci = Math.floor(Math.max(0, V.off - top - BT_EST_HEAD) / rowH / BT_ROWS)
+    if (bt.next < 2 + ci * BT_ROWS) bigTableLoadTo(i, ci)
+  }
+}
+
+// 后台补：每个空闲任务补一块；滚动期间让路，手停下来再继续
 function bigTableSchedule(i) {
   const rec = V.resident.get(i)
   if (!rec || !rec.table) return
@@ -3145,6 +3194,18 @@ function bigTableSchedule(i) {
   if (bt.done || bt.idle) return
   const step = () => {
     bt.idle = 0
+    // 一次补块（取行 + 解析 500 行 + 建 DOM）是 60–80 ms 的长任务。滚动期间补，
+    // 每补一块就要掉几帧（实测 p99 从 25 ms 涨到 100 ms），所以等手停下来再补。
+    if (performance.now() - V.lastScrollAt < 260) {
+      bt.timer = true
+      // 重排前必须把 idle 清掉：bigTableSchedule 自己会用 idle 判重入，
+      // 带着旧 id 回调进去会被当成「已经在跑了」直接返回，补块从此停住。
+      bt.idle = setTimeout(() => {
+        bt.idle = 0
+        bigTableSchedule(i)
+      }, 150)
+      return
+    }
     bigTableFill(i)
   }
   if (window.requestIdleCallback) {
