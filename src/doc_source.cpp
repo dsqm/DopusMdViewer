@@ -334,6 +334,9 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
         if (raw->size() + tailLen > kMaxWindowBytes) {
           // 行还在，只是内容放不进窗口：计数不能丢，否则 totalLines 少一行。
           ++got;
+        } else {
+          raw->append(reinterpret_cast<const char*>(buf.data() + lineStart), tailLen);
+          ++got;
         }
       }
       pos = c->blockEnd;
@@ -1162,6 +1165,11 @@ void BigTable(std::string* out) {
     out->append(std::to_string(blocks[k]));
     out->push_back(':');
     out->append(std::to_string(lines[k]));
+    // 表格与其它巨型块的前端渲染路径完全不同（分块真表格 / 行窗口纯文本），
+    // 表格在第三段补一个 1；其它块保持两段，老前端读到两段仍按纯文本处理。
+    if ((ix.KindFlags(blocks[k]) & doc::kKindMask) == static_cast<uint8_t>(doc::Kind::Table)) {
+      out->append(":1");
+    }
   }
 }
 

@@ -183,6 +183,8 @@ body.dev #doc {
   #print-root img, #print-root svg { max-width: 100% !important; height: auto !important; }
   #print-root pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   #print-root .blk--big, #print-root .big-frame { position: static; height: auto; overflow: visible; }
+  /* 打印时不能跳过离屏的块：跳过的那部分不会进纸面 */
+  #print-root .bt-table { content-visibility: visible; }
   .mdv-copy { display: none !important; }
 }
 
@@ -324,6 +326,12 @@ mark.hit--current { background: var(--md-hit-current); }
 /* 命中落在语法字符上（`^## ` 的 `## `）：渲染文本里没有对应字符，标出整块。
    用 box-shadow 画左侧竖条，不占布局、不引起重排。 */
 .hit--block {
+  background: var(--md-hit);
+  box-shadow: inset 3px 0 0 var(--md-hit-current);
+}
+
+/* 巨型表格里的命中行：整行标注。行里没有渲染后的源码映射，按行号直接点行。 */
+.bt-table tr.hit--row > td {
   background: var(--md-hit);
   box-shadow: inset 3px 0 0 var(--md-hit-current);
 }
@@ -491,6 +499,35 @@ th {
 }
 
 tbody tr:nth-child(2n) { background: var(--md-table-zebra); }
+
+/* ---------------- 巨型表格（>20000 行：分块真表格） ----------------
+   一张表拆成多张块级 <table>，每块 500 行。内容上是一整张表，视觉上不能看出来：
+   接缝处不画双线，斑马纹靠「块大小取偶数」自然续上，列宽由 JS 统一固定。
+   每块 content-visibility:auto —— 浏览器只为视口附近那一块做布局，这是
+   两万行表格能把首帧从 1.8 s 压到 0.14 s 的原因。 */
+
+.mdv-cb--bigtable {
+  width: auto;
+  max-width: 100%;
+}
+
+.mdv-cb--bigtable .bt-host { overflow-x: auto; }
+
+.bt-table {
+  display: table;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  overflow: visible;
+  content-visibility: auto;
+}
+
+/* 相邻两块之间只留一条边框（上面一块的最后一行已经画了下边框） */
+.bt-table + .bt-table > tbody > tr:first-child > * { border-top: 0; }
+
+/* 复制按钮只压首块表头，后面各块没有表头，不该跟着留出位置 */
+.mdv-cb--bigtable tbody > tr:first-child > td:last-child { padding-right: 0.85em; }
+.mdv-cb--bigtable thead th:last-child { padding-right: 2.4em; }
 
 /* ---------------- 脚注 ---------------- */
 

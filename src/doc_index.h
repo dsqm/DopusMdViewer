@@ -42,6 +42,8 @@ constexpr uint8_t kFlagHidden = 0x20;       // 定义块 / front matter：渲染
 constexpr uint8_t kFlagFootnoteDef = 0x40;  // hidden 的脚注定义（[^x]: …）
 
 // 超过这个行数的块走块内行窗口化。只记行数，不记字节。
+// 表格也走这条线：过线的表格由前端按种类分派——表格渲染成分块真表格，
+// 其它种类渲染成行窗口纯文本（见 frontend app.js 的 bt-table 段）。
 constexpr uint32_t kBigBlockLines = 2000;
 
 // 编码形状：UTF-8 / UTF-16 单列，其余（GB18030、Shift_JIS、Big5、EUC、ISO-2022、

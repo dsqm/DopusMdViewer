@@ -72,6 +72,17 @@ const LINE_MARGIN = 64
 const LINE_MIN = 128
 const LINE_MAX = 512
 
+// 巨型表格：一张表拆成多张块级 <table>，每张 BT_ROWS 行。
+// 单表一次性布局 2 万行要 1.8 s，逐批往同一张表里追加要 4.7 s（每次追加都触发整表
+// 重排，总代价 O(n²)）；拆成块级表 + content-visibility:auto 后首帧只要 0.14 s。
+// 行内（tr / tbody）加 content-visibility 在 Chromium 里不生效，所以只能按块拆。
+const BT_ROWS = 500        // 每块行数；偶数，斑马纹跨块才不会翻
+const BT_EST_ROW = 32      // 行高还没实测时的高度估算（px）
+const BT_EST_HEAD = 40     // 表头估算高度（px）
+// 表格按分块真表格渲染的数据行上限。再往上 DOM 节点数本身成为瓶颈（2 万行 × 5 列
+// ≈ 10 万单元格），超过就沿用原有的行窗口纯文本路径。
+const BT_MAX_LINES = 20000
+
 const LANGUAGES = {
   javascript, typescript, python, c, cpp, csharp, java, go, rust,
   json, bash, xml, css, sql, yaml, ini, markdown, diff, powershell,
@@ -448,6 +459,7 @@ const V = {
   pinned: new Set(),     // 选区覆盖、暂时不换出的块号
   pinsDirty: false,      // 钉块集合缩小过：即使窗口没变也要回收一次
   big: new Map(),        // 块号 -> { lines }（>2000 行的块）
+  bigTable: new Map(),   // 块号 -> { lines }（>20000 行的表格块，走分块真表格）
   bigPending: null,      // 页面还没就绪时收到的巨型块表
   pending: new Set(),
   fetching: new Set(),
@@ -590,6 +602,14 @@ function bigMetrics() {
 
 function heightOf(i) {
   if (V.big.has(i)) return bigHeight(i)
+  // 巨型表格的高度只能实测（单元格换行让行高不固定），实测前按行数估一个，
+  // 否则滚动条位置会随着分块陆续到位一路跳。
+  if (V.bigTable.has(i)) {
+    // 实测到 0 说明首块还没到（外层容器空着），继续用估算值
+    if (V.measured[i] && V.heights[i] > 0) return V.heights[i]
+    const m = V.bigTable.get(i)
+    return BT_EST_HEAD + Math.max(1, m.lines) * BT_EST_ROW
+  }
   return V.measured[i] ? V.heights[i] : V.defaultH
 }
 
@@ -859,7 +879,9 @@ function ensureObserver() {
       const i = Number(entry.target.dataset.i)
       if (!Number.isInteger(i)) continue
       const rec = V.resident.get(i)
-      if (!rec || rec.el !== entry.target) continue
+      if (!rec) continue
+      // 巨型表格观察的是内部的 host（块本身的高度由它决定），其余块观察块元素
+      if (rec.el !== entry.target && !(rec.table && rec.table.host === entry.target)) continue
       setHeight(i, entry.target.offsetHeight)
     }
   })
@@ -1025,6 +1047,11 @@ function renderItem(item, pendingMeasure) {
     return
   }
   if (V.hidden[i]) return
+  if (V.bigTable.has(i)) {  // 巨型表格：分块真表格，正文按行号分页取
+    bigTableMount(i)
+    if (FIND.pending && FIND.pending.b === i) maybeApplyHit()
+    return
+  }
   if (V.big.has(i)) {  // 巨型块不渲染正文，只建段容器
     ensureBigResident(i)
     if (FIND.pending && FIND.pending.b === i) FIND.pending = null
@@ -1283,28 +1310,43 @@ function updateBigLines(i, lines) {
   schedulePlace()
 }
 
-function applyBigTable(text) {
-  const map = new Map()
-  if (text) {
-    for (const part of text.split(',')) {
-      const cut = part.indexOf(':')
-      if (cut <= 0) continue
-      const i = parseInt(part.slice(0, cut), 10)
-      const lines = parseInt(part.slice(cut + 1), 10)
-      if (Number.isInteger(i) && i >= 0 && Number.isInteger(lines) && lines > 0) {
-        map.set(i, { lines })
-      }
-    }
+// 巨型块表：`块号:行数` 表示走行窗口纯文本，`块号:行数:1` 表示表格。
+// 表格是否按真表格渲染由这里的规模上限决定：过线的表格改用分块真表格，
+// 再大的仍回落行窗口纯文本。
+function parseBigTable(text) {
+  const big = new Map()
+  const tables = new Map()
+  if (!text) return { big, tables }
+  for (const part of text.split(',')) {
+    const f = part.split(':')
+    if (f.length < 2) continue
+    const i = parseInt(f[0], 10)
+    const lines = parseInt(f[1], 10)
+    if (!Number.isInteger(i) || i < 0 || !Number.isInteger(lines) || lines <= 0) continue
+    // lines 含表头行与分隔行，数据行要减 2
+    if (f[2] === '1' && lines - 2 <= BT_MAX_LINES) tables.set(i, { lines })
+    else big.set(i, { lines })
   }
-  V.bigPending = map
+  return { big, tables }
+}
+
+function applyBigTable(text) {
+  const parsed = parseBigTable(text)
+  V.bigPending = parsed
   if (!V.active) return
   V.bigPending = null
-  V.big = map
+  V.big = parsed.big
+  V.bigTable = parsed.tables
   bigMetrics()
 
   for (const [i, rec] of [...V.resident]) {
-    if (map.has(i)) {
+    if (parsed.tables.has(i)) {
+      bigTableMount(i)
+    } else if (parsed.big.has(i)) {
       ensureBigResident(i)
+    } else if (rec.table) {
+      bigTableRelease(rec)
+      V.resident.delete(i)
     } else if (rec.big) {
       releaseBig(rec)
       V.resident.delete(i)
@@ -1319,7 +1361,9 @@ function recycleOutside(a, b) {
   for (const [i, rec] of V.resident) {
     if (i >= a && i <= b) continue
     if (V.pinned.has(i)) continue
-    if (rec.big) {
+    if (rec.table) {
+      bigTableRelease(rec)
+    } else if (rec.big) {
       releaseBig(rec)
     } else {
       if (resizeObserver) resizeObserver.unobserve(rec.el)
@@ -1620,7 +1664,9 @@ function resetVirtual() {
   htmlCacheClear()
   if (resizeObserver) resizeObserver.disconnect()
   for (const rec of V.resident.values()) {
-    if (rec.big) {
+    if (rec.table) {
+      bigTableRelease(rec)
+    } else if (rec.big) {
       releaseBig(rec)
     } else if (rec.el.parentNode) {
       rec.el.parentNode.removeChild(rec.el)
@@ -1637,6 +1683,7 @@ function resetVirtual() {
   V.initializing = false
   V.anchorSet = false
   V.big = new Map()
+  V.bigTable = new Map()
   V.bigPending = null
   V.lastVisible = 0
   REF.references = null
@@ -1684,7 +1731,8 @@ function applyIndex(base, prefix, est, fileSize, enc, lastVisible, complete) {
   V.initializing = true
   V.pendingFullCount = 0
   if (V.bigPending) {
-    V.big = V.bigPending
+    V.big = V.bigPending.big
+    V.bigTable = V.bigPending.tables
     V.bigPending = null
     bigMetrics()
   }
@@ -2322,7 +2370,15 @@ async function copyFromButton(btn) {
   const isTable = btn.dataset.k === 'table'
   let text = ''
   try {
-    if (isTable) {
+    if (isTable && btn.dataset.big) {
+      // 巨型表格：DOM 里可能还没补全，直接从源码整块取
+      const i = parseInt(btn.dataset.big, 10)
+      if (!Number.isInteger(i)) throw new Error('这张表格没有源码位置')
+      const docId = V.docId
+      const src = await bigTableSource(i)
+      if (docId !== V.docId) throw new Error('文档已切换')
+      text = state.render.tableCopyMd ? src : bigTextAsTsv(src)
+    } else if (isTable) {
       text = state.render.tableCopyMd ? await tableAsMarkdown(btn) : tableAsTsv(wrap)
     } else {
       const code = wrap.querySelector('pre > code')
@@ -2408,6 +2464,7 @@ function isWordCharAt(text, i) {
 
 function clearHitMarks() {
   for (const el of document.querySelectorAll('.hit--block')) el.classList.remove('hit--block')
+  for (const el of document.querySelectorAll('.hit--row')) el.classList.remove('hit--row')
   for (const mark of document.querySelectorAll('mark.hit')) {
     const parent = mark.parentNode
     if (!parent) continue
@@ -2629,7 +2686,7 @@ function goToHit(i) {
   clearHitMarks()
   updateFindCount()
   // 巨型块直接由 maybeApplyHit 定位到命中行，先跳块顶会多取一次用不上的行窗口。
-  if (!V.big.has(hit.b)) jumpToOffset(pos(hit.b) - V.vh * 0.15)
+  if (!V.big.has(hit.b) && !V.bigTable.has(hit.b)) jumpToOffset(pos(hit.b) - V.vh * 0.15)
   maybeApplyHit()
 }
 
@@ -2650,6 +2707,17 @@ function bigLineTop(i, line) {
 function maybeApplyHit() {
   const hit = FIND.pending
   if (!hit || !V.active) return
+  if (V.bigTable.has(hit.b)) {
+    // 巨型表格：先按行号算出落在哪一块，补到那一块再滚过去点那一行
+    FIND.pending = null
+    FIND.current = hit
+    const m = V.bigTable.get(hit.b)
+    const total = m && m.lines ? m.lines : 0
+    const line = total ? Math.min(Math.max(0, hit.line | 0), total - 1) : 0
+    FIND.bigHit = { b: hit.b, line }
+    applyBigHitMark()
+    return
+  }
   if (V.big.has(hit.b)) {
     // 巨型块没有渲染文本可用：先滚到命中行，行窗口到位后再在那一行里包 mark。
     FIND.pending = null
@@ -2675,6 +2743,10 @@ function maybeApplyHit() {
 function applyBigHitMark() {
   const want = FIND.bigHit
   if (!want || !V.active || !FIND.query) return
+  if (V.bigTable.has(want.b)) {
+    bigTableHitMark(want)
+    return
+  }
   const rec = V.resident.get(want.b)
   if (!rec || !rec.big) return
   const seg = rec.big.segs.get(segIndexOfLine(want.b, want.line))
@@ -2704,6 +2776,482 @@ function applyBigHitMark() {
   clearHitMarks()
   wrapTextRange(seg.code, start + at, start + at + len)
   FIND.bigHit = null
+}
+
+/* ---------------- 巨型表格：分块真表格 ----------------
+   一张两万行的表按行号分页取（__lines 每块有顺序缓存，顺着读很便宜），
+   每 500 行渲染成一张独立的块级 <table>，全部挂 content-visibility:auto。
+   实测（20000 行 × 5 列，本机 Edge）：单表一次性布局 1.8 s；逐批追加进同一张表
+   4.7 s（每次追加都触发整表重排）；分块表首帧 0.14 s。把 content-visibility 加在
+   tr / tbody 上在 Chromium 里不生效（仍 1.3 s），所以拆的粒度只能是块级表。
+
+   分块表的列宽从首块的自然排版量一次，之后所有块按同一组 px 固定，避免各算各的
+   宽度。块大小取偶数，斑马纹跨块才不会翻。 */
+
+function bigTableFetch(i, from, count) {
+  return fetch(LINES_URL + '?i=' + i + '&from=' + from + '&count=' + count, { cache: 'no-store' })
+    .then((res) => {
+      // 越界（from 超过块内行数）宿主回 404：当成「没有更多行」，不是错误
+      if (res.status === 404) return null
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      return res.arrayBuffer()
+    })
+    .then((buf) => {
+      if (!buf || buf.byteLength < 20) return { lines: [], total: 0 }
+      const dv = new DataView(buf)
+      if (dv.getUint32(0, true) !== i || dv.getUint32(4, true) !== from) {
+        return { lines: [], total: 0 }
+      }
+      const got = dv.getUint32(8, true)
+      const total = dv.getUint32(12, true)
+      const len = dv.getUint32(16, true)
+      if (20 + len > buf.byteLength || got === 0) return { lines: [], total }
+      const lines = decoder.decode(new Uint8Array(buf, 20, len)).split('\n')
+      if (lines.length && lines[lines.length - 1] === '') lines.pop()
+      for (let k = 0; k < lines.length; k++) {
+        if (lines[k].endsWith('\r')) lines[k] = lines[k].slice(0, -1)
+      }
+      return { lines, total }
+    })
+}
+
+// 单元格按未转义的 | 切；`\|` 是单元格里的竖线，不是分隔符
+function tableRowCells(line) {
+  let s = line.trim()
+  if (s.startsWith('|')) s = s.slice(1)
+  if (s.endsWith('|')) s = s.slice(0, -1)
+  const out = []
+  let cur = ''
+  for (let k = 0; k < s.length; k++) {
+    const ch = s[k]
+    if (ch === '\\' && s[k + 1] === '|') {
+      cur += '\u0000'
+      k++
+      continue
+    }
+    if (ch === '|') {
+      out.push(cur)
+      cur = ''
+      continue
+    }
+    cur += ch
+  }
+  out.push(cur)
+  return out.map((c) => c.replace(/\u0000/g, '|').trim())
+}
+
+// 源码里的单元格转纯文本：TSV 里不该出现 ** / ` / [文字](链接) 这些记号
+function tableCellPlain(s) {
+  return s
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function bigTextAsTsv(text) {
+  const rows = []
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (!line || line.indexOf('|') < 0) continue
+    const cells = tableRowCells(line)
+    if (!cells.length) continue
+    if (cells.every((c) => c === '' || /^:?-{2,}:?$/.test(c))) continue  // 表头分隔行
+    rows.push(cells.map(tableCellPlain).join('\t'))
+  }
+  return rows.join('\n')
+}
+
+// 一块的分块表 HTML。markdown-it 的表格规则会给整表套一层 .mdv-cb 与复制按钮，
+// 这里只取 <table> 本身——按钮由外层那一个负责。
+function bigTableChunkHtml(header, rows, withHead) {
+  if (!rows.length) return ''
+  const src = header + '\n' + rows.join('\n') + '\n'
+  let html
+  try {
+    const env = blockEnv()
+    env.blockIndex = -1
+    html = md.render(src, env)
+  } catch (err) {
+    report('bigtable-render', String(err))
+    return ''
+  }
+  const a = html.indexOf('<table')
+  const b = html.lastIndexOf('</table>')
+  if (a < 0 || b < a) return ''
+  let out = html.slice(a, b + 8)
+  if (!withHead) out = out.replace(/<thead>[\s\S]*?<\/thead>/, '')
+  out = out.replace('<table', '<table class="bt-table"')
+  return src.includes('<') ? sanitize(out) : out
+}
+
+function bigTableFixWidth(t, bt) {
+  if (!bt.colW || !bt.width || t.dataset.wfixed === '1') return
+  t.style.tableLayout = 'fixed'
+  t.style.width = bt.width + 'px'
+  t.style.minWidth = '100%'
+  const cg = document.createElement('colgroup')
+  for (const w of bt.colW) {
+    const col = document.createElement('col')
+    col.style.width = w + 'px'
+    cg.appendChild(col)
+  }
+  t.insertBefore(cg, t.firstChild)
+  t.dataset.wfixed = '1'
+}
+
+// 首块插入后量一次：列宽与行高。
+//
+// 两个坑都在这里处理：
+//   1) 不能直接量已经插进 DOM 的那一块——它带着 content-visibility:auto，被跳过时
+//      宽度返回的是占位值（实测列宽只剩 min-content，「序号」会被压成竖排）。
+//   2) 只按首块 500 行定列宽会偏窄：行号到 20000 是五位数，「序号」「名称」两列在
+//      后半张表里会被折行。所以在离屏探针里按「表头 + 首尾各 24 行」重排一次，
+//      尾样本用 __lines 单独取。探针只有几十行，代价可以忽略。
+async function bigTableMeasure(i, rec) {
+  const bt = rec.table
+  if (!bt.firstRows || !bt.header || bt.measuring) return
+  bt.measuring = true
+  const host = bt.host
+  const width = Math.max(160, host.clientWidth || host.offsetWidth || 480)
+  const head = bt.firstRows.slice(0, 24)
+  let tail = []
+  if (bt.total > 96) {
+    try {
+      const part = await bigTableFetch(i, Math.max(2, bt.total - 24), 24)
+      tail = part.lines
+    } catch (err) {
+      report('bigtable-sample-error', String(err))
+    }
+  }
+  const cur = V.resident.get(i)
+  if (!cur || !cur.table) return
+  const probe = document.createElement('div')
+  probe.style.cssText =
+    'position:absolute;left:-100000px;top:0;visibility:hidden;width:' + width + 'px'
+  document.body.appendChild(probe)
+  probe.innerHTML = bigTableChunkHtml(bt.header, head.concat(tail), true)
+  const t = probe.querySelector('table')
+  let colW = null
+  let rowH = 0
+  if (t) {
+    const thead = t.tHead
+    const body = t.tBodies[0]
+    bt.headH = thead ? thead.offsetHeight : BT_EST_HEAD
+    const row0 = body && body.rows[0]
+    const rowN = body && body.rows[Math.min(head.length, body.rows.length) - 1]
+    if (row0 && rowN && rowN !== row0) {
+      const step = body.rows[Math.min(head.length, body.rows.length) - 1].rowIndex -
+        row0.rowIndex
+      rowH = step > 0 ? (rowN.offsetTop - row0.offsetTop) / step : 0
+    }
+    if (rowH > 0) bt.rowH = Math.max(10, rowH)
+    if (row0 && row0.cells.length) {
+      // 向上取整再补 1px：高 DPI 下列宽带小数，四舍五入后每列会少不到 1px，
+      // 加粗的表头字正好在这个误差上折行（「序号」被压成竖排就是这个原因）。
+      colW = Array.prototype.map.call(
+        row0.cells, (c) => Math.ceil(c.getBoundingClientRect().width) + 1)
+      let sum = colW.reduce((a, b) => a + b, 0)
+      // 总宽对齐正文宽度，和普通表格一样不多出横向滚动条；超得太多（列多、内容宽）
+      // 就保持自然宽度交给横向滚动，硬压下去反而更难读。
+      const align = sum <= width || sum < width * 1.08
+      if (align && sum > width) {
+        const k = width / sum
+        for (let j = 0; j < colW.length; j++) colW[j] = Math.max(24, Math.floor(colW[j] * k))
+      }
+      if (align) {
+        // 余数全部落在最宽的一列：总宽严格等于正文宽度
+        let widest = 0
+        for (let j = 1; j < colW.length; j++) if (colW[j] > colW[widest]) widest = j
+        sum = colW.reduce((a, b) => a + b, 0)
+        colW[widest] += width - sum
+      }
+    }
+  }
+  probe.innerHTML = ''
+  document.body.removeChild(probe)
+  const after = V.resident.get(i)
+  if (!after || !after.table) return
+  after.table.measuring = false
+  if (!colW || !colW.length) return
+  after.table.colW = colW
+  after.table.width = colW.reduce((a, b) => a + b, 0)
+  after.table.firstRows = null
+  for (const t2 of after.table.host.querySelectorAll('table.bt-table')) {
+    bigTableFixWidth(t2, after.table)
+  }
+  setHeight(i, after.table.host.offsetHeight)
+}
+
+function bigTableMount(i) {
+  let rec = V.resident.get(i)
+  if (rec && rec.table) return rec
+  if (rec) {
+    if (rec.big) releaseBig(rec)
+    if (rec.el) {
+      if (resizeObserver) resizeObserver.unobserve(rec.el)
+      if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
+      rec.el.innerHTML = ''
+      V.pool.push(rec.el)
+    }
+  }
+  const el = document.createElement('div')
+  el.className = 'blk blk--table blk--bigtable'
+  el.dataset.i = String(i)
+  el.style.top = (pos(i) - V.stageBase) + 'px'
+  const wrap = document.createElement('div')
+  wrap.className = 'mdv-cb mdv-cb--table mdv-cb--bigtable'
+  wrap.innerHTML = (state.render.copyTable
+    ? copyButtonHtml('table', ' data-src="b" data-big="' + i + '"')
+    : '') + '<div class="bt-host"></div>'
+  el.appendChild(wrap)
+  docEl.appendChild(el)
+  const host = wrap.lastElementChild
+  host.dataset.i = String(i)
+  rec = {
+    el,
+    table: {
+      // 总行数用索引给的值：__lines 只在读到块尾时才回报 total，首块拿不到
+      host, wrap, total: ((V.bigTable.get(i) || {}).lines || 0),
+      next: 0, rows: 0, header: '', text: '', firstRows: null,
+      busy: false, done: false, loadingTo: false, idle: 0, timer: false, measuring: false,
+      rowH: BT_EST_ROW, headH: BT_EST_HEAD, colW: null, width: 0,
+    },
+  }
+  V.resident.set(i, rec)
+  ensureObserver()
+  resizeObserver.observe(host)
+  bigTableFill(i)
+  return rec
+}
+
+function bigTableRelease(rec) {
+  const bt = rec.table
+  if (!bt) return
+  if (bt.idle) {
+    if (bt.timer) clearTimeout(bt.idle)
+    else if (window.cancelIdleCallback) window.cancelIdleCallback(bt.idle)
+  }
+  bt.idle = 0
+  bt.done = true
+  bt.text = ''
+  if (resizeObserver && bt.host) resizeObserver.unobserve(bt.host)
+  if (rec.el) {
+    if (rec.el.parentNode) rec.el.parentNode.removeChild(rec.el)
+    rec.el.innerHTML = ''
+    V.pool.push(rec.el)
+  }
+  rec.el = null
+  rec.table = null
+}
+
+function bigTableDone(i, rec) {
+  const bt = rec.table
+  if (!bt) return
+  if (!bt.done) {
+    bt.done = true
+    setHeight(i, bt.host.offsetHeight)
+    // 补之前的 setHeight 可能落在初始化期（只存高度不写树），这里整体重算一次
+    rebuildFenwick()
+    schedulePlace()
+  }
+  if (FIND.bigHit && FIND.bigHit.b === i) applyBigHitMark()
+}
+// 首块渲染不出表格（源里没有分隔行等）：退回普通块渲染，宁可慢也不能空着
+function bigTableFallback(i, why) {
+  report('bigtable-fallback', why)
+  V.bigTable.delete(i)
+  const rec = V.resident.get(i)
+  if (rec) {
+    bigTableRelease(rec)
+    V.resident.delete(i)
+  }
+  rebuildFenwick()
+  schedulePlace()
+}
+
+async function bigTableFill(i) {
+  const rec = V.resident.get(i)
+  if (!rec || !rec.table) return
+  const bt = rec.table
+  if (bt.done || bt.busy) return
+  const docId = V.docId
+  const from = bt.next
+  // 收尾不靠行数：请求多少行、回来多少行，短读就是到底了（越界请求宿主回 404，
+  // 前端当成空结果）。
+  const want = from === 0 ? BT_ROWS + 2 : BT_ROWS
+  bt.busy = true
+  let part
+  try {
+    part = await bigTableFetch(i, from, want)
+  } catch (err) {
+    bt.busy = false
+    bt.done = true
+    report('bigtable-error', String(err))
+    return
+  }
+  bt.busy = false
+  const cur = V.resident.get(i)
+  if (docId !== V.docId || !cur || !cur.table) return
+  const t = cur.table
+  if (!part || !part.lines.length) {
+    bigTableDone(i, cur)
+    return
+  }
+  let rows = part.lines
+  if (from === 0) {
+    if (rows.length < 2) {
+      bigTableFallback(i, '块首两行拼不出表头')
+      return
+    }
+    t.header = rows[0] + '\n' + rows[1]
+    rows = rows.slice(2)
+    t.firstRows = rows
+  }
+  t.text += part.lines.join('\n') + '\n'
+  t.next = from + part.lines.length
+  t.rows += rows.length
+  const html = bigTableChunkHtml(t.header, rows, from === 0)
+  if (html) {
+    t.host.insertAdjacentHTML('beforeend', html)
+    const table = t.host.lastElementChild
+    if (table) {
+      table.dataset.rows = String(rows.length)
+      if (from !== 0) bigTableFixWidth(table, t)
+      table.style.containIntrinsicSize = 'auto ' + Math.round(
+        (from === 0 ? t.headH : 0) + rows.length * t.rowH) + 'px'
+    }
+  }
+  if (from === 0) bigTableMeasure(i, cur)
+  else if (t.rows % (BT_ROWS * 4) === 0) setHeight(i, t.host.offsetHeight)
+  if (part.lines.length < want) {
+    bigTableDone(i, cur)
+    return
+  }
+  bigTableSchedule(i)
+}
+
+// 后台补：每个空闲任务补一块。滚动到表格深处时由 place() 之外的路径直接催（见 loadTo）
+function bigTableSchedule(i) {
+  const rec = V.resident.get(i)
+  if (!rec || !rec.table) return
+  const bt = rec.table
+  if (bt.done || bt.idle) return
+  const step = () => {
+    bt.idle = 0
+    bigTableFill(i)
+  }
+  if (window.requestIdleCallback) {
+    bt.timer = false
+    bt.idle = window.requestIdleCallback(step, { timeout: 150 })
+  } else {
+    bt.timer = true
+    bt.idle = setTimeout(step, 16)
+  }
+}
+
+// 顺序补到第 chunkIdx 块（搜索命中、跳到表格深处时用）
+async function bigTableLoadTo(i, chunkIdx) {
+  const rec = V.resident.get(i)
+  if (!rec || !rec.table || rec.table.loadingTo) return
+  rec.table.loadingTo = true
+  try {
+    for (let guard = 0; guard < 80; guard++) {
+      const cur = V.resident.get(i)
+      if (!cur || !cur.table || cur.table.done) break
+      const doneChunks = Math.floor(Math.max(0, cur.table.next - 2) / BT_ROWS)
+      if (doneChunks > chunkIdx) break
+      const before = cur.table.next
+      await bigTableFill(i)
+      const after = V.resident.get(i)
+      if (!after || !after.table || after.table.next === before) break
+    }
+  } finally {
+    const cur = V.resident.get(i)
+    if (cur && cur.table) cur.table.loadingTo = false
+  }
+}
+
+// 命中行 → 块号 → 块内行号。行号与 __lines 同口径：0 是表头行，1 是分隔行。
+function bigTableHitMark(want) {
+  const rec = V.resident.get(want.b)
+  if (!rec || !rec.table) return
+  const bt = rec.table
+  const row = Math.max(0, (want.line | 0) - 2)
+  const ci = Math.floor(row / BT_ROWS)
+  if (bt.next < 2 + ci * BT_ROWS) {
+    bigTableLoadTo(want.b, ci)
+    return
+  }
+  const table = bt.host.querySelectorAll('table.bt-table')[ci]
+  if (!table) return
+  const body = table.tBodies[0]
+  const tr = body && body.rows[row - ci * BT_ROWS]
+  if (!tr) return
+  if (!want.placed) {
+    want.placed = 1
+    // 行高在整张表里并不一致（后面的行号位数多、单元格会折行），按行高乘出来的位置
+    // 会偏。直接把这一块临时变成可见量真实矩形：目标行正好在视口附近，顺带就渲染了。
+    const prev = table.style.contentVisibility
+    table.style.contentVisibility = 'visible'
+    const top = tr.getBoundingClientRect().top - rec.el.getBoundingClientRect().top
+    table.style.contentVisibility = prev
+    jumpToOffset(pos(want.b) + top - V.vh * 0.25)
+  }
+  clearHitMarks()
+  tr.classList.add('hit--row')
+  FIND.bigHit = null
+}
+
+// 整块源码：块还常驻且补完了就直接用内存里的，否则顺着行号取一遍
+async function bigTableSource(i) {
+  const rec = V.resident.get(i)
+  if (rec && rec.table && rec.table.done && rec.table.text) return rec.table.text
+  let text = ''
+  let from = 0
+  let total = 0
+  for (let guard = 0; guard < 200; guard++) {
+    const part = await bigTableFetch(i, from, from === 0 ? BT_ROWS + 2 : BT_ROWS * 4)
+    if (!part.lines.length) break
+    total = part.total
+    text += part.lines.join('\n') + '\n'
+    from += part.lines.length
+    if (total && from >= total) break
+  }
+  return text
+}
+
+// 打印：整表补齐再交给打印容器（打印时不分块懒渲染，见 base.css 的 print 段）
+async function bigTablePrintHtml(i) {
+  const text = await bigTableSource(i)
+  const lines = text.split('\n')
+  if (lines.length && lines[lines.length - 1] === '') lines.pop()
+  if (lines.length < 3) return ''
+  const header = lines[0] + '\n' + lines[1]
+  // 纸面宽度和屏幕不一样，列宽按比例给：有实测列宽就算百分比，没有就让浏览器自己排
+  const rec = V.resident.get(i)
+  const colW = rec && rec.table && rec.table.colW
+  let cols = ''
+  if (colW) {
+    const sum = colW.reduce((a, b) => a + b, 0)
+    if (sum > 0) {
+      cols = '<colgroup>' + colW.map((w) =>
+        '<col style="width:' + (w / sum * 100).toFixed(3) + '%">').join('') + '</colgroup>'
+    }
+  }
+  const parts = []
+  for (let k = 2; k < lines.length; k += BT_ROWS) {
+    let html = bigTableChunkHtml(header, lines.slice(k, k + BT_ROWS), k === 2)
+    if (html && cols) {
+      html = html.replace('<table class="bt-table"',
+        '<table class="bt-table" style="table-layout:fixed;width:100%">' + cols)
+    }
+    if (html) parts.push(html)
+  }
+  return parts.length ? '<div class="bt-print">' + parts.join('') + '</div>' : ''
 }
 
 function regexMatches(text, pattern, caseSensitive) {
@@ -3472,6 +4020,14 @@ async function buildPrintView() {
     const items = parseFrames(await res.arrayBuffer())
     for (const it of items) {
       if (it.flags & 0x20) continue
+      if (V.bigTable.has(it.i)) {
+        // 巨型表格的帧只有前 1 MB，打印要整表：按行号取全再分块拼回去
+        const html = await bigTablePrintHtml(it.i)
+        if (html) {
+          parts.push('<div class="pblk">' + html + '</div>')
+          continue
+        }
+      }
       let html = renderBlockHtml(it.text, it.flags, it.i)
       if (it.i === V.lastVisible && FOOT.html) html += FOOT.html
       if (it.flags & 0x80) html += '<p>（块过大，打印时已截断）</p>'
