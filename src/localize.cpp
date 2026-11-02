@@ -54,7 +54,6 @@ const wchar_t* const kZh[kCount] = {
     /* RenderLineNumbers */ L"代码块行号",
     /* CodeBlockGroup   */ L"代码块",
     /* RenderCodeWhitespace */ L"显示空白符",
-    /* CodeWsRange      */ L"范围",
     /* CodeWsBoundary   */ L"边界",
     /* CodeWsAll        */ L"全部",
     /* RenderIndentedBlocks */ L"缩进式代码块也应用以上设置",

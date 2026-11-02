@@ -57,7 +57,6 @@ enum class Str : int {
   RenderLineNumbers,
   CodeBlockGroup,
   RenderCodeWhitespace,
-  CodeWsRange,
   CodeWsBoundary,
   CodeWsAll,
   RenderIndentedBlocks,

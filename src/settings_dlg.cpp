@@ -71,6 +71,7 @@ enum {
   kIdLineNumbers,
   kIdCodeWsOn,
   kIdCodeWsRange,
+  kIdCodeWsAll,
   kIdIndentedBlocks,
   kIdCodeGroup,
   kIdVersion = 3400,
@@ -136,6 +137,7 @@ struct DialogState {
   HWND hLineNumbers = nullptr;
   HWND hCodeWsOn = nullptr;
   HWND hCodeWsRange = nullptr;
+  HWND hCodeWsAll = nullptr;
   HWND hIndentedBlocks = nullptr;
   HWND hNetDoc = nullptr;
   HWND hNetHost = nullptr;
@@ -653,9 +655,10 @@ void EnableCopyFormat(DialogState* st, bool enabled) {
   if (st->hCopyFormat) ::EnableWindow(st->hCopyFormat, enabled ? TRUE : FALSE);
 }
 
-// 空白符整个关掉时，范围下拉没有意义，置灰免得让人以为它还生效。
+// 空白符整个关掉时，范围那组单选按钮没有意义，置灰免得让人以为它还生效。
 void EnableCodeWsRange(DialogState* st, bool enabled) {
   if (st->hCodeWsRange) ::EnableWindow(st->hCodeWsRange, enabled ? TRUE : FALSE);
+  if (st->hCodeWsAll) ::EnableWindow(st->hCodeWsAll, enabled ? TRUE : FALSE);
 }
 
 // “应用”只在有未保存改动时可用；应用成功后立刻变灰。
@@ -710,9 +713,8 @@ void LoadUiFromStaged(DialogState* st) {
                    st->staged.codeLineNumbers ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdCodeWsOn,
                    st->staged.codeWsOn ? BST_CHECKED : BST_UNCHECKED);
-  if (st->hCodeWsRange) {
-    ::SendMessageW(st->hCodeWsRange, CB_SETCURSEL, st->staged.codeWsRange == 2 ? 1 : 0, 0);
-  }
+  ::CheckRadioButton(st->hwnd, kIdCodeWsRange, kIdCodeWsAll,
+                     st->staged.codeWsRange == 2 ? kIdCodeWsAll : kIdCodeWsRange);
   ::CheckDlgButton(st->hwnd, kIdIndentedBlocks,
                    st->staged.codeIndentedBlocks ? BST_CHECKED : BST_UNCHECKED);
   EnableCodeWsRange(st, st->staged.codeWsOn);
@@ -767,10 +769,8 @@ void ReadUiIntoStaged(DialogState* st) {
   st->staged.showOutlineButton = ::IsDlgButtonChecked(st->hwnd, kIdOutlineBtn) == BST_CHECKED;
   st->staged.codeLineNumbers = ::IsDlgButtonChecked(st->hwnd, kIdLineNumbers) == BST_CHECKED;
   st->staged.codeWsOn = ::IsDlgButtonChecked(st->hwnd, kIdCodeWsOn) == BST_CHECKED;
-  if (st->hCodeWsRange) {
-    const int range = static_cast<int>(::SendMessageW(st->hCodeWsRange, CB_GETCURSEL, 0, 0));
-    st->staged.codeWsRange = (range == 1) ? 2 : 1;
-  }
+  st->staged.codeWsRange =
+      ::IsDlgButtonChecked(st->hwnd, kIdCodeWsAll) == BST_CHECKED ? 2 : 1;
   st->staged.codeIndentedBlocks =
       ::IsDlgButtonChecked(st->hwnd, kIdIndentedBlocks) == BST_CHECKED;
   if (st->hCopyFormat) {
@@ -1240,24 +1240,19 @@ void BuildUi(DialogState* st) {
   AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeBlockGroup), BS_GROUPBOX, 16, y, 524, 104,
              kIdCodeGroup);
   st->hLineNumbers = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderLineNumbers),
-                                BS_AUTOCHECKBOX | WS_TABSTOP, 30, y + 18, 220, 24,
+                                BS_AUTOCHECKBOX | WS_TABSTOP, 30, y + 18, 130, 24,
                                 kIdLineNumbers);
   st->hCodeWsOn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderCodeWhitespace),
-                             BS_AUTOCHECKBOX | WS_TABSTOP, 30, y + 44, 220, 24, kIdCodeWsOn);
-  AddControl(st, 2, L"STATIC", loc::T(loc::Str::CodeWsRange), SS_LEFT, 172, y + 47, 44, 20, 0);
-  st->hCodeWsRange = AddControl(st, 2, L"COMBOBOX", L"",
-                                CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 220,
-                                y + 44, 130, 120, kIdCodeWsRange);
+                             BS_AUTOCHECKBOX | WS_TABSTOP, 30, y + 44, 130, 24, kIdCodeWsOn);
+  // 范围用两个单选按钮摆在同一行：互斥关系一眼看得出来，也不用再挂一个下拉框
+  st->hCodeWsRange = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeWsBoundary),
+                                BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP, 175, y + 44, 80, 24,
+                                kIdCodeWsRange);
+  st->hCodeWsAll = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeWsAll),
+                              BS_AUTORADIOBUTTON | WS_TABSTOP, 260, y + 44, 80, 24, kIdCodeWsAll);
   st->hIndentedBlocks = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderIndentedBlocks),
                                    BS_AUTOCHECKBOX | WS_TABSTOP, 30, y + 70, 400, 24,
                                    kIdIndentedBlocks);
-  if (st->hCodeWsRange) {
-    ::SendMessageW(st->hCodeWsRange, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(loc::T(loc::Str::CodeWsBoundary)));
-    ::SendMessageW(st->hCodeWsRange, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(loc::T(loc::Str::CodeWsAll)));
-    ::SendMessageW(st->hCodeWsRange, CB_SETCURSEL, 0, 0);
-  }
 
   y = 190;
   AddControl(st, 2, L"STATIC", loc::T(loc::Str::NetAskWhen), SS_LEFT, 16, y, 300, 20, 0);
@@ -1478,6 +1473,8 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdFindBtn:
     case kIdOutlineBtn:
     case kIdLineNumbers:
+    case kIdCodeWsRange:
+    case kIdCodeWsAll:
     case kIdIndentedBlocks:
     case kIdNetDoc:
     case kIdNetHost:
@@ -1499,10 +1496,6 @@ void OnCommand(DialogState* st, int id, int code) {
         EnableCodeWsRange(st, ::IsDlgButtonChecked(st->hwnd, kIdCodeWsOn) == BST_CHECKED);
         SetDirty(st, true);
       }
-      return;
-
-    case kIdCodeWsRange:
-      if (code == CBN_SELCHANGE) SetDirty(st, true);
       return;
 
     case kIdCopyFormat:

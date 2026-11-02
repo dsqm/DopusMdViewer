@@ -43,7 +43,6 @@ struct ViewerState {
   int encoding;
   uint32_t encOverride;  // 手动指定的代码页，0 = 自动
   bool isPreview;        // 创建在 Lister 查看器窗格（DVPCVF_Preview）
-  std::vector<DVPCONTEXTMENUITEMW> ctxMenu;  // 右键菜单数组，必须活到下次请求/窗口销毁
   bool docComplete;  // 打开时索引已覆盖全文（没有后台扫描）
   LONGLONG qpcLoad;  // LOADW 起点，用于端到端耗时
   bool docOpened;    // doc_source 归本窗口
@@ -355,8 +354,7 @@ void OpenDoc(ViewerState* st) {
 }
 
 // ---- 右键菜单：编码子菜单 ----
-// Opus 在显示查看器右键菜单前发 DVPLUGINMSG_ADDCONTEXTMENU；返回的数组与字符串
-// 必须活到查看器销毁（这里存在 ViewerState 里，字符串是字面量）。
+// 命令号从 0x6D00 起：菜单项的 uID 原样回传，不做偏移。
 constexpr UINT kEncMenuBase = 0x6D00;
 
 struct EncMenuEntry {
@@ -375,13 +373,14 @@ constexpr size_t kEncMenuCount = sizeof(kEncMenu) / sizeof(kEncMenu[0]);
 
 // ---- 右键菜单：代码块子菜单 ----
 // 与设置窗口是同一份全局配置：菜单改完存盘并广播，所有窗口一起变。
+// 枚举里存的是「序号」，命令号 = kCbMenuBase + 序号；switch 时两边才对得上。
 constexpr UINT kCbMenuBase = 0x6E00;
 
 enum CodeBlockMenuItem : UINT {
-  kCbLineNumbers = kCbMenuBase,
+  kCbLineNumbers = 0,
   kCbHighlight,
   kCbCopyButton,
-  kCbWhitespace,
+  kCbWsOff,
   kCbWsBoundary,
   kCbWsAll,
   kCbMenuItemCount,
@@ -400,8 +399,8 @@ void ApplyCodeBlockMenu(UINT cmd) {
     case kCbCopyButton:
       cfg.copyCodeBlock = !cfg.copyCodeBlock;
       break;
-    case kCbWhitespace:
-      cfg.codeWsOn = !cfg.codeWsOn;
+    case kCbWsOff:
+      cfg.codeWsOn = false;
       break;
     case kCbWsBoundary:
       cfg.codeWsOn = true;
@@ -423,71 +422,25 @@ void ApplyCodeBlockMenu(UINT cmd) {
   ViewerNotifyConfigChanged();
 }
 
-void BuildContextMenu(ViewerState* st) {
-  st->ctxMenu.clear();
-  DVPCONTEXTMENUITEMW parent = {};
-  parent.lpszLabel = const_cast<LPWSTR>(L"编码");
-  parent.dwFlags = DVPCMF_BEGINSUBMENU | (st->szFile[0] ? 0 : DVPCMF_DISABLED);
-  st->ctxMenu.push_back(parent);
-  for (size_t i = 0; i < kEncMenuCount; ++i) {
-    DVPCONTEXTMENUITEMW item = {};
-    item.lpszLabel = const_cast<LPWSTR>(kEncMenu[i].label);
-    item.dwFlags = DVPCMF_RADIOCHECK;
-    if (kEncMenu[i].codepage == st->encOverride) item.dwFlags |= DVPCMF_CHECKED;
-    if (i + 1 == kEncMenuCount) item.dwFlags |= DVPCMF_ENDSUBMENU;
-    item.uID = kEncMenuBase + static_cast<UINT>(i);
-    st->ctxMenu.push_back(item);
-  }
-
-  // 代码块子菜单：三个开关 + 空白符开关 + 范围单选组。
-  const Config& cfg = ConfigGet();
-  DVPCONTEXTMENUITEMW cb = {};
-  cb.lpszLabel = const_cast<LPWSTR>(L"代码块");
-  cb.dwFlags = DVPCMF_BEGINSUBMENU;
-  st->ctxMenu.push_back(cb);
-
-  auto addCheck = [&st](const wchar_t* label, bool on, UINT id) {
-    DVPCONTEXTMENUITEMW item = {};
-    item.lpszLabel = const_cast<LPWSTR>(label);
-    item.dwFlags = on ? DVPCMF_CHECKED : 0;
-    item.uID = id;
-    st->ctxMenu.push_back(item);
-  };
-  addCheck(L"行号", cfg.codeLineNumbers, kCbLineNumbers);
-  addCheck(L"语法高亮", cfg.renderHighlight, kCbHighlight);
-  addCheck(L"代码块复制按钮", cfg.copyCodeBlock, kCbCopyButton);
-
-  DVPCONTEXTMENUITEMW sep = {};
-  sep.dwFlags = DVPCMF_SEPARATOR;
-  st->ctxMenu.push_back(sep);
-
-  addCheck(L"显示空白符", cfg.codeWsOn, kCbWhitespace);
-  DVPCONTEXTMENUITEMW boundary = {};
-  boundary.lpszLabel = const_cast<LPWSTR>(L"边界");
-  boundary.dwFlags = DVPCMF_RADIOCHECK | (cfg.codeWsRange == 1 ? DVPCMF_CHECKED : 0);
-  boundary.uID = kCbWsBoundary;
-  st->ctxMenu.push_back(boundary);
-  DVPCONTEXTMENUITEMW all = {};
-  all.lpszLabel = const_cast<LPWSTR>(L"全部");
-  all.dwFlags =
-      DVPCMF_RADIOCHECK | (cfg.codeWsRange == 2 ? DVPCMF_CHECKED : 0) | DVPCMF_ENDSUBMENU;
-  all.uID = kCbWsAll;
-  st->ctxMenu.push_back(all);
-}
-
 // 独立查看器不会把插件条目并进 Opus 自己的菜单（预览窗格会），这里自绘一个。
 constexpr UINT kCtxCopy = 0x6D80;
 constexpr UINT kCtxSelectAll = 0x6D81;
 constexpr UINT kCtxPrint = 0x6D82;
+constexpr UINT kCtxReload = 0x6D83;
 
+// 右键菜单：预览窗格与独立查看器用同一份自绘菜单。
+// 自绘的命令号由 TrackPopupMenu 直接带回，不会像 Opus 自己的菜单那样丢掉
+// （那条路要靠 Opus 把命令转回来，而焦点在 WebView2 子窗口时它认为查看器没焦点）。
 void ShowOwnContextMenu(ViewerState* st) {
   HMENU menu = ::CreatePopupMenu();
   HMENU enc = ::CreatePopupMenu();
   HMENU cb = ::CreatePopupMenu();
-  if (!menu || !enc || !cb) {
+  HMENU ws = ::CreatePopupMenu();
+  if (!menu || !enc || !cb || !ws) {
     if (menu) ::DestroyMenu(menu);
     if (enc) ::DestroyMenu(enc);
     if (cb) ::DestroyMenu(cb);
+    if (ws) ::DestroyMenu(ws);
     return;
   }
   for (size_t i = 0; i < kEncMenuCount; ++i) {
@@ -498,14 +451,22 @@ void ShowOwnContextMenu(ViewerState* st) {
   ::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(enc), L"编码");
 
   const Config& cfg = ConfigGet();
-  ::AppendMenuW(cb, MF_STRING | (cfg.codeLineNumbers ? MF_CHECKED : 0), kCbLineNumbers, L"行号");
-  ::AppendMenuW(cb, MF_STRING | (cfg.renderHighlight ? MF_CHECKED : 0), kCbHighlight, L"语法高亮");
-  ::AppendMenuW(cb, MF_STRING | (cfg.copyCodeBlock ? MF_CHECKED : 0), kCbCopyButton,
+  ::AppendMenuW(cb, MF_STRING | (cfg.codeLineNumbers ? MF_CHECKED : 0), kCbMenuBase + kCbLineNumbers,
+               L"行号");
+  ::AppendMenuW(cb, MF_STRING | (cfg.renderHighlight ? MF_CHECKED : 0), kCbMenuBase + kCbHighlight,
+               L"语法高亮");
+  ::AppendMenuW(cb, MF_STRING | (cfg.copyCodeBlock ? MF_CHECKED : 0), kCbMenuBase + kCbCopyButton,
                L"代码块复制按钮");
+  // 空白符三档单独开一层子菜单：单选组在一层里看不出互斥，分一层就一目了然
+  ::AppendMenuW(ws, MF_STRING, kCbMenuBase + kCbWsOff, L"关闭");
+  ::AppendMenuW(ws, MF_STRING, kCbMenuBase + kCbWsBoundary, L"边界");
+  ::AppendMenuW(ws, MF_STRING, kCbMenuBase + kCbWsAll, L"全部");
+  const UINT wsId = !cfg.codeWsOn ? kCbMenuBase + kCbWsOff
+                                   : (cfg.codeWsRange == 2 ? kCbMenuBase + kCbWsAll
+                                                           : kCbMenuBase + kCbWsBoundary);
+  ::CheckMenuRadioItem(ws, kCbMenuBase + kCbWsOff, kCbMenuBase + kCbWsAll, wsId, MF_BYCOMMAND);
   ::AppendMenuW(cb, MF_SEPARATOR, 0, nullptr);
-  ::AppendMenuW(cb, MF_STRING | (cfg.codeWsOn ? MF_CHECKED : 0), kCbWhitespace, L"显示空白符");
-  ::AppendMenuW(cb, MF_STRING | (cfg.codeWsRange == 1 ? MF_CHECKED : 0), kCbWsBoundary, L"边界");
-  ::AppendMenuW(cb, MF_STRING | (cfg.codeWsRange == 2 ? MF_CHECKED : 0), kCbWsAll, L"全部");
+  ::AppendMenuW(cb, MF_POPUP, reinterpret_cast<UINT_PTR>(ws), L"空白符范围");
   ::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(cb), L"代码块");
 
   ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -513,6 +474,7 @@ void ShowOwnContextMenu(ViewerState* st) {
   ::AppendMenuW(menu, MF_STRING | docFlags, kCtxCopy, L"复制");
   ::AppendMenuW(menu, MF_STRING | docFlags, kCtxSelectAll, L"全选");
   ::AppendMenuW(menu, MF_STRING | docFlags, kCtxPrint, L"打印…");
+  ::AppendMenuW(menu, MF_STRING | docFlags, kCtxReload, L"刷新");
 
   POINT pt = {};
   ::GetCursorPos(&pt);
@@ -544,6 +506,11 @@ void ShowOwnContextMenu(ViewerState* st) {
   }
   if (cmd == kCtxPrint) {
     StartPrint(st);
+    return;
+  }
+  if (cmd == kCtxReload) {
+    LogLine(L"VIEWER: 右键菜单刷新文档");
+    if (st->szFile[0]) OpenDoc(st);
   }
 }
 
@@ -614,17 +581,8 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   }
 
   if (type == L"ctxmenu") {
-    if (st->isPreview) {
-      // 预览窗格：转发给 Opus，它显示的菜单会带上插件条目。
-      if (st->hwndParent) {
-        POINT pt = {};
-        ::GetCursorPos(&pt);
-        ::SendMessageW(st->hwndParent, WM_CONTEXTMENU,
-                       reinterpret_cast<WPARAM>(st->hwndSelf), MAKELPARAM(pt.x, pt.y));
-      }
-    } else {
-      ShowOwnContextMenu(st);
-    }
+    // 两边都自绘菜单：命令号直接回来，不会像 Opus 自己的菜单那样丢掉
+    ShowOwnContextMenu(st);
     return;
   }
 
@@ -937,14 +895,9 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
     case DVPLUGINMSG_GETCAPABILITIES:
       // COPYSELECTION 必须报：不报 Opus 会认为本查看器不能复制，「复制」菜单项恒灰。
+      // 不报 ADDCONTEXTMENU：右键菜单由插件自绘，命令号才回得来。
       return VPCAPABILITY_WANTFOCUS | VPCAPABILITY_SELECTALL | VPCAPABILITY_COPYSELECTION |
-             VPCAPABILITY_PRINT | VPCAPABILITY_ADDCONTEXTMENU;
-
-    case DVPLUGINMSG_ADDCONTEXTMENU: {
-      BuildContextMenu(st);
-      if (wParam) *reinterpret_cast<DWORD*>(wParam) = static_cast<DWORD>(st->ctxMenu.size());
-      return reinterpret_cast<LRESULT>(st->ctxMenu.data());
-    }
+             VPCAPABILITY_PRINT;
 
     case WM_COMMAND: {
       const UINT id = LOWORD(wParam);
@@ -955,10 +908,6 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
           LogLine(L"VIEWER: 右键菜单指定编码 cp=%u，重开文档", cp);
           if (st->szFile[0]) OpenDoc(st);
         }
-        return 0;
-      }
-      if (id >= kCbMenuBase && id < kCbMenuBase + kCbMenuItemCount) {
-        ApplyCodeBlockMenu(id);
         return 0;
       }
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
