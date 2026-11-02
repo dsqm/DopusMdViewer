@@ -501,7 +501,8 @@ code .mdv-wt::before {
   pointer-events: none;
 }
 
-/* 常显：全部档，或边界档里贴着行首/行尾/连续两个以上的空白 */
+/* 常显：全部档全亮；边界档只亮贴着行首/行尾/连续两个以上的空白。
+   mdv-sel 是选区内点亮，与档位无关：仅选中档平时一个都不亮，全靠它。 */
 code .mdv-ws.mdv-on::before,
 code .mdv-ws.mdv-sel::before {
   content: "\00b7";

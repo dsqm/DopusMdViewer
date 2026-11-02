@@ -59,6 +59,7 @@ enum class Str : int {
   RenderCodeWhitespace,
   CodeWsBoundary,
   CodeWsAll,
+  CodeWsSelected,
   RenderIndentedBlocks,
   CopyFormatTsv,
   CopyFormatMarkdown,

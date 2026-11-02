@@ -56,6 +56,7 @@ const wchar_t* const kZh[kCount] = {
     /* RenderCodeWhitespace */ L"显示空白符",
     /* CodeWsBoundary   */ L"边界",
     /* CodeWsAll        */ L"全部",
+    /* CodeWsSelected   */ L"仅选中",
     /* RenderIndentedBlocks */ L"缩进式代码块也应用以上设置",
     /* CopyFormatTsv    */ L"TSV 纯文本",
     /* CopyFormatMarkdown */ L"Markdown 源码",

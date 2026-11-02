@@ -144,7 +144,7 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
     readBool("showOutlineButton", &c->showOutlineButton);
     if (render.contains("codeWhitespaceRange") && render["codeWhitespaceRange"].is_number_integer()) {
       const int v = render["codeWhitespaceRange"].get<int>();
-      c->codeWsRange = (v == 2) ? 2 : 1;
+      c->codeWsRange = (v >= 1 && v <= 3) ? v : 1;
     }
   }
 

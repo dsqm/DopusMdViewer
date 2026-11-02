@@ -55,6 +55,7 @@ const UINT_PTR kFindPingTimerId = 28;
 const UINT_PTR kFindPing2TimerId = 29;
 const UINT_PTR kFindRaceTimerId = 30;
 const UINT_PTR kCrashTimerId = 31;
+const UINT_PTR kWsSelTimerId = 34;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -94,6 +95,7 @@ bool g_drop = false;        // 关预热、设 1 分钟空闲释放；5 秒后�
 wchar_t g_findQuery[128] = L"中文";
 bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条目数与滚动位置
 bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，回流映射与滚动位置
+bool g_wsSel = false;       // 5 秒后在代码块里程序化选一段，读回点亮数量
 bool g_copy = false;        // 5 秒后按 Ctrl+A，7 秒读剪贴板，9 秒再走 SELECTALL 消息
 bool g_pin = false;         // 5 秒后选区钉块 + 拖边滚动，滚到底验钉块没被换出
 bool g_print = false;       // 5 秒后准备打印容器（不弹对话框），回流块数/图表/图片
@@ -477,6 +479,36 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"+' text='+t+' off='+Math.round(window.__mdv.V.off)"
             L"+' open='+(document.getElementById('outline').hidden?0:1));},700);},400);})();";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kWsSelTimerId) {
+        // 空白符「仅选中」档：hosttest 不能拖鼠标，但可以用 Range 程序化选一段，
+        // 再读回 .mdv-sel 的数量与 ::before 的 content —— 点亮是纯 CSS 生效的结果，
+        // 拿得到 content 就等于看到点画出来了。
+        ::KillTimer(hwnd, kWsSelTimerId);
+        const wchar_t* script =
+            L"(function(){function post(t){window.chrome.webview.postMessage("
+            L"'event|perf|wssel '+t)}"
+            L"function stat(tag){var all=document.querySelectorAll("
+            L"'code .mdv-ws,code .mdv-wt,code .mdv-wrs');"
+            L"var on=0,sel=0,first=null;"
+            L"for(var i=0;i<all.length;i++){var c=all[i].className;"
+            L"if(c.indexOf('mdv-on')>=0)on++;"
+            L"if(c.indexOf('mdv-sel')>=0){sel++;if(!first)first=all[i];}}"
+            L"var glyph='-';"
+            L"if(first)glyph=String(getComputedStyle(first,'::before').content);"
+            L"post(tag+' total='+all.length+' on='+on+' sel='+sel+' glyph='+glyph);}"
+            L"var code=document.querySelector('pre code');"
+            L"if(!code){post('nocode');return}"
+            L"var nodes=[],w=document.createTreeWalker(code,NodeFilter.SHOW_TEXT,null);"
+            L"while(w.nextNode()){if(w.currentNode.nodeValue.length)nodes.push(w.currentNode)}"
+            L"if(nodes.length<2){post('fewnodes');return}"
+            L"var r=document.createRange();r.selectNodeContents(code);"
+            L"var s=window.getSelection();s.removeAllRanges();s.addRange(r);"
+            L"document.dispatchEvent(new Event('selectionchange'));"
+            L"setTimeout(function(){stat('selected');"
+            L"setTimeout(function(){s.removeAllRanges();"
+            L"document.dispatchEvent(new Event('selectionchange'));"
+            L"setTimeout(function(){stat('cleared')},200);},2700);},300);})();";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kCopyTimerId) {
         ::KillTimer(hwnd, kCopyTimerId);
         const wchar_t* script =
@@ -684,6 +716,7 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   }
   if (*p && wcsstr(p, L"outline")) g_outline = true;
   if (*p && wcsstr(p, L"slug")) g_slug = true;
+  if (*p && wcsstr(p, L"wssel")) g_wsSel = true;
   if (*p && wcsstr(p, L"copy")) g_copy = true;
   if (*p && wcsstr(p, L"pin")) g_pin = true;
   if (*p && wcsstr(p, L"crashb")) {
@@ -790,6 +823,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_dump) {
     ::SetTimer(g_hwndMain, kDumpTimerId, kDumpAfterMs, nullptr);
+  }
+  if (g_wsSel) {
+    ::SetTimer(g_hwndMain, kWsSelTimerId, 5000, nullptr);
   }
   if (g_seam) {
     ::SetTimer(g_hwndMain, kSeamTimerId, kDumpAfterMs, nullptr);

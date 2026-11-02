@@ -383,6 +383,7 @@ enum CodeBlockMenuItem : UINT {
   kCbWsOff,
   kCbWsBoundary,
   kCbWsAll,
+  kCbWsSelected,
   kCbMenuItemCount,
 };
 
@@ -409,6 +410,10 @@ void ApplyCodeBlockMenu(UINT cmd) {
     case kCbWsAll:
       cfg.codeWsOn = true;
       cfg.codeWsRange = 2;
+      break;
+    case kCbWsSelected:
+      cfg.codeWsOn = true;
+      cfg.codeWsRange = 3;
       break;
     default:
       return;
@@ -457,14 +462,17 @@ void ShowOwnContextMenu(ViewerState* st) {
                L"语法高亮");
   ::AppendMenuW(cb, MF_STRING | (cfg.copyCodeBlock ? MF_CHECKED : 0), kCbMenuBase + kCbCopyButton,
                L"代码块复制按钮");
-  // 空白符三档单独开一层子菜单：单选组在一层里看不出互斥，分一层就一目了然
+  // 空白符各档单独开一层子菜单：单选组在一层里看不出互斥，分一层就一目了然
   ::AppendMenuW(ws, MF_STRING, kCbMenuBase + kCbWsOff, L"关闭");
   ::AppendMenuW(ws, MF_STRING, kCbMenuBase + kCbWsBoundary, L"边界");
   ::AppendMenuW(ws, MF_STRING, kCbMenuBase + kCbWsAll, L"全部");
-  const UINT wsId = !cfg.codeWsOn ? kCbMenuBase + kCbWsOff
-                                   : (cfg.codeWsRange == 2 ? kCbMenuBase + kCbWsAll
-                                                           : kCbMenuBase + kCbWsBoundary);
-  ::CheckMenuRadioItem(ws, kCbMenuBase + kCbWsOff, kCbMenuBase + kCbWsAll, wsId, MF_BYCOMMAND);
+  ::AppendMenuW(ws, MF_STRING, kCbMenuBase + kCbWsSelected, L"仅选中");
+  UINT wsId = kCbMenuBase + kCbWsBoundary;
+  if (!cfg.codeWsOn) wsId = kCbMenuBase + kCbWsOff;
+  else if (cfg.codeWsRange == 2) wsId = kCbMenuBase + kCbWsAll;
+  else if (cfg.codeWsRange == 3) wsId = kCbMenuBase + kCbWsSelected;
+  ::CheckMenuRadioItem(ws, kCbMenuBase + kCbWsOff, kCbMenuBase + kCbWsSelected, wsId,
+                       MF_BYCOMMAND);
   ::AppendMenuW(cb, MF_SEPARATOR, 0, nullptr);
   ::AppendMenuW(cb, MF_POPUP, reinterpret_cast<UINT_PTR>(ws), L"空白符范围");
   ::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(cb), L"代码块");

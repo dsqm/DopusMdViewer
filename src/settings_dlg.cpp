@@ -72,6 +72,7 @@ enum {
   kIdCodeWsOn,
   kIdCodeWsRange,
   kIdCodeWsAll,
+  kIdCodeWsSelected,
   kIdIndentedBlocks,
   kIdCodeGroup,
   kIdVersion = 3400,
@@ -138,6 +139,7 @@ struct DialogState {
   HWND hCodeWsOn = nullptr;
   HWND hCodeWsRange = nullptr;
   HWND hCodeWsAll = nullptr;
+  HWND hCodeWsSelected = nullptr;
   HWND hIndentedBlocks = nullptr;
   HWND hNetDoc = nullptr;
   HWND hNetHost = nullptr;
@@ -659,6 +661,7 @@ void EnableCopyFormat(DialogState* st, bool enabled) {
 void EnableCodeWsRange(DialogState* st, bool enabled) {
   if (st->hCodeWsRange) ::EnableWindow(st->hCodeWsRange, enabled ? TRUE : FALSE);
   if (st->hCodeWsAll) ::EnableWindow(st->hCodeWsAll, enabled ? TRUE : FALSE);
+  if (st->hCodeWsSelected) ::EnableWindow(st->hCodeWsSelected, enabled ? TRUE : FALSE);
 }
 
 // “应用”只在有未保存改动时可用；应用成功后立刻变灰。
@@ -713,8 +716,10 @@ void LoadUiFromStaged(DialogState* st) {
                    st->staged.codeLineNumbers ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdCodeWsOn,
                    st->staged.codeWsOn ? BST_CHECKED : BST_UNCHECKED);
-  ::CheckRadioButton(st->hwnd, kIdCodeWsRange, kIdCodeWsAll,
-                     st->staged.codeWsRange == 2 ? kIdCodeWsAll : kIdCodeWsRange);
+  const int wsRangeId = st->staged.codeWsRange == 2   ? kIdCodeWsAll
+                        : st->staged.codeWsRange == 3 ? kIdCodeWsSelected
+                                                      : kIdCodeWsRange;
+  ::CheckRadioButton(st->hwnd, kIdCodeWsRange, kIdCodeWsSelected, wsRangeId);
   ::CheckDlgButton(st->hwnd, kIdIndentedBlocks,
                    st->staged.codeIndentedBlocks ? BST_CHECKED : BST_UNCHECKED);
   EnableCodeWsRange(st, st->staged.codeWsOn);
@@ -769,8 +774,9 @@ void ReadUiIntoStaged(DialogState* st) {
   st->staged.showOutlineButton = ::IsDlgButtonChecked(st->hwnd, kIdOutlineBtn) == BST_CHECKED;
   st->staged.codeLineNumbers = ::IsDlgButtonChecked(st->hwnd, kIdLineNumbers) == BST_CHECKED;
   st->staged.codeWsOn = ::IsDlgButtonChecked(st->hwnd, kIdCodeWsOn) == BST_CHECKED;
-  st->staged.codeWsRange =
-      ::IsDlgButtonChecked(st->hwnd, kIdCodeWsAll) == BST_CHECKED ? 2 : 1;
+  const bool wsAllChecked = ::IsDlgButtonChecked(st->hwnd, kIdCodeWsAll) == BST_CHECKED;
+  const bool wsSelChecked = ::IsDlgButtonChecked(st->hwnd, kIdCodeWsSelected) == BST_CHECKED;
+  st->staged.codeWsRange = wsAllChecked ? 2 : (wsSelChecked ? 3 : 1);
   st->staged.codeIndentedBlocks =
       ::IsDlgButtonChecked(st->hwnd, kIdIndentedBlocks) == BST_CHECKED;
   if (st->hCopyFormat) {
@@ -1244,12 +1250,15 @@ void BuildUi(DialogState* st) {
                                 kIdLineNumbers);
   st->hCodeWsOn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderCodeWhitespace),
                              BS_AUTOCHECKBOX | WS_TABSTOP, 30, y + 44, 130, 24, kIdCodeWsOn);
-  // 范围用两个单选按钮摆在同一行：互斥关系一眼看得出来，也不用再挂一个下拉框
+  // 范围用三个单选按钮摆在同一行：互斥关系一眼看得出来，也不用再挂一个下拉框
   st->hCodeWsRange = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeWsBoundary),
                                 BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP, 175, y + 44, 80, 24,
                                 kIdCodeWsRange);
   st->hCodeWsAll = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeWsAll),
                               BS_AUTORADIOBUTTON | WS_TABSTOP, 260, y + 44, 80, 24, kIdCodeWsAll);
+  st->hCodeWsSelected = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeWsSelected),
+                                   BS_AUTORADIOBUTTON | WS_TABSTOP, 345, y + 44, 90, 24,
+                                   kIdCodeWsSelected);
   st->hIndentedBlocks = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderIndentedBlocks),
                                    BS_AUTOCHECKBOX | WS_TABSTOP, 30, y + 70, 400, 24,
                                    kIdIndentedBlocks);
@@ -1475,6 +1484,7 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdLineNumbers:
     case kIdCodeWsRange:
     case kIdCodeWsAll:
+    case kIdCodeWsSelected:
     case kIdIndentedBlocks:
     case kIdNetDoc:
     case kIdNetHost:

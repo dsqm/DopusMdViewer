@@ -201,12 +201,18 @@ function lineGutter(lines) {
 //   1 = 边界：行首缩进、行尾空白、行内连续 2 个以上的空格；
 //              词与词之间的单个空格不算，选中时再点亮（见 wsUpdateSelection）。
 //   2 = 全部：所有空格与制表符。
+//   3 = 仅选中：一个都不常显，只有选中的部分点亮。
+//
+// 三档是一条单调阶梯：常显的部分逐档变少，选中时一律全显。所以「仅选中」在
+// 渲染期包的 span 与「全部」档完全相同（都是全包），只是都不加 mdv-on。
+// 标记必须提前铺好：选区变化时再插 DOM 会把选区搅乱，只能改 class。
 //
 // 粒度：普通块逐字符（每个空白字符一个 span，字形绝对定位盖在字符上）；
 // 巨型块逐段（连续空白一个 span，背景平铺点阵）——巨型块每次滚动都重画一遍，
-// 逐字符的节点数扛不住。
+// 逐字符的节点数扛不住。逐段粒度下点亮也只能整段点亮，与「全部」档一致。
 const WS_BOUNDARY = 1
 const WS_ALL = 2
+const WS_SEL = 3
 
 // 给一段 HTML 里的空白加标记。html 里可能混着标签（高亮的 span），
 // 只处理标签之外的文本部分。
@@ -256,7 +262,9 @@ function markWhitespace(html, mode, perChar) {
       // 贴着行首或行尾算边界；行内连着两个以上的空格也算
       const boundary = s === lineBegins[li] || e === lineEnd || e - s >= 2
       buf += text.slice(last, m.index)
-      buf += wrapWsRun(m[0], perChar, mode === WS_ALL || boundary)
+      // 「仅选中」档：全包但一律不常显，点亮只由 wsUpdateSelection 负责
+      const visible = mode === WS_ALL || (mode === WS_BOUNDARY && boundary)
+      buf += wrapWsRun(m[0], perChar, visible)
       last = m.index + m[0].length
     }
     buf += text.slice(last)
@@ -291,9 +299,12 @@ function wrapWsChunk(chunk, tab, perChar, visible) {
   return '<span class="' + cls + '">' + chunk + '</span>'
 }
 
-/* ---------------- 选中时点亮（边界档） ---------------- */
+/* ---------------- 选中时点亮（边界档 / 仅选中档） ---------------- */
 
-// 边界档里选区内的空白按「全部」显示：把选到的空白段点亮。
+// 选区内的空白一律按「全部」显示：把选到的空白段点亮。
+// 边界档是「常显边界类 + 选区内补全」，仅选中档是「常显为零 + 选区内补全」，
+// 两档共用这一份逻辑，只有常显部分不同（见 markWhitespace）。
+// 「全部」档本来全亮，不必参与。
 // 只改 class 不动 DOM：动 DOM（拆文本节点）会把选区搅乱。
 const WS = { lit: new Set(), raf: 0 }
 
@@ -336,7 +347,7 @@ function wsClearLit() {
 }
 
 function wsUpdateSelection() {
-  if (state.render.codeWs !== WS_BOUNDARY) {
+  if (state.render.codeWs !== WS_BOUNDARY && state.render.codeWs !== WS_SEL) {
     wsClearLit()
     return
   }
@@ -670,7 +681,7 @@ const state = {
     copyCode: true,      // 代码块右上角的复制按钮（写进块 HTML，改了要重渲染）
     copyTable: true,     // 表格右上角的复制按钮（同上）
     lineNumbers: true,   // 代码块行号（同上）
-    codeWs: WS_BOUNDARY, // 空白符标记：0 关 / 1 边界 / 2 全部（写进块 HTML）
+    codeWs: WS_BOUNDARY, // 空白符标记：0 关 / 1 边界 / 2 全部 / 3 仅选中（写进块 HTML）
     indentedBlocks: false, // 缩进式代码块也套用行号与空白符（同上）
     tableCopyMd: false,  // 表格复制 Markdown 源码而不是 TSV；纯点击时行为，不进 HTML
   },
@@ -1765,6 +1776,10 @@ function applyBigSeg(seg, i, from, got, text) {
   const segTop = from - Math.floor(from / BIG_SEG_LINES) * BIG_SEG_LINES
   seg.pre.style.transform =
     'translateY(' + (segTop * g.lineH + dropHead * g.lineH).toFixed(1) + 'px)'
+  // 段是整块重建的，原来点亮的 span 已成孤儿：选区还在就得重新点亮一次。
+  // 只在「仅选中」档下是硬需求（点亮是它唯一的显示来源），其余档多跑一次也无妨：
+  // 没有选区时这里第一件事就返回，有 rAF 合并，滚动不会把它堆起来。
+  wsScheduleSelection()
 }
 
 function requestBigLines(i, k, from, count) {
@@ -4280,7 +4295,7 @@ function applyRenderConfig(flags) {
     copyTable: !!flags.copyTable,
     tableCopyMd: !!flags.tableCopyMd,
     lineNumbers: !!flags.lineNumbers,
-    codeWs: Math.max(0, Math.min(2, flags.codeWs | 0)),
+    codeWs: Math.max(0, Math.min(3, flags.codeWs | 0)),
     indentedBlocks: !!flags.indentedBlocks,
   }
   // 只有进块 HTML 的开关需要重渲染；表格复制格式是点击时的事
@@ -4800,7 +4815,7 @@ function onHostMessage(event) {
       findBtn: flag(8),
       outlineBtn: flag(9),
       lineNumbers: flag(10),
-      // 第 12 个字段是空白符档位（数字 0/1/2）；老宿主没有这一项，按关处理
+      // 第 12 个字段是空白符档位（数字 0/1/2/3）；老宿主没有这一项，按关处理
       codeWs: f[11] === undefined ? 0 : parseInt(f[11], 10) || 0,
       indentedBlocks: flag(12),
     })

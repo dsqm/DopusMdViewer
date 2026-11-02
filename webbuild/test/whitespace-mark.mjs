@@ -9,6 +9,7 @@
 //   ③ 剥掉标记后，文本必须与原文逐字符相同（这是「复制不带标记」的根据）。
 //   ④ 标签混在里面时（高亮输出）判定不受影响。
 //   ⑤ 逐字符与逐段两种粒度标的位置完全一致。
+//   ⑥ 仅选中档：全部空白都包上，但一个都不常显（点亮交给选区）。
 //
 // 直接读 src/app.js 抠真实实现，不复制一份逻辑来测，否则测的是另一份代码。
 // 跑：node test/whitespace-mark.mjs
@@ -40,10 +41,13 @@ function grab(name) {
 
 const WS_BOUNDARY = 1
 const WS_ALL = 2
+const WS_SEL = 3
 const wrapWsChunk = new Function('return ' + grab('wrapWsChunk'))()
 const wrapWsRun = new Function('wrapWsChunk', 'return ' + grab('wrapWsRun'))(wrapWsChunk)
+// 抠出来的函数体里会用到档位常量，得逐个作为参数喂进去，漏一个就是 ReferenceError
 const markWhitespace =
-  new Function('wrapWsRun', 'WS_ALL', 'return ' + grab('markWhitespace'))(wrapWsRun, WS_ALL)
+  new Function('wrapWsRun', 'WS_ALL', 'WS_BOUNDARY', 'return ' + grab('markWhitespace'))(
+    wrapWsRun, WS_ALL, WS_BOUNDARY)
 
 // 剥掉所有标签：只剩文本节点的内容
 function plainText(html) {
@@ -159,7 +163,29 @@ console.log('空白符标记')
   check('逐段剥掉标记后与原文一致', plainText(perRun) === code)
 }
 
-// ---- ⑤ 关闭时原样返回 ----
+// ---- ⑥ 仅选中档：全包、全不常显 ----
+{
+  const code = 'if (x) {\n    return "a b";\n}\n'
+  const html = markWhitespace(code, WS_SEL, true)
+  // 与全部档同位置同数量，区别只在没有一个 mdv-on
+  const want = 'if_(x)_{' + '\n' + '____return_"a_b";' + '\n' + '}' + '\n'
+  check('仅选中档包住所有空白但不常显', same(markPattern(html), want),
+    JSON.stringify(markPattern(html)))
+  check('仅选中档没有一个 mdv-on', html.indexOf('mdv-on') < 0, html.slice(0, 120))
+  check('仅选中档剥掉标记后与原文一致', plainText(html) === code)
+
+  // 与全部档逐字对比：只差 mdv-on 这一个类名，说明包的位置完全一致
+  const all = markWhitespace(code, WS_ALL, true)
+  check('仅选中档与全部档只差 mdv-on', html === all.replace(/ mdv-on/g, ''),
+    html.slice(0, 120))
+
+  const perRun = markWhitespace(code, WS_SEL, false)
+  check('仅选中档逐段也不常显', perRun.indexOf('mdv-on') < 0 && perRun.includes('mdv-wrs'),
+    perRun.slice(0, 120))
+  check('仅选中档逐段剥掉标记后与原文一致', plainText(perRun) === code)
+}
+
+// ---- ⑦ 关闭时原样返回 ----
 {
   const code = 'a b\n'
   check('档位为 0 时不加工', markWhitespace(code, 0, true) === code)
