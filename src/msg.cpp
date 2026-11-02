@@ -104,7 +104,8 @@ std::wstring MakeCfg(const Config& config) {
                config.copyTable ? L"1" : L"0",
                config.tableCopyMode == 1 ? L"1" : L"0",
                config.showFindButton ? L"1" : L"0",
-               config.showOutlineButton ? L"1" : L"0"});
+               config.showOutlineButton ? L"1" : L"0",
+               config.codeLineNumbers ? L"1" : L"0"});
 }
 
 std::wstring MakeClear(void) { return L"clear"; }

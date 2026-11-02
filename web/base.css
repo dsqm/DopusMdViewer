@@ -182,6 +182,9 @@ body.dev #doc {
   }
   #print-root img, #print-root svg { max-width: 100% !important; height: auto !important; }
   #print-root pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* 折行后一逻辑行占多行，行号与视觉行对不上：打印不显示，把让出的内边距收回来 */
+  #print-root .mdv-ln { display: none !important; }
+  #print-root pre > code.has-ln { padding-left: 0; }
   #print-root .blk--big, #print-root .big-frame { position: static; height: auto; overflow: visible; }
   /* 打印时不能跳过离屏的块：跳过的那部分不会进纸面 */
   #print-root .bt-table { content-visibility: visible; }
@@ -244,6 +247,13 @@ body.virtual .blk--big pre.big-pre {
 body.virtual .blk--big pre.big-pre > code {
   display: block;
   white-space: pre;
+}
+
+/* 巨型块的行号格子挂在 <pre> 上：<code> 的内容是整窗替换的，塞进去会被冲掉。
+   <pre> 必须定位，格子才跟着它的 translateY 一起平移，窗口滑动时行号不会留在原地。 */
+body.virtual .blk--big pre.big-pre.has-ln {
+  position: relative;
+  padding-left: calc(var(--ln-w) + 0.9em);
 }
 
 /* 分段：一个巨型块的相邻段拼成同一张框——首段不要下边框，中间段全无边框，
@@ -410,6 +420,49 @@ pre > code {
 }
 
 .hljs { background: transparent; }
+
+/* ---------------- 代码块行号 ----------------
+   格子是空元素 + CSS 计数器：数字由 ::before 生成，不是文本节点，所以复制拿到的是
+   源码原文，查找按块内文本对齐源码时也不会被行号带偏（拼进文本就会）。
+   格子挂在 <code> 里、吃掉它让出的左内边距：<pre> 里还有 .code-note 时也不受影响。 */
+
+pre > code.has-ln {
+  position: relative;
+  padding-left: calc(var(--ln-w) + 0.9em);
+}
+
+/* 列宽按行号位数给：ch 是等宽字里 "0" 的宽度，多留半格当右边距。
+   超过 6 位的块（百万行）不再加宽，直接按 6 位算。 */
+.ln-d1 { --ln-w: 2.5ch; }
+.ln-d2 { --ln-w: 3.5ch; }
+.ln-d3 { --ln-w: 4.5ch; }
+.ln-d4 { --ln-w: 5.5ch; }
+.ln-d5 { --ln-w: 6.5ch; }
+.ln-d6 { --ln-w: 7.5ch; }
+
+.mdv-ln {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--ln-w);
+  border-right: 1px solid var(--md-block-border);
+  color: var(--md-fg-muted);
+  text-align: right;
+  counter-reset: mdv-line;
+  /* 行号不该被拖选、不该吃点击：拖过头时选中的仍是源码 */
+  user-select: none;
+  pointer-events: none;
+}
+
+.mdv-ln > span {
+  display: block;
+  counter-increment: mdv-line;
+}
+
+.mdv-ln > span::before {
+  content: counter(mdv-line);
+  padding-right: 0.6em;
+}
 
 /* 超过高亮闸门的代码块顶部的说明条 */
 .code-note {

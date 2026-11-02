@@ -166,6 +166,27 @@ function countLines(text) {
   return n
 }
 
+// 显示用行数：尾随换行不另起一行（`a\n` 是 1 行）。围栏块的内容几乎总带尾随换行，
+// 按 countLines 数会多出一格空行号。
+function displayLines(text) {
+  let n = 1
+  for (let i = 0; i < text.length - 1; i++) if (text.charCodeAt(i) === 10) n++
+  return n
+}
+
+// 行号列宽按位数给足（ch 是等宽字体里 "0" 的宽度）。用类名而不是行内自定义属性：
+// 含 '<' 的块要过一遍 DOMPurify，行内 style 在那里不保证原样留下。
+function lineGutterWidth(lines) {
+  return 'ln-d' + Math.min(6, String(lines).length)
+}
+
+// 行号：只放空元素，数字由 CSS 计数器在 ::before 里生成。
+// 伪元素内容不进 textContent，所以复制（取 <code> 文本）和查找（拿块内文本对齐源码）
+// 都看不见行号——这是不能用文本拼行号的原因。
+function lineGutter(lines) {
+  return '<span class="mdv-ln" aria-hidden="true">' + '<span></span>'.repeat(lines) + '</span>'
+}
+
 function utf8Bytes(text) {
   // 只用于高亮闸门判定，TextEncoder 的精确计数不是必需
   return new TextEncoder().encode(text).length
@@ -214,8 +235,18 @@ md.renderer.rules.fence = (tokens, idx) => {
   // 复制按钮取的是 <code> 的 textContent：hljs 只加 span 不改字符，
   // 所以拿到的就是源码原文，不用另存一份。
   const btn = state.render.copyCode ? copyButtonHtml('code') : ''
+  // 行号格子挂在 <code> 里而不是 <pre> 里：<pre> 内可能先有一个 .code-note，
+  // 锚在 <code> 上就不用管它把首行推下去多少。
+  let gutter = ''
+  let lnCls = ''
+  if (state.render.lineNumbers) {
+    const shown = displayLines(code)
+    gutter = lineGutter(shown)
+    lnCls = ' has-ln ' + lineGutterWidth(shown)
+  }
   return '<div class="mdv-cb">' + btn
-    + '<pre>' + note + '<code class="hljs ' + cls + '">' + body + '</code></pre></div>\n'
+    + '<pre>' + note + '<code class="hljs ' + cls + lnCls + '">' + gutter + body
+    + '</code></pre></div>\n'
 }
 
 // 表格：按钮挂在 </table> 后面，但绝对定位在包层右上角，所以视觉上在表格角上。
@@ -414,6 +445,7 @@ const state = {
     localImages: true,
     copyCode: true,      // 代码块右上角的复制按钮（写进块 HTML，改了要重渲染）
     copyTable: true,     // 表格右上角的复制按钮（同上）
+    lineNumbers: true,   // 代码块行号（同上）
     tableCopyMd: false,  // 表格复制 Markdown 源码而不是 TSV；纯点击时行为，不进 HTML
   },
   chrome: {
@@ -1155,9 +1187,49 @@ function bigHeight(i) {
 
 function makeSegDom() {
   const el = document.createElement('div')
-  el.innerHTML = '<div class="big-frame"><pre class="big-pre"><code></code></pre></div>'
+  el.innerHTML = '<div class="big-frame"><pre class="big-pre">'
+    + '<span class="mdv-ln" aria-hidden="true"></span><code></code></pre></div>'
   const frame = el.firstElementChild
-  return { el, pre: frame.firstElementChild, code: frame.firstElementChild.firstElementChild }
+  const pre = frame.firstElementChild
+  return { el, pre, ln: pre.firstElementChild, code: pre.lastElementChild }
+}
+
+// 巨型块的行号：窗口每次换行范围都要跟着换，行数按窗口重算、起始号交给 counter-reset。
+// 空行元素复用（只增删差量），否则每次滚动都要造几百个节点。
+// 列宽按整块行数算，不按窗口算：否则滚过 99999 这种位数边界时整列会宽一格、代码横移。
+function syncSegGutter(seg, from, count, totalLines) {
+  const g = seg.ln
+  if (!g) return
+  if (!state.render.lineNumbers) {
+    if (seg.lnOn) {
+      g.textContent = ''
+      seg.pre.classList.remove('has-ln')
+      if (seg.lnCls) seg.pre.classList.remove(seg.lnCls)
+      seg.lnOn = false
+      seg.lnCls = ''
+    }
+    return
+  }
+  if (!seg.lnOn) {
+    seg.pre.classList.add('has-ln')
+    seg.lnOn = true
+  }
+  const cls = lineGutterWidth(Math.max(totalLines || 0, from + count))
+  if (seg.lnCls !== cls) {
+    if (seg.lnCls) seg.pre.classList.remove(seg.lnCls)
+    seg.pre.classList.add(cls)
+    seg.lnCls = cls
+  }
+  g.style.counterReset = 'mdv-line ' + from
+  let cur = g.childElementCount
+  while (cur < count) {
+    g.appendChild(document.createElement('span'))
+    cur++
+  }
+  while (cur > count) {
+    g.removeChild(g.lastChild)
+    cur--
+  }
 }
 
 function ensureBigResident(i) {
@@ -1182,6 +1254,13 @@ function releaseSeg(rec, k) {
   const seg = rec.big.segs.get(k)
   if (!seg) return
   seg.code.textContent = ''
+  if (seg.ln) {
+    seg.ln.textContent = ''
+    seg.pre.classList.remove('has-ln')
+    if (seg.lnCls) seg.pre.classList.remove(seg.lnCls)
+    seg.lnOn = false
+    seg.lnCls = ''
+  }
   seg.pre.style.transform = ''
   seg.el.style.top = ''
   seg.el.style.height = ''
@@ -1200,8 +1279,9 @@ function ensureSeg(i, rec, k) {
   if (!seg) {
     const item = V.bigPool.pop() || makeSegDom()
     seg = {
-      el: item.el, pre: item.pre, code: item.code,
+      el: item.el, pre: item.pre, ln: item.ln, code: item.code,
       from: -1, got: 0, want: null, loading: false, shortAt: -1,
+      lnOn: false, lnCls: '',
     }
     seg.el.dataset.i = String(i)
     seg.el.dataset.seg = String(k)
@@ -1298,7 +1378,9 @@ function requestBigLines(i, k, from, count) {
       const curSeg = cur && cur.big && cur.big.segs.get(k)
       if (!curSeg) return
       const g = bigMetrics()
-      curSeg.code.textContent = decoder.decode(new Uint8Array(buf, 20, len))
+      const text = decoder.decode(new Uint8Array(buf, 20, len))
+      curSeg.code.textContent = text
+      syncSegGutter(curSeg, from, displayLines(text), total)
       curSeg.pre.style.transform =
         'translateY(' + ((from - k * BIG_SEG_LINES) * g.lineH).toFixed(1) + 'px)'
       curSeg.from = from
@@ -3781,11 +3863,13 @@ function applyRenderConfig(flags) {
     copyCode: !!flags.copyCode,
     copyTable: !!flags.copyTable,
     tableCopyMd: !!flags.tableCopyMd,
+    lineNumbers: !!flags.lineNumbers,
   }
   // 只有进块 HTML 的开关需要重渲染；表格复制格式是点击时的事
   const HTML_KEYS = ['mermaid', 'katex', 'highlight', 'inlineHtml', 'localImages',
-    'copyCode', 'copyTable']
+    'copyCode', 'copyTable', 'lineNumbers']
   const changed = HTML_KEYS.some((k) => state.render[k] !== next[k])
+  const lnChanged = state.render.lineNumbers !== next.lineNumbers
   state.render = next
 
   if (md.options.html !== next.inlineHtml) md.set({ html: next.inlineHtml })
@@ -3807,6 +3891,18 @@ function applyRenderConfig(flags) {
   if (changed && V.active) {
     htmlCacheClear()
     rerenderResidents()
+  }
+  // 巨型块不在 rerenderResidents 的范围内（它按行窗口重画），行号开关得单独补一次
+  if (lnChanged && V.active) {
+    for (const [i, rec] of V.resident) {
+      if (!rec.big) continue
+      const m = V.big.get(i)
+      const total = m ? m.lines : 0
+      for (const seg of rec.big.segs.values()) {
+        if (seg.from < 0) continue
+        syncSegGutter(seg, seg.from, displayLines(seg.code.textContent || ''), total)
+      }
+    }
   }
 }
 
@@ -4262,7 +4358,7 @@ function onHostMessage(event) {
 
   if (type === 'cfg') {
     const f = rest.split('|')
-    // 后 5 项是后加的：老宿主不发这几项时按「全开、TSV」处理
+    // 后 6 项是后加的：老宿主不发这几项时按「全开、TSV」处理
     const flag = (i) => (f[i] === undefined ? true : f[i] === '1')
     applyRenderConfig({
       mermaid: f[0] === '1',
@@ -4275,6 +4371,7 @@ function onHostMessage(event) {
       tableCopyMd: f[7] === '1',
       findBtn: flag(8),
       outlineBtn: flag(9),
+      lineNumbers: flag(10),
     })
     return
   }

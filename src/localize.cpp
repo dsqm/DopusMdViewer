@@ -51,6 +51,7 @@ const wchar_t* const kZh[kCount] = {
     /* RenderCopyFormat */ L"表格复制格式",
     /* RenderFindButton */ L"显示搜索按钮",
     /* RenderOutlineButton */ L"显示大纲按钮",
+    /* RenderLineNumbers */ L"代码块行号",
     /* CopyFormatTsv    */ L"TSV 纯文本",
     /* CopyFormatMarkdown */ L"Markdown 源码",
     /* NetAskWhen       */ L"网络图片加载前：",

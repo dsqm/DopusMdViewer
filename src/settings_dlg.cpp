@@ -68,6 +68,7 @@ enum {
   kIdCopyFormat,
   kIdFindBtn,
   kIdOutlineBtn,
+  kIdLineNumbers,
   kIdVersion = 3400,
   kIdWebView,
   kIdOpenLog,
@@ -128,6 +129,7 @@ struct DialogState {
   HWND hCopyFormat = nullptr;
   HWND hFindBtn = nullptr;
   HWND hOutlineBtn = nullptr;
+  HWND hLineNumbers = nullptr;
   HWND hNetDoc = nullptr;
   HWND hNetHost = nullptr;
   HWND hNetOff = nullptr;
@@ -692,6 +694,8 @@ void LoadUiFromStaged(DialogState* st) {
                    st->staged.showFindButton ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdOutlineBtn,
                    st->staged.showOutlineButton ? BST_CHECKED : BST_UNCHECKED);
+  ::CheckDlgButton(st->hwnd, kIdLineNumbers,
+                   st->staged.codeLineNumbers ? BST_CHECKED : BST_UNCHECKED);
   if (st->hCopyFormat) {
     ::SendMessageW(st->hCopyFormat, CB_SETCURSEL, st->staged.tableCopyMode == 1 ? 1 : 0, 0);
   }
@@ -741,6 +745,7 @@ void ReadUiIntoStaged(DialogState* st) {
   st->staged.copyTable = ::IsDlgButtonChecked(st->hwnd, kIdCopyTable) == BST_CHECKED;
   st->staged.showFindButton = ::IsDlgButtonChecked(st->hwnd, kIdFindBtn) == BST_CHECKED;
   st->staged.showOutlineButton = ::IsDlgButtonChecked(st->hwnd, kIdOutlineBtn) == BST_CHECKED;
+  st->staged.codeLineNumbers = ::IsDlgButtonChecked(st->hwnd, kIdLineNumbers) == BST_CHECKED;
   if (st->hCopyFormat) {
     const int format = static_cast<int>(::SendMessageW(st->hCopyFormat, CB_GETCURSEL, 0, 0));
     st->staged.tableCopyMode = (format == 1) ? 1 : 0;
@@ -1194,6 +1199,10 @@ void BuildUi(DialogState* st) {
   st->hOutlineBtn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderOutlineButton),
                                BS_AUTOCHECKBOX | WS_TABSTOP, 340, y + 134, 200, 24,
                                kIdOutlineBtn);
+  // 左列到 190 起是网络图片组，右列这一段还空着：行号归「界面上多出哪些控件」
+  st->hLineNumbers = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderLineNumbers),
+                                BS_AUTOCHECKBOX | WS_TABSTOP, 340, y + 160, 200, 24,
+                                kIdLineNumbers);
   if (st->hCopyFormat) {
     ::SendMessageW(st->hCopyFormat, CB_ADDSTRING, 0,
                    reinterpret_cast<LPARAM>(loc::T(loc::Str::CopyFormatTsv)));
@@ -1420,6 +1429,7 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdCopyCode:
     case kIdFindBtn:
     case kIdOutlineBtn:
+    case kIdLineNumbers:
     case kIdNetDoc:
     case kIdNetHost:
     case kIdNetOff:

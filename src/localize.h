@@ -54,6 +54,7 @@ enum class Str : int {
   RenderCopyFormat,
   RenderFindButton,
   RenderOutlineButton,
+  RenderLineNumbers,
   CopyFormatTsv,
   CopyFormatMarkdown,
   NetAskWhen,

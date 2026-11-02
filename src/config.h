@@ -36,6 +36,8 @@ struct Config {
   // 代码块 / 表格右上角的复制按钮。默认开。
   bool copyCodeBlock;
   bool copyTable;
+  // 代码块左侧的行号列。默认开。
+  bool codeLineNumbers;
   // 表格复制格式：0 = TSV 纯文本，1 = Markdown 源码。
   int tableCopyMode;
   // 右上角工具条上的两个按钮。默认开；两个都关掉时整条工具条不显示。
