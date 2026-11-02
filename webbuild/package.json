@@ -6,7 +6,8 @@
   "description": "Build-time only: bundles web/app.js and web/mermaid.js. Nothing here is shipped.",
   "scripts": {
     "build": "node build.mjs",
-    "dev": "node dev-server.mjs"
+    "dev": "node dev-server.mjs",
+    "test": "node test/highlight-split.mjs"
   },
   "dependencies": {
     "@mdit/plugin-alert": "^2.0.3",

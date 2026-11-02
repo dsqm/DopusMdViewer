@@ -1381,6 +1381,171 @@ function trimFenceLines(text, from, got, m) {
   return { text: lines.join('\n'), lineBase: from + dropHead - 1, dropHead }
 }
 
+/* ---------------- 巨型代码块的后台高亮 ----------------
+   行窗口每次只取一两百行，逐窗口喂 hljs 会在窗口切换那帧掉到 25 ms 以上，而且跨窗口的
+   块注释、长字符串会断色。改成整块高亮一次、按行切分缓存：窗口取用退化成字符串拼接，
+   着色与整块一次性算出时完全一致。超过规模就不试——hljs 是同步的，宁可不上色也不让
+   后台任务拖长。 */
+
+const BIG_HL_MAX_LINES = 6000
+const BIG_HL_MAX_CHARS = 6 * 1024 * 1024  // 所有块的高亮缓存总预算
+
+function closeTags(stack) {
+  let s = ''
+  for (let k = stack.length - 1; k >= 0; k--) {
+    const tag = stack[k]
+    const nameEnd = tag.search(/[\s/>]/)
+    s += '</' + (nameEnd > 1 ? tag.slice(1, nameEnd) : 'span') + '>'
+  }
+  return s
+}
+
+// 把 hljs 的整体输出切成「每行一段、行内标签自闭合」的数组：
+// 行尾补上未闭合的标签，下一行开头重新打开（开标签原样存着，重开时整条拼回去）。
+// 之后任意窗口 slice + join 都能直接当 HTML 用。
+// 关键点：hljs 是对整块代码跑的，多行注释、多行字符串的判定发生在切分之前，
+// 所以切分只重排标签、不改变「哪些字符属于注释/字符串」，跨行结构不会断色。
+function splitHighlightLines(html) {
+  const out = []
+  const stack = []
+  let buf = ''
+  let i = 0
+  const n = html.length
+  while (i < n) {
+    const lt = html.indexOf('<', i)
+    const nl = html.indexOf('\n', i)
+    if (nl >= 0 && (lt < 0 || nl < lt)) {
+      buf += html.slice(i, nl)
+      out.push(buf + closeTags(stack))
+      buf = stack.join('')
+      i = nl + 1
+      continue
+    }
+    if (lt < 0) {
+      buf += html.slice(i)
+      break
+    }
+    const gt = html.indexOf('>', lt)
+    if (gt < 0) {
+      buf += html.slice(lt)
+      break
+    }
+    const tag = html.slice(lt, gt + 1)
+    if (tag.charCodeAt(1) === 47) stack.pop()
+    else if (tag.charCodeAt(tag.length - 2) !== 47) stack.push(tag)
+    buf += html.slice(i, gt + 1)
+    i = gt + 1
+  }
+  out.push(buf + closeTags(stack))
+  return out
+}
+
+// 后台整块高亮：取整块正文 → 去围栏 → hljs → 按行切分，写回 m.hl 并重画该块的段。
+function scheduleBigHighlight(i) {
+  const m = V.big.get(i)
+  if (!m || m.hl || m.hlBusy || !state.render.highlight) return
+  if (m.kind !== KIND_FENCE || !m.lines || m.lines > BIG_HL_MAX_LINES) return
+  m.hlBusy = true
+  const docId = V.docId
+
+  const go = () => {
+    const cur = V.big.get(i)
+    if (docId !== V.docId || !cur || cur.hl) return
+    fetch(BLOCKS_URL + '?from=' + i + '&count=1', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.arrayBuffer() : null))
+      .then((buf) => {
+        if (!buf || docId !== V.docId) return
+        const items = parseFrames(buf)
+        const item = items.find((x) => x.i === i)
+        if (!item) return
+        const lines = item.text.split('\n')
+        let lang = ''
+        if (lines.length && FENCE_RE.test(lines[0])) {
+          lang = (lines[0].match(/^\s*(?:`{3,}|~{3,})\s*([^\s`~]+)/) || ['', ''])[1]
+          lines.shift()
+        }
+        if (lines.length && FENCE_RE.test(lines[lines.length - 1])) lines.pop()
+        const code = lines.join('\n')
+        if (!lang || !hljs.getLanguage(lang) || code.length > HIGHLIGHT_MAX_BYTES) return
+        const html = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
+        const cur2 = V.big.get(i)
+        if (!cur2) return
+        cur2.hl = { lines: splitHighlightLines(html), cost: html.length }
+        bigHlBudget()
+        rerenderBigSegs(i)
+      })
+      .catch((err) => {
+        if (docId === V.docId) report('big-hl-error', String(err))
+      })
+  }
+
+  // 滚动中不做：整块高亮是一次几百毫秒的同步任务，别落在滑动的帧上
+  const later = () => {
+    const m2 = V.big.get(i)
+    if (!m2 || docId !== V.docId) return
+    if (performance.now() - V.lastScrollAt < 400) {
+      setTimeout(later, 300)
+      return
+    }
+    go()
+  }
+  setTimeout(later, 120)
+}
+
+// 高亮缓存按总量回收：超预算就从最早缓存的块开始丢（丢掉的块退回纯文本，不影响正确性）
+function bigHlBudget() {
+  let total = 0
+  for (const m of V.big.values()) if (m.hl) total += m.hl.cost
+  if (total <= BIG_HL_MAX_CHARS) return
+  for (const [i, m] of V.big) {
+    if (total <= BIG_HL_MAX_CHARS) break
+    if (!m.hl) continue
+    total -= m.hl.cost
+    m.hl = null
+    m.hlBusy = false
+    rerenderBigSegs(i)
+  }
+}
+
+function rerenderBigSegs(i) {
+  const rec = V.resident.get(i)
+  if (!rec || !rec.big) return
+  for (const seg of rec.big.segs.values()) {
+    if (seg.from < 0) continue
+    applyBigSeg(seg, i, seg.from, seg.got, seg.plain || '')
+  }
+}
+
+// 一段窗口的内容：有整块高亮就切缓存，没有就用取回来的源码文本。
+// 缓存里的第 0 行是代码第一行，对应源码第 1 行（开围栏被剔掉），所以索引整体减一。
+function applyBigSeg(seg, i, from, got, text) {
+  const m = V.big.get(i)
+  const g = bigMetrics()
+  let dropHead = 0
+  let lineBase
+  let count
+  if (m && m.hl) {
+    dropHead = from === 0 ? 1 : 0
+    const lo = Math.max(0, from - 1)
+    const hi = Math.min(m.hl.lines.length, Math.max(lo, from + got - 1))
+    const lines = m.hl.lines.slice(lo, hi)
+    lineBase = lo
+    count = Math.max(1, lines.length)
+    seg.code.innerHTML = lines.join('\n')
+  } else {
+    const cut = trimFenceLines(text, from, got, m)
+    dropHead = cut.dropHead
+    lineBase = cut.lineBase
+    count = Math.max(1, displayLines(cut.text))
+    seg.code.textContent = cut.text
+  }
+  syncSegGutter(seg, lineBase, count, m ? m.lines : 0)
+  seg.dropHead = dropHead
+  const segTop = from - Math.floor(from / BIG_SEG_LINES) * BIG_SEG_LINES
+  seg.pre.style.transform =
+    'translateY(' + (segTop * g.lineH + dropHead * g.lineH).toFixed(1) + 'px)'
+}
+
 function requestBigLines(i, k, from, count) {
   const rec = V.resident.get(i)
   if (!rec || !rec.big) return
@@ -1405,20 +1570,14 @@ function requestBigLines(i, k, from, count) {
       const cur = V.resident.get(i)
       const curSeg = cur && cur.big && cur.big.segs.get(k)
       if (!curSeg) return
-      const g = bigMetrics()
       const text = decoder.decode(new Uint8Array(buf, 20, len))
-      const m = V.big.get(i)
-      const cut = trimFenceLines(text, from, got, m)
-      curSeg.code.textContent = cut.text
-      syncSegGutter(curSeg, cut.lineBase, displayLines(cut.text), total)
-      curSeg.pre.style.transform =
-        'translateY(' + ((from - k * BIG_SEG_LINES) * g.lineH + cut.dropHead * g.lineH)
-          .toFixed(1) + 'px)'
       curSeg.from = from
       curSeg.got = got
-      curSeg.dropHead = cut.dropHead
+      curSeg.plain = text
+      applyBigSeg(curSeg, i, from, got, text)
       if (got < count) curSeg.shortAt = from
       if (total > 0) updateBigLines(i, total)
+      scheduleBigHighlight(i)
       if (FIND.bigHit && FIND.bigHit.b === i) applyBigHitMark()
     })
     .catch((err) => {
@@ -3906,6 +4065,7 @@ function applyRenderConfig(flags) {
     'copyCode', 'copyTable', 'lineNumbers']
   const changed = HTML_KEYS.some((k) => state.render[k] !== next[k])
   const lnChanged = state.render.lineNumbers !== next.lineNumbers
+  const hlChanged = state.render.highlight !== next.highlight
   state.render = next
 
   if (md.options.html !== next.inlineHtml) md.set({ html: next.inlineHtml })
@@ -3928,16 +4088,22 @@ function applyRenderConfig(flags) {
     htmlCacheClear()
     rerenderResidents()
   }
-  // 巨型块不在 rerenderResidents 的范围内（它按行窗口重画），行号开关得单独补一次
-  if (lnChanged && V.active) {
+  // 巨型块不在 rerenderResidents 的范围内（它按行窗口重画）：行号、高亮开关单独补一次
+  if ((lnChanged || hlChanged) && V.active) {
     for (const [i, rec] of V.resident) {
       if (!rec.big) continue
       const m = V.big.get(i)
-      const total = m ? m.lines : 0
+      if (hlChanged) {
+        if (m) {
+          m.hl = null
+          m.hlBusy = false
+        }
+      }
       for (const seg of rec.big.segs.values()) {
         if (seg.from < 0) continue
-        syncSegGutter(seg, seg.from, displayLines(seg.code.textContent || ''), total)
+        applyBigSeg(seg, i, seg.from, seg.got, seg.plain || '')
       }
+      if (hlChanged && next.highlight) scheduleBigHighlight(i)
     }
   }
 }
