@@ -182,6 +182,8 @@ body.dev #doc {
   }
   #print-root img, #print-root svg { max-width: 100% !important; height: auto !important; }
   #print-root pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* 打印按纸宽折行：这里不能保留「撑到内容宽度」，否则整块横向超出纸面被裁 */
+  #print-root pre > code { width: auto; min-width: 0; padding-right: 0; }
   /* 折行后一逻辑行占多行，行号与视觉行对不上：打印不显示，把让出的内边距收回来 */
   #print-root .mdv-ln { display: none !important; }
   #print-root pre > code.has-ln { padding-left: 0; }
@@ -227,11 +229,9 @@ body.virtual .blk--big .big-frame {
   color: var(--md-block-fg);
   border: 1px solid var(--md-block-border);
   border-radius: var(--md-radius);
-  /* 段高几百万 px，横向滚动条会落在几千屏之外：藏起来，横向滚用 Shift+滚轮 */
-  scrollbar-width: none;
+  /* 横向滚动条跟着框的底边走，与普通代码块一致：滚到块末尾就能看到它。
+     框高等于整块高，所以它不会像普通块那样一直贴在视口里，这是有意的。 */
 }
-
-body.virtual .blk--big .big-frame::-webkit-scrollbar { display: none; }
 
 body.virtual .blk--big pre.big-pre {
   margin: 0;
@@ -247,6 +247,10 @@ body.virtual .blk--big pre.big-pre {
 body.virtual .blk--big pre.big-pre > code {
   display: block;
   white-space: pre;
+  /* 同 pre > code：让块自己撑到内容宽度，右侧余量才进滚动区 */
+  width: max-content;
+  min-width: 100%;
+  padding-right: 0.8em;
 }
 
 /* 巨型块的行号格子挂在 <pre> 上：<code> 的内容是整窗替换的，塞进去会被冲掉。
@@ -417,6 +421,13 @@ pre > code {
   color: inherit;
   border: 0;
   white-space: pre;
+  /* 内容比容器宽时要撑到内容宽度：滚动区不含滚动容器自身的结束内边距，
+     <pre> 那 1em 右内边距在滚动到最右时是拿不到的（实测末字右边界 1383、
+     scrollWidth 只有 1382）。块自己撑开 + 自带右余量，长行末尾的斜体溢出
+     （字形比字符宽度更宽的部分）才不会被裁掉。 */
+  width: max-content;
+  min-width: 100%;
+  padding-right: 0.8em;
 }
 
 .hljs { background: transparent; }

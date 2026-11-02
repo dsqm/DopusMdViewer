@@ -32,6 +32,7 @@ const UINT_PTR kTwoTimerId = 4;
 const UINT_PTR kTwoCloseTimerId = 5;
 const UINT_PTR kScrollTimerId = 6;
 const UINT_PTR kSweepTimerId = 32;
+const UINT_PTR kHScrollTimerId = 33;
 const UINT_PTR kSettingsTimerId = 7;
 const UINT_PTR kDumpTimerId = 8;
 const UINT_PTR kSeamTimerId = 9;
@@ -76,6 +77,7 @@ bool g_twoThreads = false;  // 第二个查看器开在另一个线程上，复�
 bool g_scroll = false;      // 5 秒后滚动到底，验虚拟滚动与滚动条
 bool g_sweep = false;       // 连续滚过整篇，回传帧时间分位数（长表滚动流畅度）
 UINT g_sweepDelayMs = 6000; // 开始扫过的时刻：1.5s 量「补块期间滚动」，6s 量补完之后
+bool g_hscroll = false;     // 5 秒后把横向滚动容器滚到最右，验长行尾部是否被裁
 bool g_settings = false;    // 3 秒后打开设置窗口，验 DVP_Configure 与 config 写盘
 bool g_dump = false;        // 5 秒后把视口/常驻块/段几何回传到日志
 bool g_seam = false;        // 5 秒后滚到第 10 万行（第一段与第二段的接缝）
@@ -291,6 +293,35 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         const wchar_t* method = g_crashBrowser ? L"Browser.crash" : L"Page.crash";
         const bool ok = g_viewer && WebHostCallDevTools(g_viewer, method);
         LogLine(L"TEST: 请求崩溃 %s -> %s", method, ok ? L"已发出" : L"失败");
+      } else if (wParam == kHScrollTimerId) {
+        // 把溢出最狠的横向滚动容器推到最右：截图就能看出长行尾部（斜体溢出、内边距）
+        // 是否被裁。回传 clientWidth / scrollWidth / 实际 scrollLeft，便于核对数值。
+        ::KillTimer(hwnd, kHScrollTimerId);
+        const wchar_t* script =
+            L"(function(){function post(t){window.chrome.webview.postMessage("
+            L"'event|perf|'+t)}var best=null,bestOver=0;"
+            L"var nodes=document.querySelectorAll('.big-frame,.bt-host,table,pre');"
+            L"for(var i=0;i<nodes.length;i++){var e=nodes[i];"
+            L"var over=e.scrollWidth-e.clientWidth;if(over<=3)continue;"
+            L"e.scrollLeft=1e9;if(e.scrollLeft<=0)continue;"
+            L"if(over>bestOver){bestOver=over;best=e}}"
+            L"if(!best){post('hscroll none');return}"
+            L"best.scrollLeft=1e9;"
+            L"var base=best.getBoundingClientRect().left,reach=-1;"
+            L"var w=document.createTreeWalker(best,NodeFilter.SHOW_TEXT,null);"
+            L"while(w.nextNode()){var rg=document.createRange();"
+            L"rg.selectNodeContents(w.currentNode);var rs=rg.getClientRects();"
+            L"for(var j=0;j<rs.length;j++){var x=rs[j].right-base+best.scrollLeft;"
+            L"if(x>reach)reach=x;}}"
+            L"post('hscroll '+(best.className||best.tagName)+' cw='+best.clientWidth+"
+            L"' sw='+best.scrollWidth+' sl='+Math.round(best.scrollLeft)+"
+            L"' over='+bestOver+' tail='+Math.round(reach));"
+            L"var hb=document.getElementById('hbar');"
+            L"if(hb)post('hbar on='+(hb.className||'-')+' w='+Math.round(hb.offsetWidth)+"
+            L"' thumb='+Math.round(hb.firstElementChild.offsetWidth)+"
+            L"' tx='+(hb.firstElementChild.style.transform||'-'));"
+            L"else post('hbar missing');})()";
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kSweepTimerId) {
         // 两段滚动各量一次帧时间：慢速 320px/帧、快速 2400px/帧（快速会跨块跳跃、
         // 触发回收与重新建块）。事件名带 perf：宿主对 perf 事件一律写日志。
@@ -630,6 +661,7 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"two")) g_twoThreads = true;
   if (*p && wcsstr(p, L"scroll")) g_scroll = true;
   if (*p && wcsstr(p, L"sweep")) g_sweep = true;
+  if (*p && wcsstr(p, L"hscroll")) g_hscroll = true;
   if (g_sweep) { const wchar_t* sx = wcsstr(p, L"sweepat=");
     if (sx) { int v = _wtoi(sx + 8); if (v > 0) g_sweepDelayMs = static_cast<UINT>(v); } }
   if (*p && wcsstr(p, L"settings")) g_settings = true;
@@ -746,6 +778,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_sweep) {
     ::SetTimer(g_hwndMain, kSweepTimerId, g_sweepDelayMs, nullptr);
+  }
+  if (g_hscroll) {
+    ::SetTimer(g_hwndMain, kHScrollTimerId, 5000, nullptr);
   }
   if (g_scroll) {
     ::SetTimer(g_hwndMain, kScrollTimerId, kScrollAfterMs, nullptr);
