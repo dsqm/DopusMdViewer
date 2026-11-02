@@ -34,11 +34,15 @@ import powershell from 'highlight.js/lib/languages/powershell'
    - 全文不进 DOM：自绘滚动条 + 估算总高 + 常驻窗口（800 块量级）。
    - 块正文走 https://mdblocks.localhost/__blocks 的二进制帧，批量取。
    - 颜色全在 #base / #skin，字体全在 #fx（#fx 永远最后）。
-   - 单块高亮闸门：≤2000 行且 ≤256 KiB，超限只出纯文本。
+   - 单块高亮闸门：≤2000 行、≤1 MiB，且平均行长 ≤32 KiB，超限只出纯文本。
    ============================================================ */
 
 const HIGHLIGHT_MAX_LINES = 2000
-const HIGHLIGHT_MAX_BYTES = 256 * 1024
+const HIGHLIGHT_MAX_BYTES = 1024 * 1024
+// 花在 hljs 上的时间取决于 token 密度，不取决于体积：分行代码 1 MiB 约 30–200 ms，
+// 而「整块就是一条巨长行」（压缩 JSON、base64）1 MiB 要 3.8 s。后者没救，按平均
+// 行长挡掉；正常内容即使行长到 4 KiB 也远在这条线以内。
+const HIGHLIGHT_MAX_AVG_LINE = 32 * 1024
 const DOC_BASE_DEFAULT = 'https://mddoc.localhost/'
 const DOC_HOST = 'https://mddoc.localhost/'
 const BLOCKS_URL = 'https://mdblocks.localhost/__blocks'
@@ -217,7 +221,9 @@ md.renderer.rules.fence = (tokens, idx) => {
 
   const lines = countLines(code)
   const bytes = utf8Bytes(code)
-  const tooHuge = lines > HIGHLIGHT_MAX_LINES || bytes > HIGHLIGHT_MAX_BYTES
+  const avgLine = bytes / Math.max(1, lines)
+  const tooLong = avgLine > HIGHLIGHT_MAX_AVG_LINE
+  const tooHuge = lines > HIGHLIGHT_MAX_LINES || bytes > HIGHLIGHT_MAX_BYTES || tooLong
 
   let body
   if (lang && state.render.highlight && !tooHuge && hljs.getLanguage(lang)) {
@@ -228,8 +234,8 @@ md.renderer.rules.fence = (tokens, idx) => {
 
   const cls = 'language-' + (lang || 'none')
   const note = tooHuge
-    ? '<div class="code-note">代码块过大（' + lines + ' 行 / '
-      + Math.round(bytes / 1024) + ' KiB），已关闭高亮</div>'
+    ? '<div class="code-note">' + (tooLong ? '代码块单行过长（' : '代码块过大（')
+      + lines + ' 行 / ' + Math.round(bytes / 1024) + ' KiB），已关闭高亮</div>'
     : ''
 
   // 复制按钮取的是 <code> 的 textContent：hljs 只加 span 不改字符，
@@ -1254,6 +1260,7 @@ function releaseSeg(rec, k) {
   const seg = rec.big.segs.get(k)
   if (!seg) return
   seg.code.textContent = ''
+  seg.dropHead = 0
   if (seg.ln) {
     seg.ln.textContent = ''
     seg.pre.classList.remove('has-ln')
@@ -1280,7 +1287,7 @@ function ensureSeg(i, rec, k) {
     const item = V.bigPool.pop() || makeSegDom()
     seg = {
       el: item.el, pre: item.pre, ln: item.ln, code: item.code,
-      from: -1, got: 0, want: null, loading: false, shortAt: -1,
+      from: -1, got: 0, want: null, loading: false, shortAt: -1, dropHead: 0,
       lnOn: false, lnCls: '',
     }
     seg.el.dataset.i = String(i)
@@ -1353,6 +1360,27 @@ function updateBigWindows() {
   }
 }
 
+// 巨型围栏块：首行是 ```lang、末行是收尾围栏，它们不是代码内容，按源码渲染会露出来。
+// 这里把围栏行剔掉，首段整体下移一行（视觉上等于围栏那行留白），末段那行同样只在
+// 含块末行的窗口里剔。返回的 lineBase 是行号计数器的起点减一：代码行从 1 起，
+// 不把围栏算进行号。
+const FENCE_RE = /^\s*(?:`{3,}|~{3,})/
+
+function trimFenceLines(text, from, got, m) {
+  if (!m || m.kind !== KIND_FENCE) return { text, lineBase: from, dropHead: 0 }
+  const lines = text.split('\n')
+  let dropHead = 0
+  if (from === 0 && lines.length && FENCE_RE.test(lines[0])) {
+    lines.shift()
+    dropHead = 1
+  }
+  if (m.lines && from + got >= m.lines && lines.length &&
+      FENCE_RE.test(lines[lines.length - 1])) {
+    lines.pop()
+  }
+  return { text: lines.join('\n'), lineBase: from + dropHead - 1, dropHead }
+}
+
 function requestBigLines(i, k, from, count) {
   const rec = V.resident.get(i)
   if (!rec || !rec.big) return
@@ -1379,12 +1407,16 @@ function requestBigLines(i, k, from, count) {
       if (!curSeg) return
       const g = bigMetrics()
       const text = decoder.decode(new Uint8Array(buf, 20, len))
-      curSeg.code.textContent = text
-      syncSegGutter(curSeg, from, displayLines(text), total)
+      const m = V.big.get(i)
+      const cut = trimFenceLines(text, from, got, m)
+      curSeg.code.textContent = cut.text
+      syncSegGutter(curSeg, cut.lineBase, displayLines(cut.text), total)
       curSeg.pre.style.transform =
-        'translateY(' + ((from - k * BIG_SEG_LINES) * g.lineH).toFixed(1) + 'px)'
+        'translateY(' + ((from - k * BIG_SEG_LINES) * g.lineH + cut.dropHead * g.lineH)
+          .toFixed(1) + 'px)'
       curSeg.from = from
       curSeg.got = got
+      curSeg.dropHead = cut.dropHead
       if (got < count) curSeg.shortAt = from
       if (total > 0) updateBigLines(i, total)
       if (FIND.bigHit && FIND.bigHit.b === i) applyBigHitMark()
@@ -1407,7 +1439,7 @@ function requestBigLines(i, k, from, count) {
 function updateBigLines(i, lines) {
   const m = V.big.get(i)
   if (!m || m.lines === lines) return
-  V.big.set(i, { lines })
+  V.big.set(i, { ...m, lines })
   const rec = V.resident.get(i)
   if (rec && rec.big) releaseBig(rec)
   rebuildFenwick()
@@ -1417,6 +1449,9 @@ function updateBigLines(i, lines) {
 // 巨型块表：`块号:行数` 表示走行窗口纯文本，`块号:行数:1` 表示表格。
 // 表格是否按真表格渲染由这里的规模上限决定：过线的表格改用分块真表格，
 // 再大的仍回落行窗口纯文本。
+// 块类型（与 C++ 的 doc::Kind 同值）。巨型块里只有围栏块要按代码渲染。
+const KIND_FENCE = 8
+
 function parseBigTable(text) {
   const big = new Map()
   const tables = new Map()
@@ -1427,9 +1462,10 @@ function parseBigTable(text) {
     const i = parseInt(f[0], 10)
     const lines = parseInt(f[1], 10)
     if (!Number.isInteger(i) || i < 0 || !Number.isInteger(lines) || lines <= 0) continue
+    const kind = f.length > 3 ? parseInt(f[3], 10) : -1
     // lines 含表头行与分隔行，数据行要减 2
     if (f[2] === '1' && lines - 2 <= BT_MAX_LINES) tables.set(i, { lines })
-    else big.set(i, { lines })
+    else big.set(i, { lines, kind })
   }
   return { big, tables }
 }
@@ -2860,7 +2896,7 @@ function applyBigHitMark() {
   if (!rec || !rec.big) return
   const seg = rec.big.segs.get(segIndexOfLine(want.b, want.line))
   if (!seg || seg.from < 0) return
-  const rel = want.line - seg.from
+  const rel = want.line - seg.from - (seg.dropHead || 0)
   if (rel < 0 || rel >= seg.got) return
   const text = seg.code.textContent || ''
   let start = 0

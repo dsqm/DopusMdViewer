@@ -1165,11 +1165,12 @@ void BigTable(std::string* out) {
     out->append(std::to_string(blocks[k]));
     out->push_back(':');
     out->append(std::to_string(lines[k]));
-    // 表格与其它巨型块的前端渲染路径完全不同（分块真表格 / 行窗口纯文本），
-    // 表格在第三段补一个 1；其它块保持两段，老前端读到两段仍按纯文本处理。
-    if ((ix.KindFlags(blocks[k]) & doc::kKindMask) == static_cast<uint8_t>(doc::Kind::Table)) {
-      out->append(":1");
-    }
+    // 第三段：表格标记。表格与其它巨型块的前端渲染路径不同（分块真表格 / 行窗口）。
+    // 第四段：块类型（doc::Kind）。代码块靠它把围栏行去掉、行号按代码行算；
+    // 老前端只读到第三段，多的字段忽略。
+    const uint8_t kind = static_cast<uint8_t>(ix.KindFlags(blocks[k]) & doc::kKindMask);
+    out->append(kind == static_cast<uint8_t>(doc::Kind::Table) ? ":1:" : ":0:");
+    out->append(std::to_string(kind));
   }
 }
 
