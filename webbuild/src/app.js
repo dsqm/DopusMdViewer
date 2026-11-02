@@ -363,29 +363,63 @@ function wsUpdateSelection() {
   }
 
   const next = new Set()
-  for (const code of wsCodesInRange(range)) {
-    const spans = wsSpansOf(code)
-    if (!spans.length) continue
-    // comparePoint 二分：第一个落在选区内的段、第一个落在选区之后的段
-    let lo = 0
-    let hi = spans.length
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1
-      if (range.comparePoint(spans[mid], 0) < 0) lo = mid + 1
-      else hi = mid
-    }
-    const start = lo
-    hi = spans.length
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1
-      if (range.comparePoint(spans[mid], 0) <= 0) lo = mid + 1
-      else hi = mid
-    }
-    for (let i = start; i < lo; i++) next.add(spans[i])
-  }
+  for (const code of wsCodesInRange(range)) wsCollectLit(code, range, next)
   for (const s of WS.lit) if (!next.has(s)) s.classList.remove('mdv-sel')
   for (const s of next) s.classList.add('mdv-sel')
   WS.lit = next
+}
+
+// 把 code 里与选区相交的空白段收进 next。
+//
+// 选区落在一个块里时，命中的段在文档序上必是连续的一段，两头各二分一次就能圈出
+// 候选窗口，再逐段精确判定。
+//
+// 二分只能用文本节点的 comparePoint：comparePoint(段, 0) 传元素时，Chromium 把
+// 「段首那个位置」当成「段之前」，选区恰好从某段开头起选时它返回 -1——于是选区
+// 第一段永远不亮，只选一个空格时整段被排除，看起来像点了没反应。
+// 二分出来的窗口比实际宽一格是常态，多出来的交给 wsOverlaps 筛掉。
+function wsCollectLit(code, range, next) {
+  const spans = wsSpansOf(code)
+  const n = spans.length
+  if (!n) return
+
+  // 窗口右界：第一个「起点晚于选区终点」的段，它和它之后的都不可能相交
+  let lo = 0
+  let hi = n
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    const t = spans[mid].firstChild
+    if (t && range.comparePoint(t, 0) > 0) hi = mid
+    else lo = mid + 1
+  }
+  const end = lo
+
+  // 窗口左界：第一个「终点不早于选区起点」的段，它之前的都不可能相交
+  lo = 0
+  hi = end
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    const t = spans[mid].lastChild
+    if (t && range.comparePoint(t, t.length) < 0) lo = mid + 1
+    else hi = mid
+  }
+
+  for (let i = lo; i < end; i++) if (wsOverlaps(range, spans[i])) next.add(spans[i])
+}
+
+// 一段空白是否真的与选区有重叠（不是只贴着边）。
+// comparePoint 只有「前 / 里 / 后」三态，分不清「落在里面」与「正好落在边界上」，
+// 所以两端各补一次判断：端点在同一节点里时还得看偏移，偏移落在段的两端就等于没选。
+function wsOverlaps(range, span) {
+  const t = span.firstChild
+  if (!t) return false
+  const a = range.comparePoint(t, 0)
+  if (a > 0) return false // 段首已在选区之后
+  const b = range.comparePoint(t, t.length)
+  if (b < 0) return false // 段尾还在选区之前
+  if (a < 0) return range.startContainer === t && range.startOffset < t.length
+  if (b > 0) return range.endContainer === t && range.endOffset > 0
+  return true
 }
 
 function wsScheduleSelection() {

@@ -517,7 +517,23 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"setTimeout(function(){stat('selected');"
             L"setTimeout(function(){s.removeAllRanges();"
             L"document.dispatchEvent(new Event('selectionchange'));"
-            L"setTimeout(function(){stat('cleared')},200);},2700);},300);})();";
+            L"setTimeout(function(){stat('cleared');"
+            // 整块全选会把每一段都包进选区，掩盖「选区第一段不亮」的错——只选一段才看得出来。
+            // 换一份最小文档：a b 里的词间空格、行首制表符加两个空格。
+            L"function pick(tag,from,to,cb){"
+            L"var sp=document.querySelectorAll('pre code .mdv-ws,pre code .mdv-wt');"
+            L"if(!sp.length||sp.length<=to){post(tag+' nofix');cb();return}"
+            L"var r=document.createRange();"
+            L"r.setStart(sp[from].firstChild,0);r.setEnd(sp[to].firstChild,1);"
+            L"var s=window.getSelection();s.removeAllRanges();s.addRange(r);"
+            L"document.dispatchEvent(new Event('selectionchange'));"
+            L"setTimeout(function(){var lit=0;"
+            L"for(var i=0;i<sp.length;i++)if(sp[i].className.indexOf('mdv-sel')>=0)lit++;"
+            L"post(tag+' lit='+lit+' of='+sp.length);cb();},250);}"
+            L"setTimeout(function(){window.__mdv.state.render.codeWs=1;"
+            L"window.__mdv.renderDocument('```text\\na b\\n\\t  x\\n```');"
+            L"pick('one-space',0,0,function(){pick('tab-run',1,3,function(){});});},600);"
+            L"},200);},2700);},300);})();";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kCopyTimerId) {
         ::KillTimer(hwnd, kCopyTimerId);
