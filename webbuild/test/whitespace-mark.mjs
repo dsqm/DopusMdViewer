@@ -39,9 +39,16 @@ function grab(name) {
   throw new Error(name + '的花括号不配对')
 }
 
-const WS_BOUNDARY = 1
-const WS_ALL = 2
-const WS_SEL = 3
+// 档位常量从 app.js 里读，不在测试里写死：编号一改（比如按常显多少重排），
+// 测试跟着走，而不是变成两份互相打架的真相。
+function grabConst(name) {
+  const m = src.match(new RegExp('const ' + name + ' = (\\d+)'))
+  if (!m) throw new Error('app.js 里找不到常量 ' + name)
+  return parseInt(m[1], 10)
+}
+const WS_SEL = grabConst('WS_SEL')
+const WS_BOUNDARY = grabConst('WS_BOUNDARY')
+const WS_ALL = grabConst('WS_ALL')
 const wrapWsChunk = new Function('return ' + grab('wrapWsChunk'))()
 const wrapWsRun = new Function('wrapWsChunk', 'return ' + grab('wrapWsRun'))(wrapWsChunk)
 // 抠出来的函数体里会用到档位常量，得逐个作为参数喂进去，漏一个就是 ReferenceError

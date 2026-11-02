@@ -48,7 +48,7 @@ void SetDefaults(Config* c) {
   c->copyTable = true;
   c->codeLineNumbers = true;
   c->codeWsOn = true;
-  c->codeWsRange = 1;  // 边界
+  c->codeWsRange = 2;  // 边界
   c->codeIndentedBlocks = false;
   c->tableCopyMode = 0;
   c->showFindButton = true;
@@ -143,8 +143,8 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
     readBool("showFindButton", &c->showFindButton);
     readBool("showOutlineButton", &c->showOutlineButton);
     if (render.contains("codeWhitespaceRange") && render["codeWhitespaceRange"].is_number_integer()) {
-      const int v = render["codeWhitespaceRange"].get<int>();
-      c->codeWsRange = (v >= 1 && v <= 3) ? v : 1;
+      // 1 = 仅选中 / 2 = 边界 / 3 = 全部
+      c->codeWsRange = ClampInt(render["codeWhitespaceRange"].get<int>(), 1, 3, 2);
     }
   }
 
