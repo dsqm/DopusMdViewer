@@ -165,15 +165,16 @@ python -c "print('# 5000 行');print();print('\`\`\`cpp');[print('int v%05d = %d
 bin\hosttest.exe "<md>" 13000 wssel
 ```
 
-日志里 `wssel selected` / `wssel cleared` 之后应当还有两行：
+日志里 `wssel selected` / `wssel cleared` 之后应当还有三行：
 
 ```
 wssel one-space lit=1 of=4    ← 只选中词与词之间的那一个空格
 wssel tab-run lit=3 of=4      ← 选中「制表符 + 两个空格」
+wssel from-prose lit=3 of=4   ← 从块前的正文拖选进块里（前三段空白）
 ```
 
-数少了就是「选区第一段不亮」回来了：只选一个空格会一个点都不出（`lit=0`），
-从制表符起选则只剩后面的空格亮（`lit=2`）。
+数少了就是老毛病回来了：`one-space` 为 0、`tab-run` 为 2 是「选区第一段不亮」；
+`from-prose` 为 0 是「选区起点不在代码块里时整块都不点亮」。
 
 ## 十二、设置窗口改版（2026-11-02）
 

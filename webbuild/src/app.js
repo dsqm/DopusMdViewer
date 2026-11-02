@@ -327,16 +327,16 @@ function wsCodeOf(node) {
   return null
 }
 
+// 选区经过的代码块。最常见的是整段落在一个块里，走快路直接返回；
+// 其余情形（跨块、或从正文拖进块里）扫一遍全文档的 <code> 看谁被碰到。
+// 扫到的行内代码没有空白段，交给后面的取段逻辑自然跳过。
 function wsCodesInRange(range) {
-  const out = []
   const a = wsCodeOf(range.startContainer)
-  if (!a) return out
-  out.push(a)
   const b = wsCodeOf(range.endContainer)
-  if (b && b !== a) {
-    // 选区跨块：把中间经过的代码块也带上
-    const all = document.querySelectorAll('code')
-    for (const c of all) if (c !== a && range.intersectsNode(c)) out.push(c)
+  if (a && a === b) return [a]
+  const out = []
+  for (const c of document.querySelectorAll('code')) {
+    if (range.intersectsNode(c)) out.push(c)
   }
   return out
 }
