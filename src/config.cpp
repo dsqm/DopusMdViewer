@@ -47,6 +47,9 @@ void SetDefaults(Config* c) {
   c->copyCodeBlock = true;
   c->copyTable = true;
   c->codeLineNumbers = true;
+  c->codeWsOn = true;
+  c->codeWsRange = 1;  // 边界
+  c->codeIndentedBlocks = false;
   c->tableCopyMode = 0;
   c->showFindButton = true;
   c->showOutlineButton = true;
@@ -135,8 +138,14 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
     readBool("copyCodeBlock", &c->copyCodeBlock);
     readBool("copyTable", &c->copyTable);
     readBool("lineNumbers", &c->codeLineNumbers);
+    readBool("codeWhitespace", &c->codeWsOn);
+    readBool("indentedCodeBlocks", &c->codeIndentedBlocks);
     readBool("showFindButton", &c->showFindButton);
     readBool("showOutlineButton", &c->showOutlineButton);
+    if (render.contains("codeWhitespaceRange") && render["codeWhitespaceRange"].is_number_integer()) {
+      const int v = render["codeWhitespaceRange"].get<int>();
+      c->codeWsRange = (v == 2) ? 2 : 1;
+    }
   }
 
   if (root.contains("tableCopyFormat") && root["tableCopyFormat"].is_string()) {
@@ -387,6 +396,9 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   render["copyCodeBlock"] = c.copyCodeBlock;
   render["copyTable"] = c.copyTable;
   render["lineNumbers"] = c.codeLineNumbers;
+  render["codeWhitespace"] = c.codeWsOn;
+  render["codeWhitespaceRange"] = c.codeWsRange;
+  render["indentedCodeBlocks"] = c.codeIndentedBlocks;
   render["showFindButton"] = c.showFindButton;
   render["showOutlineButton"] = c.showOutlineButton;
   root["render"] = render;
@@ -405,13 +417,14 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
     g_config = c;
   }
   LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
-          L"net=%d outside=%d render=%d%d%d%d%d copy=%d%d/%d lines=%d tools=%d%d log=%d "
-          L"prewarm=%d idle=%d",
+          L"net=%d outside=%d render=%d%d%d%d%d copy=%d%d/%d lines=%d ws=%d/%d ind=%d "
+          L"tools=%d%d log=%d prewarm=%d idle=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
           c.netImageMode, c.allowOutsideImages ? 1 : 0, c.renderMermaid ? 1 : 0,
           c.renderKatex ? 1 : 0, c.renderHighlight ? 1 : 0, c.renderInlineHtml ? 1 : 0,
           c.renderLocalImages ? 1 : 0, c.copyCodeBlock ? 1 : 0, c.copyTable ? 1 : 0,
-          c.codeLineNumbers ? 1 : 0, c.tableCopyMode, c.showFindButton ? 1 : 0,
+          c.tableCopyMode, c.codeLineNumbers ? 1 : 0, c.codeWsOn ? 1 : 0, c.codeWsRange,
+          c.codeIndentedBlocks ? 1 : 0, c.showFindButton ? 1 : 0,
           c.showOutlineButton ? 1 : 0, c.enableLog ? 1 : 0, c.prewarm ? 1 : 0,
           c.idleReleaseMinutes);
   return true;

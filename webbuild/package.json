@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node build.mjs",
     "dev": "node dev-server.mjs",
-    "test": "node test/highlight-split.mjs"
+    "test": "node test/highlight-split.mjs && node test/whitespace-mark.mjs"
   },
   "dependencies": {
     "@mdit/plugin-alert": "^2.0.3",

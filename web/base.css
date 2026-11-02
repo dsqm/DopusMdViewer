@@ -187,6 +187,10 @@ body.dev #doc {
   /* 折行后一逻辑行占多行，行号与视觉行对不上：打印不显示，把让出的内边距收回来 */
   #print-root .mdv-ln { display: none !important; }
   #print-root pre > code.has-ln { padding-left: 0; }
+  /* 空白标记同理：打印的是文档，不是编辑器调试视图 */
+  #print-root .mdv-ws::before,
+  #print-root .mdv-wt::before { content: none !important; }
+  #print-root .mdv-wrs { background-image: none !important; opacity: 1; }
   #print-root .blk--big, #print-root .big-frame { position: static; height: auto; overflow: visible; }
   /* 打印时不能跳过离屏的块：跳过的那部分不会进纸面 */
   #print-root .bt-table { content-visibility: visible; }
@@ -473,6 +477,51 @@ pre > code.has-ln {
 .mdv-ln > span::before {
   content: counter(mdv-line);
   padding-right: 0.6em;
+}
+
+/* ---------------- 代码块空白符标记 ----------------
+   空格画点、制表符画箭头。字形只出现在伪元素与背景里，文本节点保持原样：
+   复制拿到的是源码原文，查找按块内文本对齐源码时也不会被标记带偏
+   （往文本里塞符号就会）。 */
+code .mdv-ws,
+code .mdv-wt {
+  position: relative;
+}
+
+code .mdv-ws::before,
+code .mdv-wt::before {
+  content: none;
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--md-fg-muted);
+  opacity: 0.55;
+  /* 标记不该被拖选、不该吃点击：拖过头时选中的仍是源码 */
+  user-select: none;
+  pointer-events: none;
+}
+
+/* 常显：全部档，或边界档里贴着行首/行尾/连续两个以上的空白 */
+code .mdv-ws.mdv-on::before,
+code .mdv-ws.mdv-sel::before {
+  content: "\00b7";
+}
+
+code .mdv-wt.mdv-on::before,
+code .mdv-wt.mdv-sel::before {
+  content: "\2192";
+}
+
+/* 逐段（巨型块）：空格靠点阵平铺，一个空格一个点。
+   1ch 是等宽字里 "0" 的宽度，也就是一个空格的宽度，点正好落在格心。 */
+code .mdv-wrs.mdv-on,
+code .mdv-wrs.mdv-sel {
+  background-image: radial-gradient(circle at 50% 72%,
+    var(--md-fg-muted) 0.5px, transparent 0.7px);
+  background-size: 1ch 100%;
+  background-repeat: repeat-x;
+  background-position: 0 0;
+  opacity: 0.55;
 }
 
 /* 超过高亮闸门的代码块顶部的说明条 */

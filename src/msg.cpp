@@ -95,6 +95,8 @@ std::wstring MakeNetMode(int mode) {
 }
 
 std::wstring MakeCfg(const Config& config) {
+  // 空白符档位合成一个数字：0 = 关，1 = 边界，2 = 全部。
+  const int wsMode = config.codeWsOn ? config.codeWsRange : 0;
   return Join({L"cfg", config.renderMermaid ? L"1" : L"0",
                config.renderKatex ? L"1" : L"0",
                config.renderHighlight ? L"1" : L"0",
@@ -105,7 +107,9 @@ std::wstring MakeCfg(const Config& config) {
                config.tableCopyMode == 1 ? L"1" : L"0",
                config.showFindButton ? L"1" : L"0",
                config.showOutlineButton ? L"1" : L"0",
-               config.codeLineNumbers ? L"1" : L"0"});
+               config.codeLineNumbers ? L"1" : L"0",
+               std::to_wstring(wsMode),
+               config.codeIndentedBlocks ? L"1" : L"0"});
 }
 
 std::wstring MakeClear(void) { return L"clear"; }

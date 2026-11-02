@@ -38,6 +38,15 @@ struct Config {
   bool copyTable;
   // 代码块左侧的行号列。默认开。
   bool codeLineNumbers;
+  // 代码块里的空白符标记（空格画点、制表符画箭头）。
+  // codeWsOn 关掉整个功能；codeWsRange 决定范围：
+  //   1 = 边界：行首缩进、行尾空白、行内连续 2 个以上的空格；
+  //   2 = 全部：所有空格与制表符。
+  // 边界档在有选区时，选区内的空白按「全部」显示（选区外照旧只标边界）。
+  bool codeWsOn;
+  int codeWsRange;
+  // 缩进式代码块（4 空格缩进、非围栏）也套用行号与空白符。默认关。
+  bool codeIndentedBlocks;
   // 表格复制格式：0 = TSV 纯文本，1 = Markdown 源码。
   int tableCopyMode;
   // 右上角工具条上的两个按钮。默认开；两个都关掉时整条工具条不显示。

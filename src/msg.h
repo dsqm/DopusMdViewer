@@ -38,8 +38,10 @@ std::wstring MakeBig(const std::string& table);
 std::wstring MakeNetMode(int mode);
 
 // cfg|<mermaid>|<katex>|<highlight>|<inlineHtml>|<localImages>|<copyCode>|<copyTable>
-//    |<tableCopyMd>|<findBtn>|<outlineBtn>|<lineNumbers>：渲染开关（1/0）。
-// 前端按固定下标取字段，新字段只能追加在末尾；取不到时按「开」处理。
+//    |<tableCopyMd>|<findBtn>|<outlineBtn>|<lineNumbers>|<wsMode>|<indentedBlocks>：
+//    渲染开关（1/0）。wsMode 是数字：0 = 关，1 = 边界，2 = 全部。
+// 前端按固定下标取字段，新字段只能追加在末尾；取不到时按「开」处理
+// （wsMode 取不到时按 0，即关——老宿主本来就没有这个功能）。
 std::wstring MakeCfg(const Config& config);
 
 // clear|

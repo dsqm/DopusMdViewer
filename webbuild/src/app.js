@@ -191,6 +191,200 @@ function lineGutter(lines) {
   return '<span class="mdv-ln" aria-hidden="true">' + '<span></span>'.repeat(lines) + '</span>'
 }
 
+/* ---------------- 空白符标记 ---------------- */
+
+// 空格画点、制表符画箭头。字形只出现在伪元素与背景里，DOM 的文本节点保持原样，
+// 所以复制（取 <code> 文本）和查找（拿块内文本对齐源码）都看不见标记——
+// 这和行号用的是同一个道理，不能改成往文本里塞符号。
+//
+// 范围：
+//   1 = 边界：行首缩进、行尾空白、行内连续 2 个以上的空格；
+//              词与词之间的单个空格不算，选中时再点亮（见 wsUpdateSelection）。
+//   2 = 全部：所有空格与制表符。
+//
+// 粒度：普通块逐字符（每个空白字符一个 span，字形绝对定位盖在字符上）；
+// 巨型块逐段（连续空白一个 span，背景平铺点阵）——巨型块每次滚动都重画一遍，
+// 逐字符的节点数扛不住。
+const WS_BOUNDARY = 1
+const WS_ALL = 2
+
+// 给一段 HTML 里的空白加标记。html 里可能混着标签（高亮的 span），
+// 只处理标签之外的文本部分。
+// perChar: true = 每个空白字符一个 span；false = 每段同质空白一个 span。
+function markWhitespace(html, mode, perChar) {
+  if (!mode || !html) return html
+  const parts = html.split(/(<[^>]*>)/)
+  let plain = ''
+  const segs = []
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i]
+    if (!p || p.charAt(0) === '<') continue
+    segs.push({ i, from: plain.length })
+    plain += p
+  }
+  if (!plain) return html
+
+  // 行首偏移：空白段是否贴着行首/行尾据此判断
+  const lineBegins = [0]
+  for (let i = 0; i < plain.length; i++) {
+    if (plain.charCodeAt(i) === 10) lineBegins.push(i + 1)
+  }
+  const lineOf = (off) => {
+    let lo = 0
+    let hi = lineBegins.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (lineBegins[mid] <= off) lo = mid
+      else hi = mid - 1
+    }
+    return lo
+  }
+
+  const re = /[ \t]+/g
+  for (const seg of segs) {
+    const text = parts[seg.i]
+    const base = seg.from
+    let buf = ''
+    let last = 0
+    let m
+    re.lastIndex = 0
+    while ((m = re.exec(text))) {
+      const s = base + m.index
+      const e = s + m[0].length
+      const li = lineOf(s)
+      const lineEnd = li + 1 < lineBegins.length ? lineBegins[li + 1] - 1 : plain.length
+      // 贴着行首或行尾算边界；行内连着两个以上的空格也算
+      const boundary = s === lineBegins[li] || e === lineEnd || e - s >= 2
+      buf += text.slice(last, m.index)
+      buf += wrapWsRun(m[0], perChar, mode === WS_ALL || boundary)
+      last = m.index + m[0].length
+    }
+    buf += text.slice(last)
+    parts[seg.i] = buf
+  }
+  return parts.join('')
+}
+
+// 一段空白按类型切开再包：空格与制表符画法不同，混在一段里没法分别处理。
+function wrapWsRun(run, perChar, visible) {
+  let out = ''
+  let i = 0
+  while (i < run.length) {
+    const tab = run.charCodeAt(i) === 9
+    let j = i + 1
+    while (j < run.length && (run.charCodeAt(j) === 9) === tab) j++
+    out += wrapWsChunk(run.slice(i, j), tab, perChar, visible)
+    i = j
+  }
+  return out
+}
+
+function wrapWsChunk(chunk, tab, perChar, visible) {
+  if (perChar) {
+    const cls = (tab ? 'mdv-wt' : 'mdv-ws') + (visible ? ' mdv-on' : '')
+    let out = ''
+    for (let i = 0; i < chunk.length; i++) out += '<span class="' + cls + '">' + chunk[i] + '</span>'
+    return out
+  }
+  // 逐段：空格靠背景平铺画点阵；制表符仍用伪元素（箭头只标位置，不标跨度）
+  const cls = (tab ? 'mdv-wt' : 'mdv-wrs') + (visible ? ' mdv-on' : '')
+  return '<span class="' + cls + '">' + chunk + '</span>'
+}
+
+/* ---------------- 选中时点亮（边界档） ---------------- */
+
+// 边界档里选区内的空白按「全部」显示：把选到的空白段点亮。
+// 只改 class 不动 DOM：动 DOM（拆文本节点）会把选区搅乱。
+const WS = { lit: new Set(), raf: 0 }
+
+function wsSpansOf(code) {
+  // 缓存挂在元素上：块重渲染时 <code> 是新的，缓存自然失效
+  if (!code.__wsSpans) {
+    code.__wsSpans = Array.prototype.slice.call(
+      code.querySelectorAll('.mdv-ws, .mdv-wt, .mdv-wrs'))
+  }
+  return code.__wsSpans
+}
+
+function wsCodeOf(node) {
+  let el = node
+  if (el && el.nodeType === 3) el = el.parentNode
+  while (el && el.nodeType === 1) {
+    if (el.tagName === 'CODE') return el
+    el = el.parentNode
+  }
+  return null
+}
+
+function wsCodesInRange(range) {
+  const out = []
+  const a = wsCodeOf(range.startContainer)
+  if (!a) return out
+  out.push(a)
+  const b = wsCodeOf(range.endContainer)
+  if (b && b !== a) {
+    // 选区跨块：把中间经过的代码块也带上
+    const all = document.querySelectorAll('code')
+    for (const c of all) if (c !== a && range.intersectsNode(c)) out.push(c)
+  }
+  return out
+}
+
+function wsClearLit() {
+  for (const s of WS.lit) s.classList.remove('mdv-sel')
+  WS.lit.clear()
+}
+
+function wsUpdateSelection() {
+  if (state.render.codeWs !== WS_BOUNDARY) {
+    wsClearLit()
+    return
+  }
+  const sel = window.getSelection()
+  if (!sel || !sel.rangeCount) {
+    wsClearLit()
+    return
+  }
+  const range = sel.getRangeAt(0)
+  if (range.collapsed) {
+    wsClearLit()
+    return
+  }
+
+  const next = new Set()
+  for (const code of wsCodesInRange(range)) {
+    const spans = wsSpansOf(code)
+    if (!spans.length) continue
+    // comparePoint 二分：第一个落在选区内的段、第一个落在选区之后的段
+    let lo = 0
+    let hi = spans.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (range.comparePoint(spans[mid], 0) < 0) lo = mid + 1
+      else hi = mid
+    }
+    const start = lo
+    hi = spans.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (range.comparePoint(spans[mid], 0) <= 0) lo = mid + 1
+      else hi = mid
+    }
+    for (let i = start; i < lo; i++) next.add(spans[i])
+  }
+  for (const s of WS.lit) if (!next.has(s)) s.classList.remove('mdv-sel')
+  for (const s of next) s.classList.add('mdv-sel')
+  WS.lit = next
+}
+
+function wsScheduleSelection() {
+  if (WS.raf) return
+  WS.raf = requestAnimationFrame(() => {
+    WS.raf = 0
+    wsUpdateSelection()
+  })
+}
+
 function utf8Bytes(text) {
   // 只用于高亮闸门判定，TextEncoder 的精确计数不是必需
   return new TextEncoder().encode(text).length
@@ -231,6 +425,8 @@ md.renderer.rules.fence = (tokens, idx) => {
   } else {
     body = escapeHtml(code)
   }
+  // 空白符标记：字形在伪元素里，文本节点原样保留
+  body = markWhitespace(body, state.render.codeWs, true)
 
   const cls = 'language-' + (lang || 'none')
   const note = tooHuge
@@ -253,6 +449,28 @@ md.renderer.rules.fence = (tokens, idx) => {
   return '<div class="mdv-cb">' + btn
     + '<pre>' + note + '<code class="hljs ' + cls + lnCls + '">' + gutter + body
     + '</code></pre></div>\n'
+}
+
+// 缩进式代码块（4 空格缩进、非围栏）：markdown-it 默认规则只给一段纯文本，
+// 没有行号也没有高亮。设置里打开开关后才套上行号与空白符标记；
+// 没有语言信息，语法高亮无从谈起，也不给复制按钮。
+const defaultCodeBlock = md.renderer.rules.code_block
+
+md.renderer.rules.code_block = (tokens, idx, options, env, self) => {
+  if (!state.render.indentedBlocks) {
+    return defaultCodeBlock(tokens, idx, options, env, self)
+  }
+  const code = tokens[idx].content
+  const body = markWhitespace(escapeHtml(code), state.render.codeWs, true)
+  let gutter = ''
+  let lnCls = ''
+  if (state.render.lineNumbers) {
+    const shown = displayLines(code)
+    gutter = lineGutter(shown)
+    lnCls = ' has-ln ' + lineGutterWidth(shown)
+  }
+  return '<pre><code' + (lnCls ? ' class="' + lnCls.trim() + '"' : '') + '>' + gutter + body
+    + '</code></pre>\n'
 }
 
 // 表格：按钮挂在 </table> 后面，但绝对定位在包层右上角，所以视觉上在表格角上。
@@ -452,6 +670,8 @@ const state = {
     copyCode: true,      // 代码块右上角的复制按钮（写进块 HTML，改了要重渲染）
     copyTable: true,     // 表格右上角的复制按钮（同上）
     lineNumbers: true,   // 代码块行号（同上）
+    codeWs: WS_BOUNDARY, // 空白符标记：0 关 / 1 边界 / 2 全部（写进块 HTML）
+    indentedBlocks: false, // 缩进式代码块也套用行号与空白符（同上）
     tableCopyMd: false,  // 表格复制 Markdown 源码而不是 TSV；纯点击时行为，不进 HTML
   },
   chrome: {
@@ -1531,13 +1751,14 @@ function applyBigSeg(seg, i, from, got, text) {
     const lines = m.hl.lines.slice(lo, hi)
     lineBase = lo
     count = Math.max(1, lines.length)
-    seg.code.innerHTML = lines.join('\n')
+    seg.code.innerHTML = markWhitespace(lines.join('\n'), state.render.codeWs, false)
   } else {
     const cut = trimFenceLines(text, from, got, m)
     dropHead = cut.dropHead
     lineBase = cut.lineBase
     count = Math.max(1, displayLines(cut.text))
-    seg.code.textContent = cut.text
+    // 逐段标记要拼 HTML，文本先转义（原来用 textContent，渲染结果一样）
+    seg.code.innerHTML = markWhitespace(escapeHtml(cut.text), state.render.codeWs, false)
   }
   syncSegGutter(seg, lineBase, count, m ? m.lines : 0)
   seg.dropHead = dropHead
@@ -4059,14 +4280,19 @@ function applyRenderConfig(flags) {
     copyTable: !!flags.copyTable,
     tableCopyMd: !!flags.tableCopyMd,
     lineNumbers: !!flags.lineNumbers,
+    codeWs: Math.max(0, Math.min(2, flags.codeWs | 0)),
+    indentedBlocks: !!flags.indentedBlocks,
   }
   // 只有进块 HTML 的开关需要重渲染；表格复制格式是点击时的事
   const HTML_KEYS = ['mermaid', 'katex', 'highlight', 'inlineHtml', 'localImages',
-    'copyCode', 'copyTable', 'lineNumbers']
+    'copyCode', 'copyTable', 'lineNumbers', 'codeWs', 'indentedBlocks']
   const changed = HTML_KEYS.some((k) => state.render[k] !== next[k])
   const lnChanged = state.render.lineNumbers !== next.lineNumbers
   const hlChanged = state.render.highlight !== next.highlight
+  const wsChanged = state.render.codeWs !== next.codeWs
   state.render = next
+  // 空白标记重画过，之前点亮的选区标记不再作数
+  if (wsChanged) wsClearLit()
 
   if (md.options.html !== next.inlineHtml) md.set({ html: next.inlineHtml })
   for (const name of MATH_RULES) {
@@ -4088,8 +4314,8 @@ function applyRenderConfig(flags) {
     htmlCacheClear()
     rerenderResidents()
   }
-  // 巨型块不在 rerenderResidents 的范围内（它按行窗口重画）：行号、高亮开关单独补一次
-  if ((lnChanged || hlChanged) && V.active) {
+  // 巨型块不在 rerenderResidents 的范围内（它按行窗口重画）：行号、高亮、空白符单独补一次
+  if ((lnChanged || hlChanged || wsChanged) && V.active) {
     for (const [i, rec] of V.resident) {
       if (!rec.big) continue
       const m = V.big.get(i)
@@ -4574,6 +4800,9 @@ function onHostMessage(event) {
       findBtn: flag(8),
       outlineBtn: flag(9),
       lineNumbers: flag(10),
+      // 第 12 个字段是空白符档位（数字 0/1/2）；老宿主没有这一项，按关处理
+      codeWs: f[11] === undefined ? 0 : parseInt(f[11], 10) || 0,
+      indentedBlocks: flag(12),
     })
     return
   }
@@ -4755,6 +4984,8 @@ function bindInput() {
       SEL.reported = on
       postRaw('sel|' + (on ? '1' : '0'))
     }
+    // 边界档：选区里的空白按「全部」显示
+    wsScheduleSelection()
   })
   document.addEventListener('mousedown', onSelDown)
   document.addEventListener('mousemove', onSelMove)
