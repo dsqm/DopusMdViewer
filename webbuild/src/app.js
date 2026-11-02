@@ -2848,6 +2848,9 @@ function tableCellPlain(s) {
     .replace(/`([^`]*)`/g, '$1')
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
+    // 单元格里的换行靠 <br>：TSV 一行是一行，换行只能落成空格（与从 DOM 取文本的路径一致）
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
