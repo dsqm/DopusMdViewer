@@ -19,6 +19,7 @@
 #include "config.h"
 #include "localize.h"
 #include "log.h"
+#include "settings_preview.h"
 #include "resource_ids.h"
 #include "skin.h"
 #include "util.h"
@@ -42,6 +43,7 @@ enum {
   kIdMeasure,
   kIdMeasureSpin,
   kIdUnlimited,
+  kIdMeasureHint,
   kIdSlotUi = 3200,
   kIdSlotBody,
   kIdSlotMono,
@@ -92,17 +94,25 @@ enum {
   kIdWebViewOpen,
   kIdWebViewDefault,
   kIdWebViewClear,
+  kIdCopyVersion = 3490,
+  kIdPrewarmHelp,
   kIdRestore = 3500,
+  kIdResetPage,
   kIdApply,
   kIdOk,
   kIdCancel,
 };
 
+struct FontPanel;
+
 constexpr int kPages = 4;
+// 「复制版本信息」按下后按钮文字短暂变成「已复制」，靠这个计时器改回来。
+constexpr UINT_PTR kCopyHintTimerId = 1;
 
 struct DialogState {
   HWND hwnd = nullptr;
   HFONT font = nullptr;
+  HFONT fontBold = nullptr;   // 页签当前页用，见 DrawTab
   HFONT previewFont = nullptr;
   UINT dpi = 96;
   Config staged;
@@ -122,10 +132,14 @@ struct DialogState {
   HWND hMeasure = nullptr;
   HWND hMeasureSpin = nullptr;
   HWND hUnlimited = nullptr;
+  HWND hMeasureHint = nullptr;
+  HWND hCopyVersion = nullptr;
 
   HWND hSlot[3] = {};
   HWND hFamily = nullptr;
   HWND hChainList = nullptr;
+  FontPanel* fontPanel = nullptr;   // 「添加字体…」弹出的选择面板，见 FontPanel
+  SettingsPreview* preview = nullptr;  // 字体预览用的独立 WebView2 实例
   HWND hPreview = nullptr;
   HWND hPreviewNote = nullptr;
 
@@ -164,6 +178,25 @@ int ScaleByDpi(UINT dpi, int value) {
 
 int ScaleOf(const DialogState* st, int value) {
   return ScaleByDpi(st->dpi, value);
+}
+
+// 设备像素 → 未缩放坐标（AddControl 内部会再乘回 DPI 比例）。
+int UnscaleOf(const DialogState* st, int px) {
+  const UINT dpi = st->dpi ? st->dpi : 96;
+  return ::MulDiv(px, 96, static_cast<int>(dpi));
+}
+
+// 用当前 UI 字体量一行文字的宽度（设备像素）。用来把「?」紧贴在描述文字后面。
+int TextWidth(DialogState* st, const wchar_t* text) {
+  if (!text || !*text) return 0;
+  HDC dc = ::GetDC(st->hwnd);
+  if (!dc) return 0;
+  HGDIOBJ old = ::SelectObject(dc, st->font);
+  SIZE sz = {};
+  ::GetTextExtentPoint32W(dc, text, static_cast<int>(wcslen(text)), &sz);
+  ::SelectObject(dc, old);
+  ::ReleaseDC(st->hwnd, dc);
+  return sz.cx;
 }
 
 void ApplyFont(HWND hwnd, HFONT font) {
@@ -296,6 +329,9 @@ void FocusFirst(DialogState* st);
 void ShowPage(DialogState* st, int page);
 bool ApplySettings(DialogState* st);
 void RefreshWebViewCacheInfo(DialogState* st);
+void AddFontNameToChain(DialogState* st, const std::wstring& name);
+void SetDirty(DialogState* st, bool dirty);
+bool FamilyInstalled(DialogState* st, const std::wstring& name);
 bool ValidateWebViewDir(const std::wstring& raw, std::wstring* error);
 std::wstring ReadText(HWND hwnd);
 bool HandleDialogKey(DialogState* st, HWND focus, WPARAM vk);
@@ -330,15 +366,8 @@ std::vector<HWND> TabStops(DialogState* st) {
   // 页签组单独处理：四个单选按钮是一组，Windows 会在 BM_SETCHECK 之后搬动甚至清掉
   // 同组按钮的 WS_TABSTOP，靠样式位枚举会整组漏掉（实测第一个 Tab 直接落到皮肤下拉，
   // 于是 ←/→ 换页在键盘上永远用不上）。这里按「当前选中的那个」占一个站位，放最前。
-  HWND tab = nullptr;
-  for (int i = 0; i < kPages; ++i) {
-    HWND t = ::GetDlgItem(st->hwnd, kIdTabAppearance + i);
-    if (t && ::IsWindowVisible(t) && ::IsWindowEnabled(t) &&
-        ::SendMessageW(t, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-      tab = t;
-      break;
-    }
-  }
+  HWND tab = ::GetDlgItem(st->hwnd, kIdTabAppearance + st->page);
+  if (tab && (!::IsWindowVisible(tab) || !::IsWindowEnabled(tab))) tab = nullptr;
   if (!tab) tab = ::GetDlgItem(st->hwnd, kIdTabAppearance);
   if (tab) out.push_back(tab);
 
@@ -486,6 +515,71 @@ HWND AddControl(DialogState* st, int page, const wchar_t* cls, const wchar_t* te
   return h;
 }
 
+// 页签自绘：当前页白底 + 加粗 + 底部强调色条，其余页浅灰底 + 灰边框。
+// 互斥状态由系统维护（BM_GETCHECK），这里只负责画。
+void DrawTab(DialogState* st, const DRAWITEMSTRUCT* dis) {
+  // BS_OWNERDRAW 的按钮不响应 BM_SETCHECK，当前页只能看 st->page
+  const bool on = dis->CtlID == static_cast<UINT>(kIdTabAppearance + st->page);
+  HDC dc = dis->hDC;
+  RECT rc = dis->rcItem;
+
+  HBRUSH bg = ::CreateSolidBrush(on ? RGB(255, 255, 255) : RGB(240, 240, 240));
+  ::FillRect(dc, &rc, bg);
+  ::DeleteObject(bg);
+
+  HPEN pen = ::CreatePen(PS_SOLID, 1, on ? RGB(0x8a, 0x8a, 0x8a) : RGB(0xb8, 0xb8, 0xb8));
+  HGDIOBJ oldPen = ::SelectObject(dc, pen);
+  HGDIOBJ oldBrush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+  ::Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
+  ::SelectObject(dc, oldBrush);
+  ::SelectObject(dc, oldPen);
+  ::DeleteObject(pen);
+
+  if (on) {
+    RECT bar = rc;
+    bar.top = bar.bottom - ScaleOf(st, 2);
+    ::InflateRect(&bar, -1, 0);
+    HBRUSH accent = ::CreateSolidBrush(RGB(0x0a, 0x6e, 0xd1));
+    ::FillRect(dc, &bar, accent);
+    ::DeleteObject(accent);
+  }
+
+  wchar_t text[64] = {};
+  ::GetWindowTextW(dis->hwndItem, text, ARRAYSIZE(text));
+  ::SetBkMode(dc, TRANSPARENT);
+  ::SetTextColor(dc, on ? RGB(0x1a, 0x1a, 0x1a) : RGB(0x4a, 0x4a, 0x4a));
+  HGDIOBJ oldFont = ::SelectObject(dc, (on && st->fontBold) ? st->fontBold : st->font);
+  ::DrawTextW(dc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+  ::SelectObject(dc, oldFont);
+
+  if (dis->itemState & ODS_FOCUS) {
+    RECT fr = rc;
+    ::InflateRect(&fr, -ScaleOf(st, 3), -ScaleOf(st, 3));
+    ::DrawFocusRect(dc, &fr);
+  }
+}
+
+// 回退链自绘：系统里没有的字体画成灰色，免得以为它正在生效。
+void DrawChainItem(DialogState* st, const DRAWITEMSTRUCT* dis) {
+  if (dis->itemID == static_cast<UINT>(-1)) return;
+  const bool sel = (dis->itemState & ODS_SELECTED) != 0;
+  RECT rc = dis->rcItem;
+  ::FillRect(dis->hDC, &rc, ::GetSysColorBrush(sel ? COLOR_HIGHLIGHT : COLOR_WINDOW));
+
+  wchar_t text[LF_FACESIZE * 2] = {};
+  ::SendMessageW(dis->hwndItem, LB_GETTEXT, dis->itemID, reinterpret_cast<LPARAM>(text));
+  const bool installed = FamilyInstalled(st, text);
+  ::SetBkMode(dis->hDC, TRANSPARENT);
+  COLORREF color = ::GetSysColor(sel ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT);
+  if (!installed) color = sel ? RGB(0xd8, 0xd8, 0xd8) : RGB(0x9a, 0x9a, 0x9a);
+  ::SetTextColor(dis->hDC, color);
+  rc.left += ScaleOf(st, 6);
+  HGDIOBJ old = ::SelectObject(dis->hDC, st->font);
+  ::DrawTextW(dis->hDC, text, -1, &rc,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+  ::SelectObject(dis->hDC, old);
+}
+
 void ShowPage(DialogState* st, int page) {
   if (page < 0 || page >= kPages) return;
   st->page = page;
@@ -493,6 +587,10 @@ void ShowPage(DialogState* st, int page) {
     for (HWND h : st->pageCtrls[p]) ::ShowWindow(h, p == page ? SW_SHOW : SW_HIDE);
   }
   ::CheckRadioButton(st->hwnd, kIdTabAppearance, kIdTabAdvanced, kIdTabAppearance + page);
+  for (int i = 0; i < kPages; ++i) {
+    HWND tab = ::GetDlgItem(st->hwnd, kIdTabAppearance + i);
+    if (tab) ::InvalidateRect(tab, nullptr, TRUE);
+  }
   LogLine(L"SETTINGS: 切到第 %d 页", page + 1);
   // 切页后焦点若落在刚藏起来的控件上，挪到本页第一个控件
   HWND focus = ::GetFocus();
@@ -535,47 +633,54 @@ double ReadLhText(DialogState* st, double fallback) {
   return v;
 }
 
+// CSS 通用族：不是系统字体，但浏览器认识，不能当成「没装」标灰。
+bool IsGenericFamily(const std::wstring& name) {
+  static const wchar_t* const kGenerics[] = {
+      L"system-ui",      L"sans-serif",  L"serif",        L"monospace",  L"cursive",
+      L"fantasy",        L"ui-sans-serif", L"ui-serif",   L"ui-monospace", L"ui-rounded",
+      L"-apple-system",  L"blinkmacsystemfont", L"emoji",  L"math",       L"fangsong",
+  };
+  for (const wchar_t* g : kGenerics) {
+    if (::CompareStringW(LOCALE_INVARIANT, NORM_IGNORECASE, name.c_str(), -1, g, -1) ==
+        CSTR_EQUAL) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// 字体名是否在枚举到的系统字体里。预览本身由浏览器渲染，这里只用来决定提示文案与灰显。
+bool FamilyInstalled(DialogState* st, const std::wstring& name) {
+  if (IsGenericFamily(name)) return true;
+  for (const std::wstring& f : st->families) {
+    if (SameFamily(f, name)) return true;
+  }
+  return false;
+}
+
 void UpdatePreview(DialogState* st) {
-  if (!st->hPreview) return;
   const FontStack* stack = CurrentStack(st);
   bool inherited = false;
   if (stack->empty() && st->slot == 1) {
     stack = &st->staged.font.ui;
     inherited = true;
   }
-  std::wstring face = stack->empty() ? std::wstring(L"Segoe UI") : stack->front();
 
-  LOGFONTW lf = {};
-  lf.lfHeight = -::MulDiv(15, static_cast<int>(st->dpi ? st->dpi : 96), 96);
-  lf.lfWeight = FW_NORMAL;
-  lf.lfCharSet = DEFAULT_CHARSET;
-  lf.lfQuality = CLEARTYPE_QUALITY;
-  ::StringCchCopyW(lf.lfFaceName, LF_FACESIZE, face.c_str());
+  // 整条回退链交给浏览器：第一项缺失时它会自己按顺序往下找，预览里看到的就是最终效果。
+  if (st->preview) SettingsPreviewSetFont(st->preview, *stack, st->staged.font.sizePx);
 
-  HFONT created = ::CreateFontIndirectW(&lf);
-  st->previewMissing = false;
-  if (created) {
-    LOGFONTW got = {};
-    if (::GetObjectW(created, sizeof(got), &got) == sizeof(got)) {
-      st->previewMissing = !SameFamily(got.lfFaceName, face);
-    }
-    if (st->previewFont) ::DeleteObject(st->previewFont);
-    st->previewFont = created;
-    ApplyFont(st->hPreview, created);
-  }
-
-  ::SetWindowTextW(st->hPreview, loc::T(loc::Str::PreviewSample));
+  st->previewMissing = !stack->empty() && !FamilyInstalled(st, stack->front());
   if (st->previewMissing) {
     wchar_t note[LF_FACESIZE * 2 + 64] = {};
-    ::StringCchPrintfW(note, ARRAYSIZE(note), loc::T(loc::Str::PreviewMissing), face.c_str());
+    ::StringCchPrintfW(note, ARRAYSIZE(note), loc::T(loc::Str::PreviewMissing),
+                       stack->front().c_str());
     ::SetWindowTextW(st->hPreviewNote, note);
   } else if (inherited && st->staged.font.body.empty()) {
     ::SetWindowTextW(st->hPreviewNote, loc::T(loc::Str::PreviewInherited));
   } else {
     ::SetWindowTextW(st->hPreviewNote, L"");
   }
-  ::InvalidateRect(st->hPreview, nullptr, TRUE);
-  ::InvalidateRect(st->hPreviewNote, nullptr, TRUE);
+  if (st->hPreviewNote) ::InvalidateRect(st->hPreviewNote, nullptr, TRUE);
 }
 
 void RefreshChainList(DialogState* st) {
@@ -625,6 +730,363 @@ void LoadFamilies(DialogState* st) {
   ::SetWindowTextW(st->hFamily, current);
 }
 
+
+/* ---------------- 字体选择面板 ----------------
+   点「添加字体…」在按钮下方弹出：上面筛选框，中间字体列表（每项用该字体自己的字形画），
+   底部 刷新 / 确定 / 取消。无命中时列表末行是「使用输入的字体名」，保留添加未枚举名字的能力。
+   非阻塞：不跑嵌套消息循环，确认后直接往回退链里加，焦点离开即关闭。 */
+
+struct FontPanel {
+  HWND hwnd = nullptr;
+  HWND edit = nullptr;
+  HWND list = nullptr;
+  DialogState* st = nullptr;
+  std::vector<std::wstring> items;   // 当前筛选结果（不含末行伪项）
+  std::wstring useInput;             // 非空时末行是「使用这个名字」
+};
+
+const wchar_t kFontPanelClass[] = L"DopusMdViewerFontPanel";
+constexpr int kPanelFilterId = 1;
+constexpr int kPanelListId = 2;
+constexpr int kPanelRefreshId = 3;
+constexpr int kPanelOkId = 4;
+constexpr int kPanelCancelId = 5;
+
+FontPanel* PanelOf(HWND hwnd) {
+  return reinterpret_cast<FontPanel*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+std::wstring Lowered(const std::wstring& in) {
+  std::wstring out = in;
+  if (!out.empty()) ::CharLowerBuffW(&out[0], static_cast<DWORD>(out.size()));
+  return out;
+}
+
+// 按筛选框内容重填列表；没有完全匹配且输入非空时，末尾加一行「使用这个名字」。
+void PanelFillList(FontPanel* p) {
+  if (!p || !p->list || !p->st) return;
+  wchar_t raw[128] = {};
+  ::GetWindowTextW(p->edit, raw, ARRAYSIZE(raw));
+  const std::wstring filter = Lowered(Trimmed(raw));
+
+  p->items.clear();
+  bool exact = false;
+  for (const std::wstring& name : p->st->families) {
+    if (!filter.empty() && Lowered(name).find(filter) == std::wstring::npos) continue;
+    p->items.push_back(name);
+    if (Lowered(name) == filter) exact = true;
+  }
+  p->useInput = (!filter.empty() && !exact) ? Trimmed(raw) : std::wstring();
+
+  ::SendMessageW(p->list, WM_SETREDRAW, FALSE, 0);
+  ::SendMessageW(p->list, LB_RESETCONTENT, 0, 0);
+  for (const std::wstring& name : p->items) {
+    ::SendMessageW(p->list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
+  }
+  if (!p->useInput.empty()) {
+    std::wstring row = loc::T(loc::Str::FontUseInput);
+    const size_t at = row.find(L"%s");
+    if (at != std::wstring::npos) row.replace(at, 2, p->useInput);
+    ::SendMessageW(p->list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(row.c_str()));
+  }
+  ::SendMessageW(p->list, WM_SETREDRAW, TRUE, 0);
+  ::InvalidateRect(p->list, nullptr, TRUE);
+  if (::SendMessageW(p->list, LB_GETCOUNT, 0, 0) > 0) {
+    ::SendMessageW(p->list, LB_SETCURSEL, 0, 0);
+  }
+}
+
+void PanelAccept(FontPanel* p) {
+  if (!p || !p->st) return;
+  const int sel = static_cast<int>(::SendMessageW(p->list, LB_GETCURSEL, 0, 0));
+  std::wstring name;
+  if (sel >= 0 && sel < static_cast<int>(p->items.size())) {
+    name = p->items[static_cast<size_t>(sel)];
+  } else if (sel >= 0 && !p->useInput.empty()) {
+    name = p->useInput;
+  }
+  if (name.empty()) return;
+  AddFontNameToChain(p->st, name);
+  SetDirty(p->st, true);
+  ::DestroyWindow(p->hwnd);
+}
+
+void PanelMoveSel(FontPanel* p, int delta) {
+  const int count = static_cast<int>(::SendMessageW(p->list, LB_GETCOUNT, 0, 0));
+  if (count <= 0) return;
+  int sel = static_cast<int>(::SendMessageW(p->list, LB_GETCURSEL, 0, 0));
+  sel = (sel < 0) ? 0 : sel + delta;
+  if (sel < 0) sel = 0;
+  if (sel >= count) sel = count - 1;
+  ::SendMessageW(p->list, LB_SETCURSEL, sel, 0);
+}
+
+// 列表项用该字体自己的字形画，一眼分清宋体/黑体/等宽。
+void PanelDrawItem(FontPanel* p, const DRAWITEMSTRUCT* dis) {
+  if (dis->itemID == static_cast<UINT>(-1)) return;
+  RECT rc = dis->rcItem;
+  const bool sel = (dis->itemState & ODS_SELECTED) != 0;
+  ::FillRect(dis->hDC, &rc, ::GetSysColorBrush(sel ? COLOR_HIGHLIGHT : COLOR_WINDOW));
+  if (dis->itemID == static_cast<UINT>(-1)) return;
+
+  wchar_t text[256] = {};
+  ::SendMessageW(p->list, LB_GETTEXT, dis->itemID, reinterpret_cast<LPARAM>(text));
+  ::SetBkMode(dis->hDC, TRANSPARENT);
+  ::SetTextColor(dis->hDC, ::GetSysColor(sel ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT));
+  rc.left += ScaleOf(p->st, 8);
+
+  const bool pseudo = !p->useInput.empty() && dis->itemID == p->items.size();
+  HFONT font = nullptr;
+  if (!pseudo) {
+    LOGFONTW lf = {};
+    lf.lfHeight = -::MulDiv(15, static_cast<int>(p->st->dpi ? p->st->dpi : 96), 96);
+    lf.lfCharSet = DEFAULT_CHARSET;
+    lf.lfQuality = CLEARTYPE_QUALITY;
+    ::StringCchCopyW(lf.lfFaceName, LF_FACESIZE, text);
+    font = ::CreateFontIndirectW(&lf);
+  }
+  HGDIOBJ old = ::SelectObject(dis->hDC, font ? font : p->st->font);
+  ::DrawTextW(dis->hDC, text, -1, &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
+                                          DT_END_ELLIPSIS);
+  ::SelectObject(dis->hDC, old);
+  if (font) ::DeleteObject(font);
+}
+
+LRESULT CALLBACK PanelControlProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  FontPanel* p = PanelOf(::GetParent(hwnd));
+  WNDPROC orig = p ? reinterpret_cast<WNDPROC>(
+                         ::GetPropW(hwnd, L"mdv-panel-orig")) : nullptr;
+  if (!orig) return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+  if (uMsg == WM_KEYDOWN && p) {
+    switch (wParam) {
+      case VK_ESCAPE:
+        ::DestroyWindow(p->hwnd);
+        return 0;
+      case VK_RETURN:
+        PanelAccept(p);
+        return 0;
+      case VK_DOWN:
+        PanelMoveSel(p, 1);
+        return 0;
+      case VK_UP:
+        PanelMoveSel(p, -1);
+        return 0;
+      default:
+        break;
+    }
+  }
+  return ::CallWindowProcW(orig, hwnd, uMsg, wParam, lParam);
+}
+
+void PanelSubclass(HWND hwnd) {
+  WNDPROC old = reinterpret_cast<WNDPROC>(
+      ::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&PanelControlProc)));
+  if (old && old != &PanelControlProc) {
+    ::SetPropW(hwnd, L"mdv-panel-orig", reinterpret_cast<HANDLE>(old));
+  }
+}
+
+LRESULT CALLBACK FontPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  FontPanel* p = PanelOf(hwnd);
+  switch (uMsg) {
+    case WM_NCCREATE: {
+      const CREATESTRUCTW* cs = reinterpret_cast<const CREATESTRUCTW*>(lParam);
+      p = static_cast<FontPanel*>(cs->lpCreateParams);
+      if (p) {
+        p->hwnd = hwnd;
+        ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(p));
+      }
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+    }
+
+    case WM_CREATE: {
+      if (!p || !p->st) return -1;
+      const UINT dpi = p->st->dpi;
+      auto scale = [dpi](int v) { return ::MulDiv(v, static_cast<int>(dpi), 96); };
+      p->edit = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, scale(8),
+                                  scale(8), scale(300), scale(26), hwnd,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPanelFilterId)),
+                                  ModuleHandle(), nullptr);
+      ::SendMessageW(p->edit, EM_SETCUEBANNER, TRUE,
+                     reinterpret_cast<LPARAM>(loc::T(loc::Str::FontFilterCue)));
+      p->list = ::CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+                                  WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP |
+                                      LBS_NOTIFY | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
+                                  scale(8), scale(40), scale(300), scale(210), hwnd,
+                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPanelListId)),
+                                  ModuleHandle(), nullptr);
+      ::SendMessageW(p->list, LB_SETITEMHEIGHT, 0, scale(26));
+      ::CreateWindowExW(0, L"BUTTON", loc::T(loc::Str::RefreshFonts),
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, scale(8), scale(258),
+                        scale(96), scale(26), hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPanelRefreshId)),
+                        ModuleHandle(), nullptr);
+      ::CreateWindowExW(0, L"BUTTON", loc::T(loc::Str::Ok),
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, scale(216),
+                        scale(258), scale(52), scale(26), hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPanelOkId)), ModuleHandle(),
+                        nullptr);
+      ::CreateWindowExW(0, L"BUTTON", loc::T(loc::Str::Cancel),
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, scale(272),
+                        scale(258), scale(50), scale(26), hwnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kPanelCancelId)),
+                        ModuleHandle(), nullptr);
+      // 五个子控件统一套 UI 字体：漏掉按钮的话，它们会用系统默认字体，
+      // 在高 DPI 下既没跟着放大，笔画也糊，和设置窗口里其它按钮对不上。
+      const int kPanelIds[] = {kPanelFilterId, kPanelListId, kPanelRefreshId, kPanelOkId,
+                               kPanelCancelId};
+      for (int id : kPanelIds) {
+        HWND child = ::GetDlgItem(hwnd, id);
+        if (child) ApplyFont(child, p->st->font);
+      }
+      PanelSubclass(p->edit);
+      PanelSubclass(p->list);
+      PanelFillList(p);
+      if (p->edit) ::SetFocus(p->edit);
+      return 0;
+    }
+
+    case WM_COMMAND: {
+      const int id = LOWORD(wParam);
+      const int code = HIWORD(wParam);
+      if (!p) return 0;
+      if (id == kPanelFilterId && code == EN_CHANGE) {
+        PanelFillList(p);
+        return 0;
+      }
+      if (id == kPanelListId && code == LBN_DBLCLK) {
+        PanelAccept(p);
+        return 0;
+      }
+      if (id == kPanelRefreshId) {
+        LoadFamilies(p->st);
+        PanelFillList(p);
+        return 0;
+      }
+      if (id == kPanelOkId) {
+        PanelAccept(p);
+        return 0;
+      }
+      if (id == kPanelCancelId) {
+        ::DestroyWindow(hwnd);
+        return 0;
+      }
+      return 0;
+    }
+
+    case WM_DRAWITEM: {
+      const DRAWITEMSTRUCT* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+      if (p && dis && dis->CtlID == static_cast<UINT>(kPanelListId)) {
+        PanelDrawItem(p, dis);
+        return TRUE;
+      }
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+    }
+
+    // 点面板外面（或切到别的窗口）就收起来，跟菜单一样
+    case WM_ACTIVATE:
+      if (LOWORD(wParam) == WA_INACTIVE) {
+        ::DestroyWindow(hwnd);
+        return 0;
+      }
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+
+    // 无边框 popup 没有非客户区（WM_NCPAINT 不会来），边框画在客户区最外一圈：
+    // 子控件都从 8px 起排，这 1px 不会被盖住。
+    case WM_ERASEBKGND: {
+      RECT rc = {};
+      ::GetClientRect(hwnd, &rc);
+      ::FillRect(reinterpret_cast<HDC>(wParam), &rc, ::GetSysColorBrush(COLOR_WINDOW));
+      return 1;
+    }
+
+    case WM_PAINT: {
+      PAINTSTRUCT ps = {};
+      HDC dc = ::BeginPaint(hwnd, &ps);
+      RECT rc = {};
+      ::GetClientRect(hwnd, &rc);
+      // 底色比页面（白）深一档，靠颜色区分层次，不再铺阴影：
+      // 细边框外面再套一圈渐变会看成两道边。
+      HBRUSH bg = ::CreateSolidBrush(RGB(0xec, 0xec, 0xec));
+      ::FillRect(dc, &rc, bg);
+      ::DeleteObject(bg);
+      HBRUSH frame = ::CreateSolidBrush(RGB(0xbc, 0xbc, 0xbc));
+      ::FrameRect(dc, &rc, frame);
+      ::DeleteObject(frame);
+      ::EndPaint(hwnd, &ps);
+      return 0;
+    }
+
+    case WM_CLOSE:
+      ::DestroyWindow(hwnd);
+      return 0;
+
+    case WM_DESTROY:
+      if (p) {
+        for (HWND child : {p->edit, p->list}) {
+          if (child) ::RemovePropW(child, L"mdv-panel-orig");
+        }
+        if (p->st && p->st->fontPanel == p) p->st->fontPanel = nullptr;
+        delete p;
+      }
+      ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+      return 0;
+
+    default:
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+  }
+}
+
+bool RegisterFontPanelClass() {
+  static bool done = false;
+  if (done) return true;
+  WNDCLASSEXW wc = {};
+  wc.cbSize = sizeof(wc);
+  // CS_DROPSHADOW：弹出面板本身只有 1px 边框，压在浅色页面上边界不清
+  wc.style = CS_DROPSHADOW;
+  wc.lpfnWndProc = &FontPanelProc;
+  wc.hInstance = ModuleHandle();
+  wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+  wc.lpszClassName = kFontPanelClass;
+  done = ::RegisterClassExW(&wc) != 0;
+  return done;
+}
+
+// 在「添加字体…」按钮正下方弹出。按钮窗口用调用方传入的矩形定位。
+void OpenFontPanel(DialogState* st, const RECT& anchor) {
+  if (!st || !st->hwnd) return;
+  if (st->fontPanel) {
+    ::SetForegroundWindow(st->fontPanel->hwnd);
+    return;
+  }
+  if (!RegisterFontPanelClass()) return;
+
+  FontPanel* p = new (std::nothrow) FontPanel();
+  if (!p) return;
+  p->st = st;
+  const UINT dpi = st->dpi ? st->dpi : 96;
+  auto scale = [dpi](int v) { return ::MulDiv(v, static_cast<int>(dpi), 96); };
+
+  // 边框自己画（见 WM_NCPAINT）：WS_BORDER 用的是系统窗口边框色，浅到几乎看不见。
+  // 不加 WS_EX_TOOLWINDOW——工具窗口连 CS_DROPSHADOW 也不画。
+  HWND h = ::CreateWindowExW(0, kFontPanelClass, L"", WS_POPUP, anchor.left,
+                             anchor.bottom + scale(2), scale(330), scale(300), st->hwnd, nullptr,
+                             ModuleHandle(), p);
+  if (!h) {
+    delete p;
+    return;
+  }
+  st->fontPanel = p;
+  ::ShowWindow(h, SW_SHOW);
+  ::SetForegroundWindow(h);
+  if (p->edit) {
+    // 创建时设置过的提示文字有时不显示，等窗口真的可见了再设一次
+    ::SendMessageW(p->edit, EM_SETCUEBANNER, TRUE,
+                   reinterpret_cast<LPARAM>(loc::T(loc::Str::FontFilterCue)));
+  }
+}
+
 void RefreshSkins(DialogState* st) {
   if (!st->hSkin) return;
   SkinList(&st->skins);
@@ -645,6 +1107,15 @@ void RefreshSkins(DialogState* st) {
     st->staged.skin = st->skins[0].id;
   }
   ::SendMessageW(st->hSkin, CB_SETCURSEL, selected, 0);
+}
+
+// 「正文宽度」下面那句说明：勾了不限就讲不限，否则讲当前这条提示。
+void UpdateMeasureHint(DialogState* st) {
+  if (!st->hMeasureHint) return;
+  const bool unlimited = ::IsDlgButtonChecked(st->hwnd, kIdUnlimited) == BST_CHECKED;
+  ::SetWindowTextW(st->hMeasureHint,
+                   unlimited ? loc::T(loc::Str::MeasureHintUnlimited)
+                             : loc::T(loc::Str::MeasureHint));
 }
 
 void EnableMeasure(DialogState* st, bool enabled) {
@@ -693,6 +1164,7 @@ void LoadUiFromStaged(DialogState* st) {
   ::SetWindowTextW(st->hMeasure, buf);
   ::SendMessageW(st->hMeasureSpin, UDM_SETPOS32, 0, measure);
   EnableMeasure(st, !unlimited);
+  UpdateMeasureHint(st);
 
   ::CheckDlgButton(st->hwnd, kIdRenderMermaid,
                    st->staged.renderMermaid ? BST_CHECKED : BST_UNCHECKED);
@@ -1061,16 +1533,15 @@ void ShowWebViewHelp(DialogState* st) {
                loc::T(loc::Str::CopyPath), st->font);
 }
 
-void AddFontToChain(DialogState* st) {
-  wchar_t buf[LF_FACESIZE * 2] = {};
-  ::GetWindowTextW(st->hFamily, buf, ARRAYSIZE(buf));
-  const std::wstring name = Trimmed(buf);
-  if (name.empty()) return;
+// 把一个字体名加进当前槽位的回退链；重名（SameFamily）直接忽略。
+void AddFontNameToChain(DialogState* st, const std::wstring& name) {
+  const std::wstring trimmed = Trimmed(name.c_str());
+  if (trimmed.empty()) return;
   FontStack* stack = CurrentStack(st);
   for (const std::wstring& existing : *stack) {
-    if (SameFamily(existing, name)) return;
+    if (SameFamily(existing, trimmed)) return;
   }
-  stack->push_back(name);
+  stack->push_back(trimmed);
   RefreshChainList(st);
   ::SendMessageW(st->hChainList, LB_SETCURSEL, static_cast<WPARAM>(stack->size() - 1), 0);
 }
@@ -1111,8 +1582,10 @@ void BuildUi(DialogState* st) {
     // 四个页签是一个单选组：只给组里第一个 WS_TABSTOP，整组占一个 Tab 站位
     //（Windows 对同组单选按钮也会把其余的清掉，这里写明白就不靠它）。
     // 换页用左右方向键，也照旧能点。
+    // 自绘：单选只负责互斥状态，外观由 DrawTab 画（白底加粗 + 强调色下划线），
+    // BS_PUSHLIKE 那套内阴影在浅色背景上几乎看不出当前页。
     AddControl(st, -1, L"BUTTON", tabs[i].text,
-               BS_AUTORADIOBUTTON | BS_PUSHLIKE | (i == 0 ? (WS_TABSTOP | WS_GROUP) : 0),
+               BS_AUTORADIOBUTTON | BS_OWNERDRAW | (i == 0 ? (WS_TABSTOP | WS_GROUP) : 0),
                12 + i * 90, 10, 84, 26, tabs[i].id);
   }
 
@@ -1158,7 +1631,8 @@ void BuildUi(DialogState* st) {
   st->hUnlimited = AddControl(st, 0, L"BUTTON", loc::T(loc::Str::Unlimited),
                               BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 300, y, 120, 24,
                               kIdUnlimited);
-  AddControl(st, 0, L"STATIC", loc::T(loc::Str::MeasureHint), SS_LEFT, 16, 210, 520, 20, 0);
+  st->hMeasureHint = AddControl(st, 0, L"STATIC", loc::T(loc::Str::MeasureHint), SS_LEFT, 16, 210,
+                                520, 20, kIdMeasureHint);
 
   // ---------------- 字体 ----------------
   y = 48;
@@ -1170,21 +1644,22 @@ void BuildUi(DialogState* st) {
   st->hSlot[2] = AddControl(st, 1, L"BUTTON", loc::T(loc::Str::SlotMono),
                             BS_AUTORADIOBUTTON | WS_TABSTOP, 252, y, 70, 24, kIdSlotMono);
 
+  // 字体：不再挂一个可编辑下拉框——要先打字再展开才看得到列表，用起来别扭。
+  // 现在只有一个按钮，点开是带筛选的列表（面板里也能刷新字体列表）。
   y = 82;
   AddControl(st, 1, L"STATIC", loc::T(loc::Str::Family), SS_LEFT, 16, y + 3, 70, 20, 0);
-  st->hFamily = AddControl(st, 1, L"COMBOBOX", L"",
-                           CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_HASSTRINGS | WS_VSCROLL |
-                               WS_TABSTOP,
-                           100, y, 330, 240, kIdFamily);
-  AddControl(st, 1, L"BUTTON", loc::T(loc::Str::FamilyAdd), BS_PUSHBUTTON | WS_TABSTOP, 436, y,
-             60, 24, kIdFamilyAdd);
+  AddControl(st, 1, L"BUTTON", loc::T(loc::Str::FontAdd), BS_PUSHBUTTON | WS_TABSTOP, 100, y,
+             140, 26, kIdFamilyAdd);
 
-  y = 118;
+  y = 120;
   AddControl(st, 1, L"STATIC", loc::T(loc::Str::Chain), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hChainList = AddControl(st, 1, L"LISTBOX", L"",
                               LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_BORDER |
-                                  WS_TABSTOP,
-                              100, y, 330, 116, kIdFamilyList);
+                                  WS_TABSTOP | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
+                              100, y, 330, 200, kIdFamilyList);
+  if (st->hChainList) {
+    ::SendMessageW(st->hChainList, LB_SETITEMHEIGHT, 0, ScaleOf(st, 22));
+  }
   AddControl(st, 1, L"BUTTON", loc::T(loc::Str::ChainUp), BS_PUSHBUTTON | WS_TABSTOP, 436, y, 60,
              24, kIdChainUp);
   AddControl(st, 1, L"BUTTON", loc::T(loc::Str::ChainDown), BS_PUSHBUTTON | WS_TABSTOP, 436,
@@ -1192,15 +1667,20 @@ void BuildUi(DialogState* st) {
   AddControl(st, 1, L"BUTTON", loc::T(loc::Str::ChainDel), BS_PUSHBUTTON | WS_TABSTOP, 436,
              y + 60, 60, 24, kIdChainDel);
 
-  y = 246;
+  y = 332;
   AddControl(st, 1, L"STATIC", loc::T(loc::Str::Preview), SS_LEFT, 16, y + 3, 70, 20, 0);
-  st->hPreview = AddControl(st, 1, L"STATIC", L"", SS_LEFT | SS_CENTERIMAGE, 100, y, 430, 26, kIdPreview);
-  st->hPreviewNote = AddControl(st, 1, L"STATIC", L"", SS_LEFT, 100, y + 30, 430, 20,
+  {
+    RECT prc = {ScaleOf(st, 100), ScaleOf(st, y), ScaleOf(st, 530), ScaleOf(st, y + 64)};
+    st->preview = SettingsPreviewCreate(st->hwnd, prc);
+    st->hPreview = SettingsPreviewHwnd(st->preview);
+    if (st->hPreview) st->pageCtrls[1].push_back(st->hPreview);
+  }
+  st->hPreviewNote = AddControl(st, 1, L"STATIC", L"", SS_LEFT, 100, y + 70, 430, 20,
                                 kIdPreviewNote);
-  AddControl(st, 1, L"BUTTON", loc::T(loc::Str::RefreshFonts), BS_PUSHBUTTON | WS_TABSTOP, 100,
-             y + 58, 110, 24, kIdRefreshFonts);
 
   // ---------------- 渲染 ----------------
+  // 按「渲染什么 / 界面多出什么 / 代码块 / 外部图片」分四组纵排。原来左右两列没有
+  // 任何标题，网络图片那组又插在左列下方，看着像第 6 个开关。
   struct RenderDef {
     int id;
     const wchar_t* text;
@@ -1210,28 +1690,39 @@ void BuildUi(DialogState* st) {
                                {kIdRenderHighlight, loc::T(loc::Str::RenderHighlight)},
                                {kIdRenderHtml, loc::T(loc::Str::RenderHtml)},
                                {kIdRenderLocal, loc::T(loc::Str::RenderLocal)}};
-  y = 48;
-  for (int i = 0; i < 5; ++i) {
-    st->hRender[i] = AddControl(st, 2, L"BUTTON", renders[i].text, BS_AUTOCHECKBOX | WS_TABSTOP,
-                                16, y + i * 26, 300, 24, renders[i].id);
-  }
 
-  // 右列：左边那列决定「渲染什么」，这一列决定「界面上多出哪些控件」。
-  // 都是开关，但语义不同，分两列比接在下面一长串更好找。
+  y = 48;
+  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderGroupContent), BS_GROUPBOX, 16, y, 524,
+             120, 0);
+  // 三个短开关横排，长的（外部图片路径）单独占一行
+  st->hRender[0] = AddControl(st, 2, L"BUTTON", renders[0].text, BS_AUTOCHECKBOX | WS_TABSTOP,
+                              28, y + 16, 170, 24, renders[0].id);
+  st->hRender[1] = AddControl(st, 2, L"BUTTON", renders[1].text, BS_AUTOCHECKBOX | WS_TABSTOP,
+                              208, y + 16, 170, 24, renders[1].id);
+  st->hRender[2] = AddControl(st, 2, L"BUTTON", renders[2].text, BS_AUTOCHECKBOX | WS_TABSTOP,
+                              388, y + 16, 150, 24, renders[2].id);
+  st->hRender[3] = AddControl(st, 2, L"BUTTON", renders[3].text, BS_AUTOCHECKBOX | WS_TABSTOP,
+                              28, y + 40, 170, 24, renders[3].id);
+  st->hRender[4] = AddControl(st, 2, L"BUTTON", renders[4].text, BS_AUTOCHECKBOX | WS_TABSTOP,
+                              208, y + 40, 170, 24, renders[4].id);
+  // 图片的路径策略与「本地图片」是同一件事，放在同一组里
+  st->hOutside = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::OutsideImages),
+                            BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 28, y + 64, 500, 24,
+                            kIdOutside);
+  AddControl(st, 2, L"STATIC", loc::T(loc::Str::RenderHtmlHint), SS_LEFT, 28, y + 92, 500, 18,
+             0);
+
+  y = 176;
+  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderGroupUi), BS_GROUPBOX, 16, y, 524, 80, 0);
   st->hCopyCode = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderCopyCode),
-                             BS_AUTOCHECKBOX | WS_TABSTOP, 340, y, 200, 24, kIdCopyCode);
+                             BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 16, 140, 24, kIdCopyCode);
   st->hCopyTable = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderCopyTable),
-                              BS_AUTOCHECKBOX | WS_TABSTOP, 340, y + 26, 200, 24, kIdCopyTable);
-  AddControl(st, 2, L"STATIC", loc::T(loc::Str::RenderCopyFormat), SS_LEFT, 356, y + 55, 180, 20,
+                              BS_AUTOCHECKBOX | WS_TABSTOP, 176, y + 16, 140, 24, kIdCopyTable);
+  AddControl(st, 2, L"STATIC", loc::T(loc::Str::RenderCopyFormat), SS_LEFT, 322, y + 19, 80, 20,
              0);
   st->hCopyFormat = AddControl(st, 2, L"COMBOBOX", L"",
-                               CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 356,
-                               y + 76, 174, 120, kIdCopyFormat);
-  st->hFindBtn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderFindButton),
-                            BS_AUTOCHECKBOX | WS_TABSTOP, 340, y + 108, 200, 24, kIdFindBtn);
-  st->hOutlineBtn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderOutlineButton),
-                               BS_AUTOCHECKBOX | WS_TABSTOP, 340, y + 134, 200, 24,
-                               kIdOutlineBtn);
+                               CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 404,
+                               y + 16, 122, 120, kIdCopyFormat);
   if (st->hCopyFormat) {
     ::SendMessageW(st->hCopyFormat, CB_ADDSTRING, 0,
                    reinterpret_cast<LPARAM>(loc::T(loc::Str::CopyFormatTsv)));
@@ -1239,43 +1730,44 @@ void BuildUi(DialogState* st) {
                    reinterpret_cast<LPARAM>(loc::T(loc::Str::CopyFormatMarkdown)));
     ::SendMessageW(st->hCopyFormat, CB_SETCURSEL, 0, 0);
   }
+  st->hFindBtn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderFindButton),
+                            BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 44, 140, 24, kIdFindBtn);
+  st->hOutlineBtn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderOutlineButton),
+                               BS_AUTOCHECKBOX | WS_TABSTOP, 176, y + 44, 140, 24,
+                               kIdOutlineBtn);
 
-  // 代码块相关的一组：行号、空白符标记、缩进式代码块。放在页面底部通栏，
-  // 免得这些开关散在两列里看不出是一类。
-  y = 336;
-  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeBlockGroup), BS_GROUPBOX, 16, y, 524, 104,
+  y = 264;
+  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeBlockGroup), BS_GROUPBOX, 16, y, 524, 88,
              kIdCodeGroup);
   st->hLineNumbers = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderLineNumbers),
-                                BS_AUTOCHECKBOX | WS_TABSTOP, 30, y + 18, 130, 24,
+                                BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 16, 140, 24,
                                 kIdLineNumbers);
   st->hCodeWsOn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderCodeWhitespace),
-                             BS_AUTOCHECKBOX | WS_TABSTOP, 30, y + 44, 130, 24, kIdCodeWsOn);
-  // 范围用三个单选按钮摆在同一行：互斥关系一眼看得出来，也不用再挂一个下拉框。
-  // 顺序按常显的多少递增（仅选中 → 边界 → 全部），创建顺序即 tab 顺序。
+                             BS_AUTOCHECKBOX | WS_TABSTOP, 176, y + 16, 130, 24, kIdCodeWsOn);
+  // 范围三档按常显多少递增，创建顺序即 tab 顺序
   st->hCodeWsSelected = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeWsSelected),
-                                   BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP, 175, y + 44, 88,
+                                   BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP, 312, y + 16, 76,
                                    24, kIdCodeWsSelected);
   st->hCodeWsBoundary = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeWsBoundary),
-                                   BS_AUTORADIOBUTTON | WS_TABSTOP, 263, y + 44, 78, 24,
+                                   BS_AUTORADIOBUTTON | WS_TABSTOP, 396, y + 16, 66, 24,
                                    kIdCodeWsBoundary);
   st->hCodeWsAll = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeWsAll),
-                              BS_AUTORADIOBUTTON | WS_TABSTOP, 341, y + 44, 78, 24, kIdCodeWsAll);
+                              BS_AUTORADIOBUTTON | WS_TABSTOP, 470, y + 16, 60, 24, kIdCodeWsAll);
   st->hIndentedBlocks = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderIndentedBlocks),
-                                   BS_AUTOCHECKBOX | WS_TABSTOP, 30, y + 70, 400, 24,
+                                   BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 44, 400, 24,
                                    kIdIndentedBlocks);
 
-  y = 190;
-  AddControl(st, 2, L"STATIC", loc::T(loc::Str::NetAskWhen), SS_LEFT, 16, y, 300, 20, 0);
+  y = 360;
+  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderGroupImages), BS_GROUPBOX, 16, y, 524, 92,
+             0);
+  AddControl(st, 2, L"STATIC", loc::T(loc::Str::NetAskWhen), SS_LEFT, 28, y + 16, 300, 20, 0);
   st->hNetDoc = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::NetPerDoc),
-                           BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP, 28, y + 24, 300, 24,
+                           BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP, 28, y + 40, 130, 24,
                            kIdNetDoc);
   st->hNetHost = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::NetPerHost),
-                            BS_AUTORADIOBUTTON | WS_TABSTOP, 28, y + 50, 360, 24, kIdNetHost);
+                            BS_AUTORADIOBUTTON | WS_TABSTOP, 168, y + 40, 300, 24, kIdNetHost);
   st->hNetOff = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::NetNever),
-                           BS_AUTORADIOBUTTON | WS_TABSTOP, 28, y + 76, 300, 24, kIdNetOff);
-  st->hOutside = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::OutsideImages),
-                            BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 16, y + 108, 480, 24,
-                            kIdOutside);
+                           BS_AUTORADIOBUTTON | WS_TABSTOP, 28, y + 64, 200, 24, kIdNetOff);
 
   // ---------------- 高级 ----------------
   std::wstring version = UtilModuleVersion();
@@ -1285,16 +1777,34 @@ void BuildUi(DialogState* st) {
 
   y = 50;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::Version), SS_LEFT, 16, y + 2, 90, 20, 0);
-  AddControl(st, 3, L"STATIC", version.c_str(), SS_LEFT, 110, y + 2, 300, 20, kIdVersion);
+  AddControl(st, 3, L"STATIC", version.c_str(), SS_LEFT, 110, y + 2, 280, 20, kIdVersion);
+  st->hCopyVersion = AddControl(st, 3, L"BUTTON", loc::T(loc::Str::CopyVersionInfo),
+                                BS_PUSHBUTTON | WS_TABSTOP, 400, y - 2, 124, 26,
+                                kIdCopyVersion);
+
   y = 78;
   AddControl(st, 3, L"STATIC", L"WebView2", SS_LEFT, 16, y + 2, 90, 20, 0);
-  AddControl(st, 3, L"STATIC", runtime.c_str(), SS_LEFT, 110, y + 2, 420, 20, kIdWebView);
+  AddControl(st, 3, L"STATIC", runtime.c_str(), SS_LEFT, 110, y + 2, 280, 20, kIdWebView);
 
+  // 日志与预热都是引擎生命周期的开关：先决定要不要留日志（排查问题时最先看它），
+  // 再决定要不要在启动时就预热。
   y = 108;
-  st->hPrewarm = AddControl(st, 3, L"BUTTON", loc::T(loc::Str::Prewarm),
-                            BS_AUTOCHECKBOX | WS_TABSTOP, 16, y, 480, 24, kIdPrewarm);
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::LogEnabled), BS_AUTOCHECKBOX | WS_TABSTOP,
+             16, y, 300, 24, kIdEnableLog);
 
   y = 138;
+  {
+    // 问号紧跟描述。复选框的宽度必须收在文字后面——给宽了它就会盖住右侧的问号
+    // （两个都是子窗口，重叠时谁最后重绘谁在上）。
+    const wchar_t* prewarmLabel = loc::T(loc::Str::Prewarm);
+    const int boxW = 22 + UnscaleOf(st, TextWidth(st, prewarmLabel)) + 6;
+    st->hPrewarm = AddControl(st, 3, L"BUTTON", prewarmLabel, BS_AUTOCHECKBOX | WS_TABSTOP, 16,
+                              y, boxW, 24, kIdPrewarm);
+    AddControl(st, 3, L"BUTTON", L"?", BS_PUSHBUTTON | WS_TABSTOP, 16 + boxW + 4, y, 24, 24,
+               kIdPrewarmHelp);
+  }
+
+  y = 172;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleRelease), SS_LEFT, 16, y + 3, 120, 20, 0);
   st->hIdle = AddControl(st, 3, L"EDIT", L"",
                          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 140, y, 70, 24, kIdIdle,
@@ -1304,25 +1814,23 @@ void BuildUi(DialogState* st) {
                              0, 0, 0, 0, kIdIdleSpin);
   ::SendMessageW(st->hIdleSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(st->hIdle), 0);
   ::SendMessageW(st->hIdleSpin, UDM_SETRANGE32, 0, 1440);
-  AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleUnit), SS_LEFT, 220, y + 3, 220, 20, 0);
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleUnit), SS_LEFT, 220, y + 3, 260, 20, 0);
 
-  y = 176;
-  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenLog), BS_PUSHBUTTON | WS_TABSTOP, 16, y, 130,
-             26, kIdOpenLog);
-  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenConfig), BS_PUSHBUTTON | WS_TABSTOP, 154, y,
-             140, 26, kIdOpenConfig);
-  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 302, y,
-             130, 26, kIdOpenSkins);
-  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::LogEnabled), BS_AUTOCHECKBOX | WS_TABSTOP, 440,
-             y, 108, 26, kIdEnableLog);
+  // 按钮宽度按文字给足即可，原来 130/140 留了太多空白
+  y = 210;
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenLog), BS_PUSHBUTTON | WS_TABSTOP, 16, y,
+             104, 26, kIdOpenLog);
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 128, y,
+             104, 26, kIdOpenSkins);
 
-  y = 208;
+  y = 246;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolder), SS_LEFT, 16, y, 200, 20, 0);
   std::wstring dataDir = UtilDataDir();
   if (dataDir.empty()) dataDir = loc::T(loc::Str::NoFolder);
   HWND hPath = AddControl(st, 3, L"EDIT", dataDir.c_str(),
                           WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, 16, y + 22,
                           480, 40, kIdConfigPath, WS_EX_CLIENTEDGE);
+  int pathH = ScaleOf(st, 40);
   if (hPath) {
     HFONT font = reinterpret_cast<HFONT>(::SendMessageW(hPath, WM_GETFONT, 0, 0));
     if (!font) font = static_cast<HFONT>(::GetStockObject(DEFAULT_GUI_FONT));
@@ -1338,6 +1846,7 @@ void BuildUi(DialogState* st) {
     const int lines = static_cast<int>(::SendMessageW(hPath, EM_GETLINECOUNT, 0, 0));
     const int visible = lines < 1 ? 1 : (lines > 3 ? 3 : lines);
     const int editH = visible * lineH + ScaleOf(st, 8);
+    pathH = editH;
     ::SetWindowPos(hPath, nullptr, 0, 0, ScaleOf(st, 480), editH,
                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     if (lines > visible) {
@@ -1349,10 +1858,18 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"BUTTON", L"?", BS_PUSHBUTTON | WS_TABSTOP, 504, y + 20, 26, 24,
              kIdConfigHelp);
 
-  y = 306;
-  AddControl(st, 3, L"STATIC", loc::T(loc::Str::WebViewCache), SS_LEFT, 16, y + 3, 94, 20, 0);
+  // 「打开配置目录」跟着路径走：原来和日志、皮肤并排，离它要打开的东西隔着一整个页面
+  const int openConfigY = y + 22 + UnscaleOf(st, pathH) + 8;
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenConfig), BS_PUSHBUTTON | WS_TABSTOP, 16,
+             openConfigY, 104, 26, kIdOpenConfig);
+
+  y = openConfigY + 40;
+  const int cacheLabelW = UnscaleOf(st, TextWidth(st, loc::T(loc::Str::WebViewCache))) + 10;
+  AddControl(st, 3, L"STATIC", loc::T(loc::Str::WebViewCache), SS_LEFT, 16, y + 3, cacheLabelW,
+             20, 0);
   st->hWebViewDir = AddControl(st, 3, L"EDIT", L"",
-                               ES_AUTOHSCROLL | WS_TABSTOP, 114, y, 296, 24, kIdWebViewDir,
+                               ES_AUTOHSCROLL | WS_TABSTOP, 16 + cacheLabelW, y,
+                               410 - (16 + cacheLabelW), 24, kIdWebViewDir,
                                WS_EX_CLIENTEDGE);
   if (st->hWebViewDir) {
     ::SendMessageW(st->hWebViewDir, EM_SETCUEBANNER, TRUE,
@@ -1360,8 +1877,6 @@ void BuildUi(DialogState* st) {
   }
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::WebViewBrowse), BS_PUSHBUTTON | WS_TABSTOP, 418,
              y, 70, 24, kIdWebViewBrowse);
-  AddControl(st, 3, L"BUTTON", L"?", BS_PUSHBUTTON | WS_TABSTOP, 496, y, 26, 24,
-             kIdWebViewHelp);
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::WebViewOpen), BS_PUSHBUTTON | WS_TABSTOP, 114,
              y + 34, 110, 26, kIdWebViewOpen);
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::WebViewDefault), BS_PUSHBUTTON | WS_TABSTOP, 232,
@@ -1370,9 +1885,11 @@ void BuildUi(DialogState* st) {
              y + 34, 100, 26, kIdWebViewClear);
   st->hWebViewInfo = AddControl(st, 3, L"STATIC", L"", SS_LEFT, 114, y + 66, 434, 20, 0);
 
-  // 底部按钮
-  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 16, 470,
-             100, 28, kIdRestore);
+  // 底部按钮：两个重置在左（本页在前、全部在后），右侧是 应用/确定/取消
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::ResetPage), BS_PUSHBUTTON | WS_TABSTOP, 16, 470,
+             88, 28, kIdResetPage);
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 112, 470,
+             88, 28, kIdRestore);
   st->hApply = AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Apply),
                           BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, 322, 470, 70, 28, kIdApply);
   AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Ok), BS_DEFPUSHBUTTON | WS_TABSTOP, 400,
@@ -1381,6 +1898,54 @@ void BuildUi(DialogState* st) {
              70, 28, kIdCancel);
 
   ShowPage(st, 0);
+}
+
+// 只重置当前页签对应的设置项。改的是暂存值，点「应用 / 确定」才落盘。
+void ResetPageSettings(DialogState* st, int page) {
+  const Config def = ConfigDefaults();
+  Config& c = st->staged;
+  switch (page) {
+    case 0:
+      c.skin = def.skin;
+      c.font.sizePx = def.font.sizePx;
+      c.font.lineHeight = def.font.lineHeight;
+      c.font.measureEm = def.font.measureEm;
+      break;
+    case 1:
+      c.font.ui = def.font.ui;
+      c.font.body = def.font.body;
+      c.font.mono = def.font.mono;
+      break;
+    case 2:
+      c.renderMermaid = def.renderMermaid;
+      c.renderKatex = def.renderKatex;
+      c.renderHighlight = def.renderHighlight;
+      c.renderInlineHtml = def.renderInlineHtml;
+      c.renderLocalImages = def.renderLocalImages;
+      c.copyCodeBlock = def.copyCodeBlock;
+      c.copyTable = def.copyTable;
+      c.tableCopyMode = def.tableCopyMode;
+      c.showFindButton = def.showFindButton;
+      c.showOutlineButton = def.showOutlineButton;
+      c.codeLineNumbers = def.codeLineNumbers;
+      c.codeWsOn = def.codeWsOn;
+      c.codeWsRange = def.codeWsRange;
+      c.codeIndentedBlocks = def.codeIndentedBlocks;
+      c.netImageMode = def.netImageMode;
+      c.allowOutsideImages = def.allowOutsideImages;
+      break;
+    case 3:
+      c.enableLog = def.enableLog;
+      c.prewarm = def.prewarm;
+      c.idleReleaseMinutes = def.idleReleaseMinutes;
+      c.webviewBaseDir = def.webviewBaseDir;
+      break;
+    default:
+      return;
+  }
+  LoadUiFromStaged(st);
+  SetDirty(st, true);
+  LogLine(L"SETTINGS: 重置第 %d 页", page + 1);
 }
 
 void OnCommand(DialogState* st, int id, int code) {
@@ -1393,9 +1958,36 @@ void OnCommand(DialogState* st, int id, int code) {
       return;
 
     case kIdRestore:
+      // 影响所有页签，问一句再动；默认焦点落在「否」上，回车不会误触。
+      if (::MessageBoxW(st->hwnd, loc::T(loc::Str::ResetAllText),
+                        loc::T(loc::Str::ResetAllTitle),
+                        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+        return;
+      }
       st->staged = ConfigDefaults();
       LoadUiFromStaged(st);
       SetDirty(st, true);
+      return;
+
+    case kIdResetPage:
+      ResetPageSettings(st, st->page);
+      return;
+
+    case kIdCopyVersion: {
+      std::wstring text = L"DopusMdViewer ";
+      text += UtilModuleVersion();
+      text += L"\r\nWebView2 ";
+      text += WebHostRuntimeInfo();
+      if (CopyTextToClipboard(st->hwnd, text.c_str()) && st->hCopyVersion) {
+        ::SetWindowTextW(st->hCopyVersion, loc::T(loc::Str::Copied));
+        ::SetTimer(st->hwnd, kCopyHintTimerId, 1200, nullptr);
+      }
+      return;
+    }
+
+    case kIdPrewarmHelp:
+      ShowTextHelp(st->hwnd, loc::T(loc::Str::Prewarm), loc::T(loc::Str::PrewarmHelp), nullptr,
+                   loc::T(loc::Str::Copy), st->font);
       return;
 
     case kIdApply:
@@ -1438,6 +2030,7 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdUnlimited:
       if (code == BN_CLICKED) {
         EnableMeasure(st, ::IsDlgButtonChecked(st->hwnd, kIdUnlimited) != BST_CHECKED);
+        UpdateMeasureHint(st);
         SetDirty(st, true);
       }
       return;
@@ -1449,10 +2042,13 @@ void OnCommand(DialogState* st, int id, int code) {
       RefreshChainList(st);
       return;
 
-    case kIdFamilyAdd:
-      AddFontToChain(st);
-      SetDirty(st, true);
+    case kIdFamilyAdd: {
+      HWND btn = ::GetDlgItem(st->hwnd, kIdFamilyAdd);
+      RECT rc = {};
+      if (btn) ::GetWindowRect(btn, &rc);
+      OpenFontPanel(st, rc);
       return;
+    }
 
     case kIdChainDel:
       RemoveFromChain(st);
@@ -1628,6 +2224,29 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
       return 1;
     }
 
+    case WM_TIMER:
+      if (wParam == kCopyHintTimerId) {
+        ::KillTimer(hwnd, kCopyHintTimerId);
+        if (st && st->hCopyVersion) {
+          ::SetWindowTextW(st->hCopyVersion, loc::T(loc::Str::CopyVersionInfo));
+        }
+        return 0;
+      }
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+
+    case WM_DRAWITEM: {
+      const DRAWITEMSTRUCT* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+      if (st && dis && dis->CtlID >= kIdTabAppearance && dis->CtlID <= kIdTabAdvanced) {
+        DrawTab(st, dis);
+        return TRUE;
+      }
+      if (st && dis && dis->CtlID == static_cast<UINT>(kIdFamilyList)) {
+        DrawChainItem(st, dis);
+        return TRUE;
+      }
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
+    }
+
     case WM_CTLCOLORSTATIC: {
       HDC hdc = reinterpret_cast<HDC>(wParam);
       HWND control = reinterpret_cast<HWND>(lParam);
@@ -1645,7 +2264,9 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     case WM_DESTROY:
       g_hwnd = nullptr;
       if (st) {
+        if (st->preview) SettingsPreviewDestroy(st->preview);
         if (st->previewFont) ::DeleteObject(st->previewFont);
+        if (st->fontBold) ::DeleteObject(st->fontBold);
         if (st->font) ::DeleteObject(st->font);
         ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         delete st;
@@ -1693,11 +2314,20 @@ HMODULE ModuleHandle(void) {
   return mod;
 }
 
-HFONT CreateUiFont(void) {
+HFONT CreateUiFont(bool bold = false) {
   NONCLIENTMETRICSW ncm = {};
   ncm.cbSize = sizeof(ncm);
   if (::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+    if (bold) ncm.lfMessageFont.lfWeight = FW_BOLD;
     return ::CreateFontIndirectW(&ncm.lfMessageFont);
+  }
+  if (bold) {
+    LOGFONTW lf = {};
+    HFONT base = static_cast<HFONT>(::GetStockObject(DEFAULT_GUI_FONT));
+    if (base && ::GetObjectW(base, sizeof(lf), &lf) == sizeof(lf)) {
+      lf.lfWeight = FW_BOLD;
+      return ::CreateFontIndirectW(&lf);
+    }
   }
   return static_cast<HFONT>(::GetStockObject(DEFAULT_GUI_FONT));
 }
@@ -1719,6 +2349,7 @@ HWND SettingsShow(HWND parent) {
   DialogState* st = new (std::nothrow) DialogState();
   if (!st) return nullptr;
   st->font = CreateUiFont();
+  st->fontBold = CreateUiFont(true);
   st->staged = ConfigSnapshot();
 
   const UINT dpi = parent ? ::GetDpiForWindow(parent) : 96;

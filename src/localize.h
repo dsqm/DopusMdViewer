@@ -33,6 +33,9 @@ enum class Str : int {
   SlotMono,
   Family,
   FamilyAdd,
+  FontAdd,
+  FontFilterCue,
+  FontUseInput,
   Chain,
   ChainUp,
   ChainDown,
@@ -44,6 +47,9 @@ enum class Str : int {
   PreviewInherited,
 
   // 渲染
+  RenderGroupContent,
+  RenderGroupUi,
+  RenderGroupImages,
   RenderMermaid,
   RenderKatex,
   RenderHighlight,
@@ -91,6 +97,7 @@ enum class Str : int {
   WebViewClearCloseFirst,
   WebViewClearFailed,
   WebViewPathInvalid,
+  Copy,
   CopyAlias,
   Copied,
   CopyPath,
@@ -98,6 +105,13 @@ enum class Str : int {
   RuntimeMissing,
 
   // 底部按钮
+  CopyVersionInfo,
+  PrewarmHelp,
+  ResetPage,
+  ResetAllTitle,
+  ResetAllText,
+  MeasureHintUnlimited,
+  RenderHtmlHint,
   Restore,
   Apply,
   Ok,

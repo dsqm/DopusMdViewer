@@ -56,6 +56,7 @@ const UINT_PTR kFindPing2TimerId = 29;
 const UINT_PTR kFindRaceTimerId = 30;
 const UINT_PTR kCrashTimerId = 31;
 const UINT_PTR kWsSelTimerId = 34;
+const UINT_PTR kSettingsCloseTimerId = 35;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -95,6 +96,8 @@ bool g_drop = false;        // 关预热、设 1 分钟空闲释放；5 秒后�
 wchar_t g_findQuery[128] = L"中文";
 bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条目数与滚动位置
 bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，回流映射与滚动位置
+bool g_settingsClose = false;  // settings 模式：打开 6 秒后关掉设置窗口，验关窗是否干净
+HWND g_settingsHwnd = nullptr;
 bool g_wsSel = false;       // 5 秒后在代码块里程序化选一段，读回点亮数量
 bool g_copy = false;        // 5 秒后按 Ctrl+A，7 秒读剪贴板，9 秒再走 SELECTALL 消息
 bool g_pin = false;         // 5 秒后选区钉块 + 拖边滚动，滚到底验钉块没被换出
@@ -289,7 +292,14 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         }
       } else if (wParam == kSettingsTimerId) {
         ::KillTimer(hwnd, kSettingsTimerId);
-        SettingsShow(g_hwndMain);
+        g_settingsHwnd = SettingsShow(g_hwndMain);
+        if (g_settingsClose) ::SetTimer(hwnd, kSettingsCloseTimerId, 6000, nullptr);
+      } else if (wParam == kSettingsCloseTimerId) {
+        ::KillTimer(hwnd, kSettingsCloseTimerId);
+        LogLine(L"TEST: 关闭设置窗口");
+        if (g_settingsHwnd && ::IsWindow(g_settingsHwnd)) {
+          ::PostMessageW(g_settingsHwnd, WM_CLOSE, 0, 0);
+        }
       } else if (wParam == kCrashTimerId) {
         ::KillTimer(hwnd, kCrashTimerId);
         const wchar_t* method = g_crashBrowser ? L"Browser.crash" : L"Page.crash";
@@ -697,6 +707,10 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (g_sweep) { const wchar_t* sx = wcsstr(p, L"sweepat=");
     if (sx) { int v = _wtoi(sx + 8); if (v > 0) g_sweepDelayMs = static_cast<UINT>(v); } }
   if (*p && wcsstr(p, L"settings")) g_settings = true;
+  if (*p && wcsstr(p, L"setclose")) {
+    g_settings = true;
+    g_settingsClose = true;
+  }
   if (*p && wcsstr(p, L"dump")) g_dump = true;
   if (*p && wcsstr(p, L"seam")) g_seam = true;
   if (*p && wcsstr(p, L"consent")) g_consent = true;
@@ -877,6 +891,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
     ::TranslateMessage(&msg);
     ::DispatchMessageW(&msg);
+  }
+
+  // setclose 模式：设置窗口关闭时会向宿主循环发 WM_QUIT（Opus 的配置流程靠它收尾）。
+  // 这里吞掉它继续跑，才能观察「Opus 还活着时」预览的浏览器进程会不会自己退出。
+  if (g_settingsClose) {
+    while (::GetMessageW(&msg, nullptr, 0, 0) >= 0) {
+      if (msg.message == WM_QUIT) continue;
+      ::TranslateMessage(&msg);
+      ::DispatchMessageW(&msg);
+    }
   }
 
   return 0;

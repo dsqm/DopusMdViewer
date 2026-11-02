@@ -31,6 +31,9 @@ const wchar_t* const kZh[kCount] = {
     /* SlotMono         */ L"等宽",
     /* Family           */ L"字体",
     /* FamilyAdd        */ L"添加",
+    /* FontAdd          */ L"添加字体…",
+    /* FontFilterCue    */ L"输入以筛选",
+    /* FontUseInput     */ L"使用「%s」",
     /* Chain            */ L"回退链",
     /* ChainUp          */ L"上移",
     /* ChainDown        */ L"下移",
@@ -41,6 +44,9 @@ const wchar_t* const kZh[kCount] = {
     /* PreviewMissing   */ L"未找到：%s（仍可保存，系统会回退）",
     /* PreviewInherited */ L"正文未设置，跟随界面字体",
 
+    /* RenderGroupContent */ L"内容渲染",
+    /* RenderGroupUi    */ L"界面控件",
+    /* RenderGroupImages */ L"外部图片",
     /* RenderMermaid    */ L"Mermaid 图表",
     /* RenderKatex      */ L"KaTeX 公式",
     /* RenderHighlight  */ L"代码语法高亮",
@@ -57,7 +63,7 @@ const wchar_t* const kZh[kCount] = {
     /* CodeWsBoundary   */ L"边界",
     /* CodeWsAll        */ L"全部",
     /* CodeWsSelected   */ L"仅选中",
-    /* RenderIndentedBlocks */ L"缩进式代码块也应用以上设置",
+    /* RenderIndentedBlocks */ L"扩展至缩进式代码块",
     /* CopyFormatTsv    */ L"TSV 纯文本",
     /* CopyFormatMarkdown */ L"Markdown 源码",
     /* NetAskWhen       */ L"网络图片加载前：",
@@ -72,19 +78,19 @@ const wchar_t* const kZh[kCount] = {
     /* IdleUnit         */ L"分钟（0 = 不释放）",
     /* LogEnabled       */ L"记录日志",
     /* OpenLog          */ L"打开日志目录",
-    /* OpenConfig       */ L"打开配置根目录",
+    /* OpenConfig       */ L"打开配置目录",
     /* OpenSkins        */ L"打开皮肤目录",
-    /* ConfigFolder     */ L"配置文件夹",
+    /* ConfigFolder     */ L"配置目录",
     /* ConfigFolderHelp */
     L"默认位置在 Opus 的用户数据目录，随 Opus 配置一起备份。\r\n\r\n"
     L"更换位置：在「设置 → 文件夹别名（Folder Aliases）」中新建名为 %s 的别名，"
     L"指向目标文件夹。重启 Opus 后，配置、皮肤和日志都会改用该文件夹。\r\n\r\n"
     L"目标文件夹必须可写，不要指向需要管理员权限的文件夹（例如 Program Files）。"
     L"\r\n\r\n当前配置文件夹：\r\n%s",
-    /* WebViewCache     */ L"WebView2 缓存",
+    /* WebViewCache     */ L"WebView2 缓存目录",
     /* WebViewBrowse    */ L"浏览…",
     /* WebViewOpen      */ L"打开缓存目录",
-    /* WebViewDefault   */ L"恢复默认位置",
+    /* WebViewDefault   */ L"恢复默认目录",
     /* WebViewClear     */ L"清理缓存",
     /* WebViewCacheInfo */ L"缓存 %s；超过 %s 自动清理；修改后重启 Opus 生效",
     /* WebViewDirHelp */
@@ -97,13 +103,28 @@ const wchar_t* const kZh[kCount] = {
     /* WebViewClearCloseFirst */ L"预览引擎正在使用缓存，请先关闭所有预览窗口，再清理缓存。",
     /* WebViewClearFailed    */ L"缓存清理失败：目录仍被占用，请关闭所有预览窗口后重试。",
     /* WebViewPathInvalid    */ L"缓存位置必须是本地绝对路径，且目录可写。",
+    /* Copy             */ L"复制",
     /* CopyAlias        */ L"复制别名",
     /* Copied           */ L"已复制",
     /* CopyPath         */ L"复制路径",
     /* Unknown          */ L"未知",
     /* RuntimeMissing   */ L"未安装或不可用",
 
-    /* Restore          */ L"恢复默认",
+    /* CopyVersionInfo  */ L"复制版本信息",
+    /* PrewarmHelp */
+    L"作用：Opus 启动时就在后台把预览引擎和页面拉起来。之后打开第一个 Markdown 文件不用等"
+    L"引擎初始化，首屏一般能快 0.3～1 秒。\r\n\r\n"
+    L"代价：常驻一个预览进程（约 30～60 MB），即使从不看 Markdown 它也在后台待着。\r\n\r\n"
+    L"适合：经常用预览窗格看文档、机器内存充裕。\r\n"
+    L"不适合：很少看 Markdown，或在内存吃紧的机器上。关掉后由下面「空闲释放」在不用时回收。",
+    /* ResetPage        */ L"重置本页",
+    /* ResetAllTitle    */ L"重置全部设置",
+    /* ResetAllText */
+    L"所有页签的设置都会恢复默认值。\r\n\r\n"
+    L"确定后仍需点「应用」或「确定」才会写入配置文件。",
+    /* MeasureHintUnlimited */ L"不限宽：正文宽度随窗口自适应，不再按 em 限制。",
+    /* RenderHtmlHint   */ L"关闭后，正文里的 HTML 标签按原文显示，不会被解释成元素。",
+    /* Restore          */ L"重置全部",
     /* Apply            */ L"应用",
     /* Ok               */ L"确定",
     /* Cancel           */ L"取消",
