@@ -293,3 +293,33 @@ bin\hosttest.exe "samples\manual-test\big-table-3000.md" 6000 tables
 | 92 | 关闭折行后打印任一含表格的文档（Ctrl+P 预览） | 纸面上表格仍折行、不超出纸宽，没有横向滚动 |
 | 93 | 打印 `big-table-3000.md` | 整表连成一张，列宽前后一致，不出现分块接缝或重复表头 |
 | 94 | 渲染页按 Tab | 顺序为内容渲染 → 界面控件 → 代码块 → 表格 → 外部图片，表格组内先复制按钮再复制格式最后折行开关 |
+
+## 十五、单元测试（机器跑，不占人工）
+
+改了 `src/` 纯逻辑（索引/搜索/判码/config/msg/util/localize）或提交前，先跑一遍 C++ 单元测试：
+
+```
+python tools\build_unittests.py run
+```
+
+独立编译被测的 12 个编译单元（不依赖 `build.bat` 是否跑过），链出 `tools\unittest\unittest.exe` 并立即运行。
+进程自动把 `APPDATA`/`LOCALAPPDATA` 重定向到 `%TEMP%\mdv-unittest-<pid>\`，不碰真实配置；退出码非 0 即有失败。
+当前 67 个测试，覆盖：
+
+| 模块 | 锁住的行为 |
+|---|---|
+| `doc_index` | 任意切块结果一致（1 B–4 MB）、块种类与字节区间（含 CRLF）、Setext/ATX 大纲偏移、front matter 与脚注定义、松散列表、`BlockAtOffset` 空行归属、巨型块行数、limit 前缀扫描、页边界不误报 overflow |
+| `doc_search` | 命中偏移、ASCII 折叠、整词、多线程分段边界不漏不重（256 KB / 4 线程）、10000 上限截断、取消 |
+| `doc_regex` | `LiteralNeedsUnicodeFold` 路由、UTF-8 几何与 BOM 跳过、GB18030 解码折叠回源字节、整词、坏正则报错 |
+| `encoding_detect` | 各 BOM（UTF-32 不被 UTF-16 吞）、无 BOM UTF-16 启发式、合法 UTF-8、GB/Shift_JIS/ISO-2022 落 Legacy、代码页互转 |
+| `config` | 默认值、文件缺失回默认、写盘内容与未知键保留、越界值收敛 |
+| `msg` | fx/cfg 帧逐字符格式、SplitType/SecondField |
+| `util` | 路径字符串函数、目录文件往返、解码链 |
+| `localize` | 每个 Str id 非空、格式串占位符个数 |
+
+前端回归另有统一入口（4 个脚本）：
+
+```
+cd webbuild
+ELECTRON_RUN_AS_NODE=1 "%LOCALAPPDATA%\Programs\Qoder CN\Qoder CN.exe" test\run-all.mjs
+```
