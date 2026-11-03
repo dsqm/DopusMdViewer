@@ -80,7 +80,10 @@ const LINE_MAX = 512
 // 单表一次性布局 2 万行要 1.8 s，逐批往同一张表里追加要 4.7 s（每次追加都触发整表
 // 重排，总代价 O(n²)）；拆成块级表 + content-visibility:auto 后首帧只要 0.14 s。
 // 行内（tr / tbody）加 content-visibility 在 Chromium 里不生效，所以只能按块拆。
-const BT_ROWS = 500        // 每块行数；偶数，斑马纹跨块才不会翻
+// 块取 250 不取 500：一块的「渲染 + 建 DOM + 布局」是 60–80 ms 的同步任务，打开
+// 文档后半秒内滚一下滚轮就会撞上它，卡一帧；250 行把单次任务压到 30–40 ms。
+// 偶数，斑马纹跨块才不会翻。
+const BT_ROWS = 250
 const BT_EST_ROW = 32      // 行高还没实测时的高度估算（px）
 const BT_EST_HEAD = 40     // 表头估算高度（px）
 // 表格按分块真表格渲染的数据行上限。再往上 DOM 节点数本身成为瓶颈（2 万行 × 5 列
@@ -587,7 +590,6 @@ const NET = {
   current: null,
   panel: null,
   title: null,
-  hint: null,
 }
 
 function isRemoteUrl(raw) {
@@ -1271,7 +1273,6 @@ function ensureConsentPanel() {
   panel.innerHTML =
     '<div class="net-consent-text">' +
     '<span class="net-consent-title"></span>' +
-    '<span class="net-consent-hint"></span>' +
     '</div>' +
     '<div class="net-consent-actions">' +
     '<button type="button" data-act="deny">拒绝</button>' +
@@ -1282,17 +1283,12 @@ function ensureConsentPanel() {
   document.body.appendChild(panel)
   NET.panel = panel
   NET.title = panel.querySelector('.net-consent-title')
-  NET.hint = panel.querySelector('.net-consent-hint')
   return panel
 }
 
 function showNetPrompt(host) {
   const panel = ensureConsentPanel()
   NET.title.textContent = '允许加载来自 ' + host + ' 的网络图片吗？'
-  // 两个档位的答复都只在本篇有效，差别只在覆盖范围
-  NET.hint.textContent =
-    NET.mode === 2 ? '允许或拒绝：本篇所有来源都不再询问，换文件重新问。'
-                   : '允许或拒绝：本篇内该主机不再询问，换文件重新问。'
   panel.hidden = false
 }
 

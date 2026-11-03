@@ -744,19 +744,12 @@ pre.mermaid-src {
   min-width: 0;
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  /* 正文最多三行：问句 + 「这次答复管多久」那句。宽口径下各占一行；窄预览窗里
-     问句自己会折行，留三行容量免得把说明截掉 */
-  -webkit-line-clamp: 3;
+  /* 只有一句问句：窄预览窗里放不下就折行，留两行容量 */
+  -webkit-line-clamp: 2;
   overflow: hidden;
 }
 
 .net-consent-title { font-weight: 600; }
-
-.net-consent-hint {
-  display: block;
-  font-weight: 400;
-  opacity: 0.85;
-}
 
 .net-consent-actions {
   flex: 0 0 auto;
