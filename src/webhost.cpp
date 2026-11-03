@@ -55,6 +55,19 @@ const wchar_t kAppOrigin[] = L"https://mdprev.localhost";  // CORS 回显用，�
 const wchar_t kDocHost[] = L"mddoc.localhost";
 const wchar_t kShellUrl[] = L"https://mdprev.localhost/shell.html";
 
+DWORD WINAPI HostThreadProc(LPVOID param);  // ThisModule 用它的地址定位本模块
+
+// 本模块的 HINSTANCE：DLL 里不能用 GetModuleHandleW(nullptr)（那是 dopus.exe）。
+// 窗口类必须挂在本模块名下，否则插件卸载后类还留在系统里，lpfnWndProc 指向
+// 已卸载的代码，下次加载注册同名类失败又复用旧类 → 消息跳野指针。
+HMODULE ThisModule() {
+  HMODULE mod = nullptr;
+  ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&HostThreadProc), &mod);
+  return mod;
+}
+
 // 命令号：调用线程 → 宿主线程。参数在 SendMessage 期间有效。
 const UINT kCmdBase = WM_APP + 0x200;
 const UINT kCmdEnsure = kCmdBase + 1;
@@ -106,6 +119,8 @@ struct Host {
   // 自愈状态：最近一次恢复的时刻与一分钟内的累计次数（只在宿主线程上读写）。
   LARGE_INTEGER lastRecover = {};
   int recoverCount = 0;
+  // 最近一次受理的恢复请求时刻：同一场崩溃会被两个事件各报一次，靠它去重。
+  LARGE_INTEGER recoverAcceptedAt = {};
   LARGE_INTEGER tEnsure = {};
   LARGE_INTEGER tController = {};
   LARGE_INTEGER tNav = {};
@@ -199,9 +214,9 @@ DWORD WINAPI CacheCleanThreadProc(LPVOID param) {
   std::unique_ptr<std::wstring> dir(static_cast<std::wstring*>(param));
   if (dir) MaybeCleanCacheOnStart(*dir);
   HWND host = g_threadHost;
-  if (host && ::IsWindow(host)) {
-    ::PostMessageW(host, kCmdCleanupDone, 0, 0);
-  } else {
+  // 投递不出去（窗口已销毁、消息队列满）就自己解锁：等宿主线程来解会永远卡在
+  // g_cleanupBusy 上，之后所有建环境请求都被排队吞掉。
+  if (!host || !::IsWindow(host) || !::PostMessageW(host, kCmdCleanupDone, 0, 0)) {
     ::InterlockedExchange(&g_cleanupBusy, 0);
   }
   return 0;
@@ -1297,6 +1312,12 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     case kCmdDocFolder: {
       const std::wstring* dir = reinterpret_cast<const std::wstring*>(lParam);
       if (!dir) return 0;
+      // 与其它命令一样认借用方：不是当前借用者就不能改映射，否则会悄悄把
+      // 正在显示的那个窗口的文档目录换成别人的。
+      if (g_host.borrower != reinterpret_cast<HWND>(wParam)) {
+        LogLine(L"WEBHOST: 拒绝设置文档目录（%p 不是借用方）", reinterpret_cast<HWND>(wParam));
+        return 0;
+      }
       g_host.docFolder = *dir;
       if (!g_host.webview3) return 0;
 
@@ -1358,6 +1379,15 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       // 实例已经被回收过就什么都不用做：POST 可能来两次（ProcessFailed 与
       // BrowserProcessExited 都会报浏览器进程退出）。但还有查看器在借用时不能
       // 直接丢掉——env/webview 为空说明实例刚被收走，得整份重建。
+      // 借用方还在时下面两个短路都不成立，所以还得靠时间窗去重，否则同一场崩溃
+      // 会重建两次、多扣一次自愈预算。
+      LARGE_INTEGER now;
+      ::QueryPerformanceCounter(&now);
+      if (g_host.recoverAcceptedAt.QuadPart &&
+          QpcMs(g_host.recoverAcceptedAt.QuadPart, now.QuadPart) < 1500.0) {
+        LogLine(L"WEBHOST: 1.5 秒内已受理过一次自愈，忽略重复的恢复请求");
+        return 0;
+      }
       const bool full = wParam != 0;
       if (full && !g_host.env && !g_host.borrower) return 0;
       if (!full && !g_host.webview && !g_host.borrower) return 0;
@@ -1366,6 +1396,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         Fail(L"预览引擎反复崩溃，已停止自动恢复（重启 Opus 后再试）");
         return 0;
       }
+      g_host.recoverAcceptedAt = now;
       PostEvent(MDV_EVT_RECOVERING, L"");
       if (full) {
         RecoverInstance();
@@ -1438,23 +1469,37 @@ DWORD WINAPI HostThreadProc(LPVOID param) {
   // Opus 的 UI 线程多半已是 STA；这里在自己的线程上重新初始化一次。
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+  const HMODULE self = ThisModule();
   WNDCLASSEXW wc = {};
   wc.cbSize = sizeof(wc);
   wc.lpfnWndProc = HostWndProc;
-  wc.hInstance = static_cast<HINSTANCE>(::GetModuleHandleW(nullptr));
+  wc.hInstance = self;
   wc.lpszClassName = kHostClass;
 
-  if (!::RegisterClassExW(&wc) && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-    LogLine(L"WEBHOST: RegisterClassExW 失败 err=%lu", ::GetLastError());
-    ::InterlockedExchange(&g_threadFailed, 1);
-    ::SetEvent(readyEvent);
-    return 1;
+  if (!::RegisterClassExW(&wc)) {
+    const DWORD err = ::GetLastError();
+    if (err != ERROR_CLASS_ALREADY_EXISTS) {
+      LogLine(L"WEBHOST: RegisterClassExW 失败 err=%lu", err);
+      ::InterlockedExchange(&g_threadFailed, 1);
+      ::SetEvent(readyEvent);
+      return 1;
+    }
+    // 同名类还在系统里：本模块上一次加载注册的（线程只建一次，不该发生）。
+    // 留着它就会用旧的 WndProc，先注销再注册一次；注销也失败就不建窗口。
+    LogLine(L"WEBHOST: 宿主窗口类已存在，尝试注销后重注册");
+    ::UnregisterClassW(kHostClass, self);
+    if (!::RegisterClassExW(&wc)) {
+      LogLine(L"WEBHOST: 重注册宿主窗口类失败 err=%lu", ::GetLastError());
+      ::InterlockedExchange(&g_threadFailed, 1);
+      ::SetEvent(readyEvent);
+      return 1;
+    }
   }
 
   // WS_POPUP + 不可见：先游离在桌面上，被借用时改成 WS_CHILD 塞进查看器窗口。
   g_host.host = ::CreateWindowExW(WS_EX_NOACTIVATE, kHostClass, L"DopusMdViewerHost",
                                   WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, nullptr, nullptr,
-                                  static_cast<HINSTANCE>(::GetModuleHandleW(nullptr)), nullptr);
+                                  self, nullptr);
   g_host.prewarmEnabled = ::InterlockedCompareExchange(&g_cfgPrewarm, 0, 0) != 0;
   g_host.idleReleaseMinutes = ::InterlockedCompareExchange(&g_cfgIdleMinutes, 0, 0);
   g_threadHost = g_host.host;
@@ -1476,6 +1521,9 @@ DWORD WINAPI HostThreadProc(LPVOID param) {
 
   ReleaseController();
   g_host.env.Reset();
+  // 窗口已销毁，类可以注销了：不注销就会带着本模块的旧 lpfnWndProc 留在系统里，
+  // 插件重新加载后注册同名类失败、拿旧类建窗口，消息跳到已卸载的代码上。
+  ::UnregisterClassW(kHostClass, self);
   return 0;
 }
 
@@ -1603,10 +1651,12 @@ bool WebHostSetBounds(HWND hViewer, const RECT& client) {
   return result != 0;
 }
 
-bool WebHostSetDocFolder(const std::wstring& dir) {
+bool WebHostSetDocFolder(HWND hViewer, const std::wstring& dir) {
+  if (!hViewer) return false;
   HWND host = EnsureHostThread();
   if (!host || !::IsWindow(host)) return false;
-  return ::SendMessageW(host, kCmdDocFolder, 0, reinterpret_cast<LPARAM>(&dir)) != 0;
+  return ::SendMessageW(host, kCmdDocFolder, reinterpret_cast<WPARAM>(hViewer),
+                        reinterpret_cast<LPARAM>(&dir)) != 0;
 }
 
 void WebHostReleaseController(void) { SendCommand(kCmdRelease, 0, 0); }
@@ -1646,23 +1696,35 @@ bool WebHostHostExists(void) {
 
 // 插件 Uninit 时收尾：销毁宿主窗口（线程随之退出）并等待宿主/搜索线程落地。
 // Opus 之后可能 FreeLibrary——线程还活着就会执行已卸载的代码，必须等干净。
+// 等不到就不放行：标志与句柄全部留着，下次 Uninit 再等（放行才是真崩）。
 void WebHostShutdown(void) {
   if (::InterlockedCompareExchange(&g_hasThread, 0, 0) == 0) return;
   LogLine(L"WEBHOST: 插件卸载，收掉宿主线程");
 
   const HWND host = g_threadHost;
   if (host && ::IsWindow(host)) ::PostMessageW(host, WM_CLOSE, 0, 0);
+
+  bool clean = true;
   if (g_hHostThread) {
-    ::WaitForSingleObject(g_hHostThread, 5000);
-    ::CloseHandle(g_hHostThread);
-    g_hHostThread = nullptr;
+    if (::WaitForSingleObject(g_hHostThread, 5000) == WAIT_OBJECT_0) {
+      ::CloseHandle(g_hHostThread);
+      g_hHostThread = nullptr;
+    } else {
+      LogLine(L"WEBHOST: 宿主线程 5 秒内没退出，保留句柄与标志，下次卸载再等");
+      clean = false;
+    }
   }
   // 搜索线程在 WM_NCDESTROY 里收到退出标志，这里只等它跑完手头的扫描。
   if (g_hSearchThread) {
-    ::WaitForSingleObject(g_hSearchThread, 5000);
-    ::CloseHandle(g_hSearchThread);
-    g_hSearchThread = nullptr;
+    if (::WaitForSingleObject(g_hSearchThread, 5000) == WAIT_OBJECT_0) {
+      ::CloseHandle(g_hSearchThread);
+      g_hSearchThread = nullptr;
+    } else {
+      LogLine(L"WEBHOST: 搜索线程 5 秒内没退出，保留句柄与标志，下次卸载再等");
+      clean = false;
+    }
   }
+  if (!clean) return;
 
   ::InterlockedExchange(&g_hasThread, 0);
   ::InterlockedExchange(&g_threadFailed, 0);

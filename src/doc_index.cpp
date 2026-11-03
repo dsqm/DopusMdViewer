@@ -173,10 +173,12 @@ class LineFeeder {
   void Emit() {
     LineView<Char> lv;
     lv.off = lineOff_;
+    // 行尾的 \r 不算内容：判定截断要按剥掉 \r 之后的长度，否则"刚好 kPrefix 个
+    // 字符 + CRLF"的行会被误标成截断（LF 文件不会，两条路径口径就不一致了）。
     lv.len = (lineLen_ > 0 && last_ == static_cast<Char>('\r')) ? lineLen_ - 1 : lineLen_;
     lv.p = prefix_;
     lv.plen = static_cast<uint32_t>(std::min<uint64_t>(lv.len, plen_));
-    lv.truncated = lineLen_ > kPrefix;
+    lv.truncated = lv.len > kPrefix;
     sink_->Feed(lv);
   }
 
@@ -247,6 +249,7 @@ class BlockScanner {
         // 外壳太大就放弃继续合并，接受外壳丢失
         inHtml_ = false;
         htmlDepth_ = 0;
+        inComment_ = false;
         CloseBlock(0);
       }
       return;
@@ -376,6 +379,7 @@ class BlockScanner {
       Start(l, Kind::Html, 0, 0);
       inHtml_ = true;
       htmlDepth_ = 0;
+      inComment_ = false;
       UpdateHtmlDepth(l);
       return;
     }
@@ -550,12 +554,33 @@ class BlockScanner {
   void UpdateHtmlDepth(const LineView<Char>& l) {
     uint32_t i = 0;
     while (i + 1 < l.plen) {
+      if (inComment_) {
+        const uint32_t end = FindSeq(l, i, "-->");
+        if (end == kNoSeq) return;  // 整行都还在注释里
+        inComment_ = false;
+        i = end + 3;
+        continue;
+      }
       if (l.At(i) != static_cast<Char>('<')) {
         ++i;
         continue;
       }
-      if (l.At(i + 1) == static_cast<Char>('!') ||
-          l.At(i + 1) == static_cast<Char>('?')) {
+      if (l.At(i + 1) == static_cast<Char>('!')) {
+        // <!-- ... --> 里的 <div 不是标签；注释可以跨行，要记状态
+        if (i + 3 < l.plen && l.At(i + 2) == static_cast<Char>('-') &&
+            l.At(i + 3) == static_cast<Char>('-')) {
+          const uint32_t end = FindSeq(l, i + 4, "-->");
+          if (end == kNoSeq) {
+            inComment_ = true;
+            return;
+          }
+          i = end + 3;
+          continue;
+        }
+        ++i;
+        continue;
+      }
+      if (l.At(i + 1) == static_cast<Char>('?')) {
         ++i;
         continue;
       }
@@ -576,13 +601,23 @@ class BlockScanner {
       }
       const uint32_t nameLen = j - nameStart;
 
-      bool selfClosing = false;
+      // 找 '>'，跳过引号内的内容（属性值里的 > 不结束标签）
       uint32_t q = j;
-      while (q < l.plen && l.At(q) != static_cast<Char>('>')) {
-        if (l.At(q) == static_cast<Char>('/')) selfClosing = true;
+      Char quote = 0;
+      while (q < l.plen) {
+        const Char c = l.At(q);
+        if (quote) {
+          if (c == quote) quote = 0;
+        } else if (c == static_cast<Char>('"') || c == static_cast<Char>('\'')) {
+          quote = c;
+        } else if (c == static_cast<Char>('>')) {
+          break;
+        }
         ++q;
       }
       if (q >= l.plen) break;  // 标签跨行，前缀里判不了
+      // 自闭合只看 '>' 前的那个 '/'：属性值里的 / （class="w-1/2"）不算
+      const bool selfClosing = q > j && l.At(q - 1) == static_cast<Char>('/');
       if (!selfClosing && IsBlockTag(l, nameStart, nameLen)) {
         if (closing) {
           if (htmlDepth_ > 0) --htmlDepth_;
@@ -592,6 +627,19 @@ class BlockScanner {
       }
       i = q + 1;
     }
+  }
+
+  static constexpr uint32_t kNoSeq = 0xFFFFFFFFu;
+
+  // 从 from 起找一段 ASCII 序列，找不到返回 kNoSeq。
+  static uint32_t FindSeq(const LineView<Char>& l, uint32_t from, const char* seq) {
+    const uint32_t n = static_cast<uint32_t>(std::strlen(seq));
+    for (uint32_t k = from; k + n <= l.plen; ++k) {
+      uint32_t m = 0;
+      while (m < n && l.At(k + m) == static_cast<Char>(seq[m])) ++m;
+      if (m == n) return k;
+    }
+    return kNoSeq;
   }
 
   static bool IsFmOpen(const LineView<Char>& l) {
@@ -769,7 +817,6 @@ class BlockScanner {
       while (after + spaces < l.plen && IsSpace(l.At(after + spaces)) && spaces < 4) {
         ++spaces;
       }
-      if (spaces == 0) spaces = 1;
     }
 
     out->ordered = ordered;
@@ -818,6 +865,7 @@ class BlockScanner {
   bool inFm_ = false;
   bool inHtml_ = false;
   int htmlDepth_ = 0;
+  bool inComment_ = false;  // <!-- 注释跨行：里面的标签一律不算
   bool inTable_ = false;
 
   bool pendingBlank_ = false;

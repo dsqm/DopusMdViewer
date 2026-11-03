@@ -33,8 +33,7 @@ const wchar_t kDocBase[] = L"https://mddoc.localhost/";
 struct ViewerState {
   HWND hwndSelf;
   HWND hwndParent;
-  HANDLE hAbortEvent;
-  DWORD dwCreateFlags;
+  HANDLE hAbortEvent;  // 宿主给的加载中止事件，只记录不轮询（见 SETABORTEVENT 分支）
   wchar_t szFile[MAX_PATH * 2];
   ULONGLONG ullFileSize;
   uint32_t prefixBlocks;
@@ -42,15 +41,16 @@ struct ViewerState {
   uint32_t lastVisible;  // 最后一个非隐藏块（脚注区挂它后面）
   int encoding;
   uint32_t encOverride;  // 手动指定的代码页，0 = 自动
-  bool isPreview;        // 创建在 Lister 查看器窗格（DVPCVF_Preview）
   bool docComplete;  // 打开时索引已覆盖全文（没有后台扫描）
   LONGLONG qpcLoad;  // LOADW 起点，用于端到端耗时
   bool docOpened;    // doc_source 归本窗口
   bool indexFullPending;  // 全文索引已就绪但页面还没收到 index-full
-  bool chromePushed;
   bool webFailed;
   bool hasHost;  // 宿主此刻是否在本窗口（单宿主，被别的窗口借走时没有画面）
   bool hasSelection;  // 页面里此刻有没有非折叠选区，DVPLUGINMSG_TESTSELECTION 靠它回答
+  // CreateWindowExW 期间的一次性凭据：WM_NCCREATE 认领 st 后置 true，此后 st 的
+  // 生命周期归窗口管（WM_NCDESTROY 释放）。创建失败时靠它决定谁 delete。
+  bool* pClaimed;
   // 加载占位的自绘字体：按 DPI 缩放 + ClearType，避免默认位图字体的锯齿。
   HFONT fontName;
   HFONT fontHint;
@@ -165,9 +165,18 @@ void EnsurePlaceholderFonts(ViewerState* st, HWND hwnd) {
   ::StringCchCopyW(lf.lfFaceName, ARRAYSIZE(lf.lfFaceName), face);
 
   lf.lfHeight = -namePx;
-  st->fontName = ::CreateFontIndirectW(&lf);
+  HFONT madeName = ::CreateFontIndirectW(&lf);
   lf.lfHeight = -hintPx;
-  st->fontHint = ::CreateFontIndirectW(&lf);
+  HFONT madeHint = ::CreateFontIndirectW(&lf);
+  st->fontName = madeName;
+  st->fontHint = madeHint;
+
+  // 建字体失败就不写缓存：写进去之后这句 if 永远命中，再也不会重试，
+  // 界面会一直退到 System 位图字体。
+  if (!madeName || !madeHint) {
+    LogLine(L"VIEWER: 占位字体创建失败，下次重画再试");
+    return;
+  }
 
   st->fontDpi = dpi;
   st->fontNamePx = namePx;
@@ -245,7 +254,7 @@ void PushChrome(ViewerState* st) {
                   WebHostPost(st->hwndSelf, msg::MakeFx(cfg.font)) &&
                   WebHostPost(st->hwndSelf, msg::MakeNetMode(cfg.netImageMode)) &&
                   WebHostPost(st->hwndSelf, msg::MakeCfg(cfg));
-  st->chromePushed = ok;
+  if (!ok) LogLine(L"VIEWER: 皮肤/字体推送失败（宿主不在或页面未就绪）");
 
   LogLine(L"VIEWER: 已推送皮肤 \"%s\"（%zu 字符）、字体（%dpx / %.2f / %dem）、网络图档位 %d、"
           L"渲染开关 %d%d%d%d%d、行号 %d",
@@ -286,7 +295,7 @@ void StartPrint(ViewerState* st) {
 void PushIndex(ViewerState* st) {
   if (!st->docOpened || !st->hasHost || st->webFailed || !WebHostIsReady()) return;
 
-  if (!WebHostSetDocFolder(UtilParentDir(st->szFile))) {
+  if (!WebHostSetDocFolder(st->hwndSelf, UtilParentDir(st->szFile))) {
     LogLine(L"VIEWER: mddoc.localhost 映射失败，相对图片不会加载");
   }
 
@@ -455,7 +464,7 @@ void ShowOwnContextMenu(ViewerState* st) {
   }
   ::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(enc), L"编码");
 
-  const Config& cfg = ConfigGet();
+  const Config cfg = ConfigSnapshot();
   ::AppendMenuW(cb, MF_STRING | (cfg.codeLineNumbers ? MF_CHECKED : 0), kCbMenuBase + kCbLineNumbers,
                L"行号");
   ::AppendMenuW(cb, MF_STRING | (cfg.renderHighlight ? MF_CHECKED : 0), kCbMenuBase + kCbHighlight,
@@ -606,7 +615,20 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   }
 
   if (type == L"open") {
-    // 预览器不做导航：页面里已做过二次确认，这里交回系统打开
+    // 预览器不做导航：页面里已做过二次确认，这里交回系统打开。
+    // 文档目录内的相对链接在页面里被解析成 https://mddoc.localhost/...，那是
+    // WebView2 的虚拟主机，直接交给 ShellExecuteW 必然打不开，先还原成磁盘路径。
+    std::wstring target;
+    if (docsrc::DocUrlToPath(rest, &target)) {
+      if (!UtilFileExists(target) && !UtilDirExists(target)) {
+        LogLine(L"VIEWER: 相对链接指向的文件不存在 %s", target.c_str());
+        SetStatus(st, L"打不开链接：文件不存在（%s）", UtilLeafName(target.c_str()));
+        return;
+      }
+      LogLine(L"VIEWER: 打开相对链接 %s", target.c_str());
+      ::ShellExecuteW(nullptr, L"open", target.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+      return;
+    }
     LogLine(L"VIEWER: 打开外部链接 %s", rest.c_str());
     ::ShellExecuteW(nullptr, L"open", rest.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
   }
@@ -646,6 +668,12 @@ void HandleHostEvent(ViewerState* st, int kind, const wchar_t* text) {
 
 // ---- 消息处理 ----
 
+// 没拿到宿主的原因有两种，状态栏与占位文字要分开说：宿主窗口存在但正在被别的
+// 查看器借用，和宿主线程/窗口还没建起来（建线程有几秒窗口期）。
+const wchar_t* NoHostReason() {
+  return WebHostHostExists() ? L"预览正显示在另一个窗口" : L"预览引擎正在启动";
+}
+
 void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
   if (!pszPath) pszPath = L"";
   // 相对路径会让 mddoc.localhost 映射失败（映射要求绝对路径），这里统一转绝对。
@@ -676,8 +704,8 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
     if (WebHostHostExists()) {
       // 宿主在别的查看器手里：先记住路径，收回宿主时再开索引。
       LogLine(L"VIEWER: 宿主不在本窗口，先不建索引（%s）", pszPath);
-      SetStatus(st, L"%s — %llu B（预览正显示在另一个窗口）", UtilLeafName(pszPath),
-                st->ullFileSize);
+      SetStatus(st, L"%s — %llu B（%s）", UtilLeafName(pszPath), st->ullFileSize,
+                NoHostReason());
       return;
     }
     // 宿主线程/窗口还没建好（建线程有几秒窗口期）：这里补借一次，失败再转空白。
@@ -686,8 +714,8 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
       LogLine(L"VIEWER: 补借宿主成功");
     } else {
       LogLine(L"VIEWER: 宿主不可用，先不建索引（%s）", pszPath);
-      SetStatus(st, L"%s — %llu B（预览正显示在另一个窗口）", UtilLeafName(pszPath),
-                st->ullFileSize);
+      SetStatus(st, L"%s — %llu B（%s）", UtilLeafName(pszPath), st->ullFileSize,
+                NoHostReason());
       return;
     }
   }
@@ -760,6 +788,13 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       return 0;
 
     case WM_MDV_INDEX_FULL:
+      // wParam 是发起扫描时的文档代号。换文件瞬间旧文档的"全文索引完成"会落到
+      // 新文档上，把 indexFullPending/docComplete 错置并提前推 index-full。
+      if (static_cast<uint32_t>(wParam) != docsrc::DocId()) {
+        LogLine(L"VIEWER: 忽略过期的索引完成通知 doc=%u 当前=%u",
+                static_cast<unsigned>(wParam), docsrc::DocId());
+        return 0;
+      }
       st->indexFullPending = true;
       st->docComplete = true;
       MaybePushIndexFull(st);
@@ -820,12 +855,11 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         ::SelectObject(hdc, oldFont);
       } else if (!st->hasHost) {
-        // 宿主在另一个查看器手里：给一行说明，别留一片白。
+        // 宿主在另一个查看器手里（或引擎还在启动）：给一行说明，别留一片白。
         HGDIOBJ oldFont = ::SelectObject(
             hdc, st->fontHint ? st->fontHint : ::GetStockObject(DEFAULT_GUI_FONT));
         ::SetTextColor(hdc, ::GetSysColor(COLOR_GRAYTEXT));
-        ::DrawTextW(hdc, L"预览正显示在另一个查看器窗口中", -1, &rc,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        ::DrawTextW(hdc, NoHostReason(), -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         ::SelectObject(hdc, oldFont);
       } else if (loading) {
         // 冷启动/重建时 WebView2 要一会儿才出画面，先把文件名和状态画出来。
@@ -908,24 +942,14 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       return VPCAPABILITY_WANTFOCUS | VPCAPABILITY_SELECTALL | VPCAPABILITY_COPYSELECTION |
              VPCAPABILITY_PRINT;
 
-    case WM_COMMAND: {
-      const UINT id = LOWORD(wParam);
-      if (id >= kEncMenuBase && id < kEncMenuBase + kEncMenuCount) {
-        const uint32_t cp = kEncMenu[id - kEncMenuBase].codepage;
-        if (cp != st->encOverride) {
-          st->encOverride = cp;
-          LogLine(L"VIEWER: 右键菜单指定编码 cp=%u，重开文档", cp);
-          if (st->szFile[0]) OpenDoc(st);
-        }
-        return 0;
-      }
-      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
-    }
-
     case DVPLUGINMSG_PREVENTAUTOSIZE:
       return TRUE;
 
     case DVPLUGINMSG_SETABORTEVENT:
+      // 收下但不轮询：能中止的只有同步前缀扫描（≤8MB，通常几十毫秒）与后台全文
+      // 索引，后者自带 cancel 标志。这个事件由宿主自己置位/复位，我们在 LOADW 入口
+      // 读到「已置位」时无法区分「本次要中止」和「上次的残留」，误判会让下一个文件
+      // 干脆不加载，代价远大于省下那几十毫秒。
       st->hAbortEvent = reinterpret_cast<HANDLE>(lParam);
       return 0;
 
@@ -952,8 +976,13 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
     const CREATESTRUCTW* pcs = reinterpret_cast<const CREATESTRUCTW*>(lParam);
     st = static_cast<ViewerState*>(pcs->lpCreateParams);
     if (st) {
+      // 从这一刻起 st 归窗口管：创建失败也会走 WM_NCDESTROY，由它释放。
+      if (st->pClaimed) *st->pClaimed = true;
       st->hwndSelf = hwnd;
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
+      // 与下面的 WM_NCDESTROY 配对：创建失败时 Opus 会紧接着销毁窗口，
+      // 计数绝不能只在成功路径上加，否则失败一次就欠一个。
+      ::InterlockedIncrement(&g_liveViewers);
     }
   }
 
@@ -964,8 +993,8 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
       if (st->fontName) ::DeleteObject(st->fontName);
       if (st->fontHint) ::DeleteObject(st->fontHint);
       delete st;
+      ::InterlockedDecrement(&g_liveViewers);
     }
-    ::InterlockedDecrement(&g_liveViewers);
     return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
   }
 
@@ -996,12 +1025,25 @@ bool ViewerRegisterClass(HINSTANCE hInstance) {
     return true;
   }
 
-  if (::GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+  if (::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+    LogLine(L"VIEWER: RegisterClassExW 失败 err=%lu", ::GetLastError());
+    return false;
+  }
+
+  // 同名类已在系统里。多半是上一次加载留下的：DLL 卸载不会带走窗口类，它带着
+  // 旧映像的 lpfnWndProc 留在系统里，直接复用就是让消息跳已卸载的代码。
+  // 先尝试注销再注册；注销不掉（还有旧窗口活着）只能沿用旧类。
+  if (!::UnregisterClassW(kClassName, hInstance)) {
+    LogLine(L"VIEWER: 同名窗口类无法注销 err=%lu，沿用旧类", ::GetLastError());
     registered = true;
     return true;
   }
-
-  LogLine(L"VIEWER: RegisterClassExW 失败 err=%lu", ::GetLastError());
+  if (::RegisterClassExW(&wc)) {
+    LogLine(L"VIEWER: 已替换上一次加载留下的同名窗口类");
+    registered = true;
+    return true;
+  }
+  LogLine(L"VIEWER: 替换同名窗口类失败 err=%lu", ::GetLastError());
   return false;
 }
 
@@ -1023,7 +1065,6 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->hwndSelf = nullptr;
   st->hwndParent = hWndParent;
   st->hAbortEvent = nullptr;
-  st->dwCreateFlags = dwFlags;
   st->szFile[0] = L'\0';
   st->ullFileSize = 0;
   st->prefixBlocks = 0;
@@ -1031,15 +1072,14 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->lastVisible = 0;
   st->encoding = 0;
   st->encOverride = 0;
-  st->isPreview = (dwFlags & DVPCVF_Preview) != 0;
   st->docComplete = false;
   st->qpcLoad = 0;
   st->docOpened = false;
   st->indexFullPending = false;
-  st->chromePushed = false;
   st->webFailed = false;
   st->hasHost = false;
   st->hasSelection = false;
+  st->pClaimed = nullptr;
   st->fontName = nullptr;
   st->fontHint = nullptr;
   st->fontDpi = 0;
@@ -1051,15 +1091,20 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   const int cx = rc.right - rc.left;
   const int cy = rc.bottom - rc.top;
 
+  // 创建成功与否都以 WM_NCCREATE 是否认领 st 为准：认领过就由 WM_NCDESTROY 释放，
+  // 这里再 delete 一次就是双重释放。
+  bool claimed = false;
+  st->pClaimed = &claimed;
+
   HWND hwnd = ::CreateWindowExW(0, kClassName, kTitle, WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
                                 rc.left, rc.top, cx, cy, hWndParent, nullptr, g_hInstance, st);
+  st->pClaimed = nullptr;
   if (!hwnd) {
     LogLine(L"VIEWER: CreateWindowExW 失败 err=%lu", ::GetLastError());
-    delete st;
+    if (!claimed) delete st;  // 连 WM_NCCREATE 都没走到：st 从未交给窗口
     return nullptr;
   }
 
-  ::InterlockedIncrement(&g_liveViewers);
   LogLine(L"VIEWER: 建窗口 %p parent=%p %dx%d flags=0x%08X", hwnd, hWndParent, cx, cy,
           static_cast<unsigned>(dwFlags));
   return hwnd;

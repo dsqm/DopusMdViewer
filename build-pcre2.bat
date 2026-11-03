@@ -23,9 +23,25 @@ set "PCRE=%PROJ%third_party\pcre2"
 
 if not exist "%CL_EXE%" echo   missing cl.exe & exit /b 1
 if not exist "%PCRE%\include\pcre2.h" echo   missing third_party\pcre2 & exit /b 1
-if exist "build\obj-pcre2\16\.stamp" if not "%PCRE2_REBUILD%"=="1" (
-  echo   cached
-  exit /b 0
+rem Cache: build\obj-pcre2 is only reused while it is newer than every
+rem input (sources, headers, config.h); otherwise an edited PCRE2 config or
+rem source silently keeps the old objects. PCRE2_REBUILD=1 forces a rebuild.
+set "STAMP=build\obj-pcre2\16\.stamp"
+set "PCRE2_CACHED="
+if exist "%STAMP%" if not "%PCRE2_REBUILD%"=="1" set "PCRE2_CACHED=1"
+if defined PCRE2_CACHED (
+  setlocal enabledelayedexpansion
+  for %%S in ("%STAMP%") do set "STAMPTIME=%%~tS"
+  for %%F in ("%PCRE%\src\*.c" "%PCRE%\src\*.h" "%PCRE%\include\*.h") do (
+    if not defined STALE if "%%~tF" GTR "!STAMPTIME!" set "STALE=1"
+  )
+  if not defined STALE (
+    endlocal
+    echo   cached
+    exit /b 0
+  )
+  endlocal
+  echo   cached objects are older than the sources, rebuilding
 )
 
 set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%PCRE%\include;%PCRE%\src"

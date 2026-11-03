@@ -13,7 +13,8 @@ using FontStack = std::vector<std::wstring>;
 
 struct FontSettings {
   FontStack ui;
-  FontStack body;  // 空 = 继承 ui（Obsidian 形态），写出时解析成 ui 的实际值
+  FontStack body;  // 空 = 继承 ui（Obsidian 形态）；落盘原样写空数组，推给页面之前由
+                   // msg::MakeFx 解析成 ui 的实际值
   FontStack mono;
   int sizePx;          // 字号，px
   double lineHeight;   // 行高倍数
@@ -23,7 +24,8 @@ struct FontSettings {
 struct Config {
   std::wstring skin;  // 皮肤 id（文件名去扩展名）
   FontSettings font;
-  // 网络图片的确认粒度：0 = 不确认直接加载，1 = 每主机每文档确认，2 = 每文档确认。
+  // 网络图片的确认粒度：0 = 不确认直接加载，1 = 每主机一次（DO 运行期间记住），
+  // 2 = 每文档一次。
   int netImageMode;
   // 图片是否允许引用文档目录之外的路径（../ 与绝对路径）。默认关闭。
   bool allowOutsideImages;
@@ -72,7 +74,9 @@ const wchar_t* ConfigPath(void);
 // 读一次并缓存。文件缺失或损坏时保持默认值，不弹窗、不写回。
 const Config& ConfigLoad(void);
 
-// 当前生效的配置（未调用 ConfigLoad 时先加载）。
+// 当前生效的配置（未调用 ConfigLoad 时先加载）。给的是内部结构的引用：
+// 锁只保护「取到引用」那一刻，拿住之后别的线程仍可能改写同一份结构，
+// 所以只能当场用完就丢——跨线程一律用 ConfigSnapshot()。
 const Config& ConfigGet(void);
 
 // 线程安全的配置快照（拷贝）。查看器线程推皮肤/字体时用它，避免与写盘线程并发读结构。

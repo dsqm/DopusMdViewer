@@ -16,6 +16,8 @@
 namespace {
 
 const size_t kMaxConfigBytes = 256 * 1024;
+// 本插件写出的 config.json 版本。写盘只是个标记，读的时候用来提示「文件比本插件新」。
+constexpr int kConfigVersion = 1;
 
 Config g_config;
 bool g_loaded = false;
@@ -37,7 +39,7 @@ void SetDefaults(Config* c) {
   c->font.sizePx = 15;
   c->font.lineHeight = 1.65;
   c->font.measureEm = 40;
-  c->netImageMode = 1;  // 每主机每文档确认
+  c->netImageMode = 1;  // 每主机一次（DO 运行期间记住）
   c->allowOutsideImages = false;
   c->renderMermaid = true;
   c->renderKatex = true;
@@ -260,9 +262,19 @@ const Config& ConfigLoad(void) {
     }
     ApplyJson(root, &g_config);
     LogSetEnabled(g_config.enableLog);
-    LogLine(L"CONFIG: 已读取 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem log=%d", path,
-            g_config.skin.c_str(), g_config.font.sizePx, g_config.font.lineHeight,
-            g_config.font.measureEm, g_config.enableLog ? 1 : 0);
+    // version 只是"这份文件是哪个版本写的"的标记：比当前版本高说明配置被更新的
+    // 插件写过，认识的键照样读，只在日志里留一句便于排查"设置怎么自己变了"。
+    int version = 0;
+    if (root.contains("version") && root["version"].is_number_integer()) {
+      version = root["version"].get<int>();
+    }
+    LogLine(L"CONFIG: 已读取 %s（version=%d）skin=\"%s\" size=%dpx lh=%.2f measure=%dem log=%d",
+            path, version, g_config.skin.c_str(), g_config.font.sizePx,
+            g_config.font.lineHeight, g_config.font.measureEm, g_config.enableLog ? 1 : 0);
+    if (version > kConfigVersion) {
+      LogLine(L"CONFIG: 文件版本 %d 高于本插件支持的 %d，未识别的键会被原样保留",
+              version, kConfigVersion);
+    }
   } catch (const std::exception& e) {
     // 读坏就用默认值，不打扰用户
     LogLineAlways(L"CONFIG: 解析失败（%hs），用默认值", e.what());
@@ -272,8 +284,9 @@ const Config& ConfigLoad(void) {
 }
 
 const Config& ConfigGet(void) {
-  // ConfigLoad 内部自持锁，这里不能再包着它；加载后上锁返回，避免与
-  // ConfigSave 的写并发。惰性双载无害（结果一致）。
+  // ConfigLoad 内部自持锁，这里不能再包着它。锁只覆盖「取一次 g_config 的引用」
+  // 这一步：返回之后调用方拿着的仍是内部结构，ConfigSave 改写它时并不受保护，
+  // 所以跨线程读必须走 ConfigSnapshot()。惰性双载无害（结果一致）。
   if (!g_loaded) ConfigLoad();
   std::lock_guard<std::mutex> lock(g_modeMutex);
   return g_config;
@@ -368,7 +381,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
     }
   }
 
-  root["version"] = 1;
+  root["version"] = kConfigVersion;
   root["skin"] = WideToUtf8(c.skin);
   nlohmann::json font = root.contains("font") && root["font"].is_object()
                             ? root["font"]

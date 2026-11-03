@@ -69,7 +69,8 @@ void WebHostUnborrow(HWND hViewer);
 bool WebHostSetBounds(HWND hViewer, const RECT& client);
 
 // 当前文档所在目录 → mddoc.localhost 虚拟主机；空串表示取消映射。
-bool WebHostSetDocFolder(const std::wstring& dir);
+// 只有当前借用方能改，其它窗口的请求会被宿主拒绝。
+bool WebHostSetDocFolder(HWND hViewer, const std::wstring& dir);
 
 // 关闭 controller（宿主线程保留）。当前只在需要强制重建时使用。
 void WebHostReleaseController(void);

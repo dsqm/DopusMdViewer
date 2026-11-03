@@ -81,4 +81,12 @@ bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
 uint32_t PublishedBlockCount();
 uint32_t LastVisible();
 
+// 当前文档代号：每次 Open/Close 递增。WM_MDV_INDEX_FULL 的 wParam 就是发起扫描
+// 时的代号，收到时比对一下就能丢掉"换文件瞬间"的过期通知。
+uint32_t DocId();
+
+// 把 https://mddoc.localhost/<相对路径> 还原成文档目录下的磁盘路径。
+// 不是该主机的地址时返回 false（调用方按普通 URL 处理）。
+bool DocUrlToPath(const std::wstring& url, std::wstring* out);
+
 }  // namespace docsrc

@@ -119,10 +119,19 @@ void AppendFrame(std::string* out, uint32_t index, uint8_t flags, const unsigned
   out->append(utf8);
 }
 
+// URI 前缀判定：前缀之后必须紧跟 ? 或就是结尾。只用 compare 判前缀的话
+// __blocksxxx / __assetxxx 这类地址也会被当成对应接口（IsSearchUri 早就这么做了，
+// 其余几个没同步）。
+bool StartsWithPath(const std::wstring& uri, const wchar_t* prefix, size_t prefixLen) {
+  if (uri.size() < prefixLen) return false;
+  if (uri.compare(0, prefixLen, prefix) != 0) return false;
+  return uri.size() == prefixLen || uri[prefixLen] == L'?';
+}
+
 bool ParseBlocksUri(const std::wstring& uri, uint32_t* from, uint32_t* count) {
   static const wchar_t kBase[] = L"https://mdblocks.localhost/__blocks";
   const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
-  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
+  if (!StartsWithPath(uri, kBase, baseLen)) return false;
 
   const size_t q = uri.find(L'?');
   if (q == std::wstring::npos) return true;
@@ -290,6 +299,10 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
   uint64_t pos = start;
   uint32_t got = 0;
   bool end = false;
+  // raw 里那条还没等到换行的行的起点。行被读块切开时，前半段先留在 raw 里，
+  // 下一块接着拼；等于 raw->size() 表示当前没有残行。不这样做的话，跨 1 MB
+  // 读块的行会被截头：后半段被当成一条新行，前半段彻底丢掉。
+  size_t lineBegin = 0;
 
   while (got < count && pos < c->blockEnd && raw->size() < kMaxWindowBytes) {
     const size_t cap = static_cast<size_t>(
@@ -301,7 +314,6 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
 
     const uint64_t chunkStart = pos;
     size_t i = 0;
-    size_t lineStart = 0;  // 最后一段没有换行的字节从 buf 的哪里开始
     bool stop = false;
     while (i + unit <= n) {
       const size_t nl = NextNewline(buf.data() + i, n - i, wide, bigEndian);
@@ -312,13 +324,15 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
       const size_t nlAt = i + nl;
       const size_t lineBytes = nlAt + unit - i;
       if (raw->size() + lineBytes > kMaxWindowBytes) {
-        stop = true;  // 单行就放不下：停在完整行边界
+        // 单行就放不下：停在完整行边界，raw 末尾的残行一并退掉
+        raw->resize(lineBegin);
+        stop = true;
         break;
       }
       raw->append(reinterpret_cast<const char*>(buf.data() + i), lineBytes);
       ++got;
       i = nlAt + unit;
-      lineStart = i;
+      lineBegin = raw->size();
       if (got >= count) {
         stop = true;
         break;
@@ -326,16 +340,18 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
     }
     if (stop) break;
 
-    // 读到块尾：lineStart 起的剩余字节就是最后一行（它没有换行结尾）。
+    // 读到块尾：i 起的剩余字节就是最后一行（它没有换行结尾），若前面还有残行
+    // 就接上，两者加起来才是完整的一行。
     // 这一步必须在退出前做，否则每个巨型块的最后一行永远少一条，行总数也少 1。
     if (chunkStart + n >= c->blockEnd) {
-      const size_t tailLen = n - lineStart;
+      const size_t tailLen = n - i;
       if (tailLen > 0) {
         if (raw->size() + tailLen > kMaxWindowBytes) {
           // 行还在，只是内容放不进窗口：计数不能丢，否则 totalLines 少一行。
+          raw->resize(lineBegin);
           ++got;
         } else {
-          raw->append(reinterpret_cast<const char*>(buf.data() + lineStart), tailLen);
+          raw->append(reinterpret_cast<const char*>(buf.data() + i), tailLen);
           ++got;
         }
       }
@@ -343,7 +359,19 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
       end = true;
       break;
     }
-    pos = chunkStart + i;
+
+    // 本块读完还没等到换行：把这一段的尾巴留在 raw 里，下一块从行中间接着拼。
+    const size_t rest = n - i;
+    if (rest > 0) {
+      if (raw->size() + rest > kMaxWindowBytes) {
+        // 残行已经涨到窗口装不下：退回上一条完整行的边界收工（末行不完整，
+        // reachedEnd 保持 false，上层会按"没读到块尾"处理）。
+        raw->resize(lineBegin);
+        break;
+      }
+      raw->append(reinterpret_cast<const char*>(buf.data() + i), rest);
+    }
+    pos = chunkStart + n;
   }
   *gotLines = got;
   if (reachedEnd) *reachedEnd = end;
@@ -663,7 +691,9 @@ void FillBlockUnits(HANDLE h, const doc::EncodingInfo& enc, uint64_t blockStart,
       }
       if (i + len > got) break;
 
-      while (idx <= last && (*list)[idx].off < pos + i) {
+      // 命中落在字符起点时，已解码单元数就是它的下标：判定必须用 <=，
+      // 用 < 会把这次命中推到下一轮，拿到的是"含该字符"的单元数（+1）。
+      while (idx <= last && (*list)[idx].off <= pos + i) {
         (*list)[idx].units = units;
         ++idx;
       }
@@ -835,6 +865,11 @@ uint32_t PublishedBlockCount() {
   return g_snap->builder->index().BlockCount();
 }
 
+uint32_t DocId() {
+  std::lock_guard<std::mutex> lock(g_mu);
+  return g_docId;
+}
+
 uint32_t LastVisible() {
   std::lock_guard<std::mutex> lock(g_mu);
   if (!g_snap) return 0;
@@ -885,6 +920,23 @@ bool PercentDecode(const std::wstring& in, std::wstring* out) {
   return true;
 }
 
+// Windows 的保留设备名：CON / PRN / AUX / NUL / COM1-9 / LPT1-9，带扩展名同样生效
+// （CON.txt 还是控制台）。这类名字不是文件，CreateFile 会打开设备。
+bool IsReservedDeviceName(const std::wstring& part) {
+  std::wstring base = part;
+  const size_t dot = base.find(L'.');
+  if (dot != std::wstring::npos) base.resize(dot);
+  while (!base.empty() && base.back() == L' ') base.pop_back();
+  if (base.empty()) return false;
+  for (wchar_t& c : base) c = static_cast<wchar_t>(towlower(c));
+  if (base == L"con" || base == L"prn" || base == L"aux" || base == L"nul") return true;
+  if (base.size() == 4 && base[3] >= L'1' && base[3] <= L'9' &&
+      (base.compare(0, 3, L"com") == 0 || base.compare(0, 3, L"lpt") == 0)) {
+    return true;
+  }
+  return false;
+}
+
 bool SafeRelativePath(const std::wstring& rel) {
   if (rel.empty()) return false;
   if (rel[0] == L'/' || rel[0] == L'\\') return false;
@@ -895,6 +947,7 @@ bool SafeRelativePath(const std::wstring& rel) {
     const std::wstring part =
         rel.substr(start, pos == std::wstring::npos ? std::wstring::npos : pos - start);
     if (part == L"..") return false;
+    if (IsReservedDeviceName(part)) return false;
     if (part.empty() && pos != std::wstring::npos) return false;
     if (pos == std::wstring::npos) break;
     start = pos + 1;
@@ -945,6 +998,31 @@ bool ResolveAssetPath(const std::wstring& folder, const std::wstring& rel,
   return true;
 }
 
+// 文档目录内的相对链接：页面按 docBase 解析成 https://mddoc.localhost/<相对路径>，
+// 那只是 WebView2 的虚拟主机，系统不认识。这里还原成磁盘路径再交回查看器。
+bool DocUrlToPath(const std::wstring& url, std::wstring* out) {
+  static const std::wstring kPrefix = L"https://mddoc.localhost/";
+  if (!out || url.size() < kPrefix.size()) return false;
+  if (_wcsnicmp(url.c_str(), kPrefix.c_str(), kPrefix.size()) != 0) return false;
+
+  std::wstring rel = url.substr(kPrefix.size());
+  // 锚点与查询串不属于文件路径（文档里 x.md#L10 这种链接很常见）
+  const size_t cut = rel.find_first_of(L"?#");
+  if (cut != std::wstring::npos) rel.resize(cut);
+
+  std::wstring decoded;
+  if (!PercentDecode(rel, &decoded)) return false;
+
+  std::wstring dir;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    if (!g_snap) return false;
+    dir = g_snap->folder;
+  }
+  if (dir.empty()) return false;
+  return ResolveAssetPath(dir, decoded, out);
+}
+
 std::wstring ContentTypeFor(const std::wstring& path) {
   const size_t dot = path.find_last_of(L'.');
   if (dot == std::wstring::npos) return L"application/octet-stream";
@@ -993,7 +1071,7 @@ bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
 
   static const wchar_t kAssetBase[] = L"https://mdblocks.localhost/__asset";
   const size_t baseLen = sizeof(kAssetBase) / sizeof(kAssetBase[0]) - 1;
-  if (uri.size() < baseLen || uri.compare(0, baseLen, kAssetBase) != 0) return false;
+  if (!StartsWithPath(uri, kAssetBase, baseLen)) return false;
 
   const size_t q = uri.find(L"?p=");
   if (q == std::wstring::npos) return true;
@@ -1041,7 +1119,7 @@ bool ServeLines(const std::wstring& uri, std::string* body, int* status) {
 
   static const wchar_t kBase[] = L"https://mdblocks.localhost/__lines";
   const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
-  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
+  if (!StartsWithPath(uri, kBase, baseLen)) return false;
 
   const size_t q = uri.find(L'?');
   const std::wstring query =
@@ -1185,9 +1263,7 @@ void PatchU32(std::string* out, size_t off, uint32_t v) {
 bool IsSearchUri(const std::wstring& uri) {
   static const wchar_t kBase[] = L"https://mdblocks.localhost/__search";
   const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
-  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
-  // 前缀匹配之后必须紧跟 ? 或结束，否则 __searchfoo 也会被当成搜索。
-  return uri.size() == baseLen || uri[baseLen] == L'?';
+  return StartsWithPath(uri, kBase, baseLen);
 }
 
 bool SearchBody(const std::wstring& uri, std::string* body, int* status,
@@ -1352,7 +1428,7 @@ bool ServeOutline(const std::wstring& uri, std::string* body, int* status) {
 
   static const wchar_t kBase[] = L"https://mdblocks.localhost/__outline";
   const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
-  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
+  if (!StartsWithPath(uri, kBase, baseLen)) return false;
   *status = 200;
 
   std::shared_ptr<const Snapshot> snap;
@@ -1416,7 +1492,7 @@ bool ServeDefs(const std::wstring& uri, std::string* body, int* status) {
 
   static const wchar_t kBase[] = L"https://mdblocks.localhost/__defs";
   const size_t baseLen = sizeof(kBase) / sizeof(kBase[0]) - 1;
-  if (uri.size() < baseLen || uri.compare(0, baseLen, kBase) != 0) return false;
+  if (!StartsWithPath(uri, kBase, baseLen)) return false;
 
   std::shared_ptr<const Snapshot> snap;
   {

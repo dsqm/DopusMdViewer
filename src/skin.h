@@ -19,7 +19,8 @@ struct SkinEntry {
 // 枚举内置与用户皮肤；同名用户皮肤覆盖内置，只出现一条。按显示名排序。
 void SkinList(std::vector<SkinEntry>* out);
 
-// id 只允许 [a-z0-9-]，其余字符丢弃；非法或空 id 返回 false。
+// id 就是文件名主干，原样使用（大小写、点号都合法）；只拒绝路径分隔符与通配符等危险字符。
+// 非法或空 id 返回 false。
 bool SkinLoad(const std::wstring& id, std::wstring* cssOut);
 
 // 内置皮肤目录与用户皮肤目录的绝对路径，供设置界面的「打开皮肤目录」用。

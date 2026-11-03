@@ -52,8 +52,26 @@ HMODULE ThisModule() {
   return mod;
 }
 
-// CSS 里的字体名要加引号；反斜杠与引号转义掉，免得一个怪名字把整条声明弄坏。
+// CSS 通用族名：加了引号就变成"找这个字体文件"，通用回退随之失效。
+bool IsGenericFamily(const std::wstring& name) {
+  static const wchar_t* const kGenerics[] = {
+      L"system-ui", L"sans-serif",    L"serif",     L"monospace",    L"cursive",
+      L"fantasy",   L"ui-sans-serif", L"ui-serif",  L"ui-monospace", L"ui-rounded",
+      L"emoji",     L"math",          L"fangsong",
+  };
+  for (const wchar_t* g : kGenerics) {
+    if (::CompareStringW(LOCALE_INVARIANT, NORM_IGNORECASE, name.c_str(), -1, g, -1) ==
+        CSTR_EQUAL) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// 与 msg.cpp 的 FontStackToCss 同口径：通用族名与不含空格的族名都裸写，
+// 只有带空格的才加引号（引号里的反斜杠与引号本身要转义）。
 std::wstring QuoteFamily(const std::wstring& name) {
+  if (IsGenericFamily(name) || name.find(L' ') == std::wstring::npos) return name;
   std::wstring out = L"'";
   for (wchar_t c : name) {
     if (c == L'\\' || c == L'\'') out.push_back(L'\\');
@@ -70,6 +88,26 @@ std::wstring BuildCssList(const std::vector<std::wstring>& chain) {
     if (i) out += L", ";
     out += QuoteFamily(chain[i]);
   }
+  return out;
+}
+
+// 整条 CSS 字体链要作为一个 JS 字符串实参传进去，不能直接拼进实参列表：
+// 链里的逗号会被当成参数分隔符，字号就落到了第三个参数上被浏览器丢掉。
+std::wstring JsString(const std::wstring& text) {
+  std::wstring out = L"\"";
+  for (wchar_t c : text) {
+    if (c == L'\\' || c == L'"') {
+      out.push_back(L'\\');
+      out.push_back(c);
+    } else if (c == L'\n') {
+      out += L"\\n";
+    } else if (c == L'\r') {
+      out += L"\\r";
+    } else if (c >= 0x20) {
+      out.push_back(c);
+    }
+  }
+  out.push_back(L'"');
   return out;
 }
 
@@ -91,8 +129,8 @@ bool Alive(const std::shared_ptr<PreviewState>& s) {
 // 页面就绪前后都调用：就绪了就立刻下发，否则留着等导航完成。
 void PushFont(const std::shared_ptr<PreviewState>& s) {
   if (!Alive(s) || !s->ready || !s->web) return;
-  std::wstring script =
-      L"window.__mdv(" + s->css + L"," + std::to_wstring(s->sizePx) + L");";
+  std::wstring script = L"window.__mdv(" + JsString(s->css) + L"," +
+                        std::to_wstring(s->sizePx) + L");";
   s->web->ExecuteScript(script.c_str(), nullptr);
 }
 

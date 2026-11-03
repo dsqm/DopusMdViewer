@@ -1,4 +1,4 @@
-// resource.rc - version information only.
+// resource.rc - version information + the settings help dialog (IDD_CONFIG_HELP).
 // RC compiler is invoked with the same INCLUDE paths as the C++ build.
 //
 // 版本号不写在这里：构建时由 tools\gen-version.ps1 按当前时刻生成

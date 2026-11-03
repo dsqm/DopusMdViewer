@@ -83,7 +83,9 @@ function texInferArg(src) {
 const TEX_ARITY = {
   dv: [2, 3], pdv: [2, 3], fdv: [2, 3],
   expval: [1, 2], ev: [1, 2],
-  mel: [3, 3], infer: [2, 2], mqty: [0, 0],
+  // mqty 必须带一个 (...) 参数：min 写成 0 会让缺参数时拼出 {undefined}，
+  // 按「参数不完整就保留原文」处理才不会被吃掉半截命令。
+  mel: [3, 3], infer: [2, 2], mqty: [1, 1],
 }
 
 function texExpand(name, opt, args) {

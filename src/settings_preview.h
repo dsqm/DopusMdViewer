@@ -15,7 +15,8 @@
 
 struct SettingsPreview;
 
-// 在 parent 的客户区 rc 处创建一个预览子窗口。失败返回 nullptr（调用方退回纯文本提示）。
+// 在 parent 的客户区 rc 处创建一个预览子窗口。失败返回 nullptr，此时调用方
+// 只留下一片空白的预览区，并在下方那句说明里写明预览不可用。
 SettingsPreview* SettingsPreviewCreate(HWND parent, const RECT& rc);
 
 // 子窗口句柄：调用方用它参与页签的显示/隐藏。

@@ -1,7 +1,8 @@
 // plugin.cpp - 导出层。
 //
-// 只做转调：Opus 按名字找的六个入口 + 识别函数。这里不解析 Markdown、
-// 不碰 WebView2、不建窗口（唯一例外是 DVP_CreateViewer 的转交）。
+// 只做转调：Opus 按名字找的入口函数。这里不解析 Markdown、不碰 WebView2。
+// 建窗口全部发生在别处，这里只转交：DVP_CreateViewer → ViewerCreate、
+// DVP_Configure → SettingsShow。
 
 #include <windows.h>
 
@@ -144,6 +145,8 @@ extern "C" BOOL DVP_InitEx(LPDVPINITEXDATA pInitExData) {
 
 extern "C" void DVP_Uninit(void) {
   const LONG n = ::InterlockedIncrement(&g_uninitCalls);
+  // 只取一次：两次调用之间可能有查看器在别的线程上创建/销毁，日志值与判断值
+  // 不一致时最难查。
   const LONG live = ViewerLiveCount();
 
   LogLine(L"=== DVP_Uninit #%ld (init=#%ld initEx=#%ld) 存活查看器=%ld ===", n,
@@ -153,7 +156,7 @@ extern "C" void DVP_Uninit(void) {
   // Opus 卸载插件后可能 FreeLibrary：宿主/搜索线程还在跑就会执行已卸载的代码。
   // 但实测 Opus 在插件仍加载时也会频繁成对调 Init/Uninit（跨进程、甚至 init=0），
   // 还有查看器活着时绝不能收——收掉等于把正在显示的预览连锅端。
-  if (ViewerLiveCount() > 0) {
+  if (live > 0) {
     LogLine(L"DVP_Uninit: 仍有 %ld 个查看器存活，保留预览引擎不收尾", live);
   } else {
     WebHostShutdown();
@@ -189,6 +192,8 @@ extern "C" BOOL DVP_IdentifyW(LPVIEWERPLUGININFOW lpVPInfo) {
 
   lpVPInfo->uiMajorFileType = DVPMajorType_Text;
   lpVPInfo->idPlugin = kPluginId;
+  // 这三个是**输出**字段：插件在这里申报自己按哪个 Opus 版本/初始化标志工作，
+  // 用 InitEx 拿到的宿主版本原样回填（InitEx 没调用时是默认的 13.0）。
   lpVPInfo->dwOpusVerMajor = g_dwOpusVerMajor;
   lpVPInfo->dwOpusVerMinor = g_dwOpusVerMinor;
   lpVPInfo->dwInitFlags = 0;

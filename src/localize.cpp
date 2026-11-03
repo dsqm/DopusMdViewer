@@ -43,6 +43,7 @@ const wchar_t* const kZh[kCount] = {
     /* PreviewSample    */ L"中文 English 123 — 字体预览",
     /* PreviewMissing   */ L"未找到：%s（仍可保存，系统会回退）",
     /* PreviewInherited */ L"正文未设置，跟随界面字体",
+    /* PreviewUnavailable */ L"字体预览不可用：WebView2 运行时缺失或初始化失败。",
 
     /* RenderGroupContent */ L"内容渲染",
     /* RenderGroupUi    */ L"界面控件",

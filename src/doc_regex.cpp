@@ -20,7 +20,7 @@ std::string WideToUtf8(const std::wstring& s) {
   return out;
 }
 
-// 按编码挑宽度。start 是 BOM 之后的第一个字节。
+// 按编码挑宽度。起点是 BOM 之后的第一个字节（enc.bomBytes）。
 bool ScanPattern(const std::wstring& path, const EncodingInfo& enc,
                  const std::wstring& pattern, bool caseless,
                  const std::atomic<bool>* cancel, RegexHits* out, std::wstring* error) {
@@ -41,7 +41,9 @@ bool ScanPattern(const std::wstring& path, const EncodingInfo& enc,
   return false;
 }
 
-// 大小写映射（不做语言相关的大小写），与 PCRE2 的简单折叠口径一致。
+// 大小写映射，与语言无关（LOCALE_NAME_INVARIANT）。注意它做的是**全折叠**
+// （ß → SS，长度会变），比 PCRE2 的简单折叠宽，所以只能用来判断"有没有大小写
+// 变体"，不能拿它和原文做等价比较。
 std::wstring MapCase(const std::wstring& s, DWORD flags) {
   if (s.empty()) return std::wstring();
   const int srcLen = static_cast<int>(s.size());
@@ -100,17 +102,16 @@ bool RegexSearchFile(const std::wstring& path, const EncodingInfo& encoding,
 }
 
 bool LiteralNeedsUnicodeFold(const std::wstring& needle) {
-  bool nonAscii = false;
+  // 只对非 ASCII 部分做判定：拿整串去映射时，只要有一个英文字母就会变，
+  // 非 ASCII 部分到底有没有大小写反而看不出来（中日韩文本夹个英文单词就白走慢路径）。
+  std::wstring nonAscii;
   for (wchar_t c : needle) {
-    if (static_cast<uint32_t>(c) >= 0x80) {
-      nonAscii = true;
-      break;
-    }
+    if (static_cast<uint32_t>(c) >= 0x80) nonAscii += c;
   }
-  if (!nonAscii) return false;  // 纯 ASCII 由调用方自己折叠
+  if (nonAscii.empty()) return false;  // 纯 ASCII 由调用方自己折叠
   // 有大／小写变体才需要 Unicode 折叠；中日韩这类无大小写的文字继续走快路径。
-  return MapCase(needle, LCMAP_UPPERCASE) != needle ||
-         MapCase(needle, LCMAP_LOWERCASE) != needle;
+  return MapCase(nonAscii, LCMAP_UPPERCASE) != nonAscii ||
+         MapCase(nonAscii, LCMAP_LOWERCASE) != nonAscii;
 }
 
 bool LiteralSearchFile(const std::wstring& path, const EncodingInfo& encoding,

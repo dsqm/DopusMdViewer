@@ -53,9 +53,12 @@ size_t NextUnit(const uint16_t* p, size_t len, size_t at) {
 
 // Legacy 源字节 → UTF-16 单元的前进量。GB18030 另认 4 字节序列，ISO-2022 按 ESC
 // 移位序列步进（ESC 三步不产出单元）。命中的单元偏移转回源字节偏移。
+// ISO-2022-KR / CN 还多一层 SO/SI 移位状态：不跟着切，SO 之后的双字节会被当成
+// 两个单字节字符，后面所有偏移就都对不上了。
 struct LegacyMap {
   UINT cp = 0;
   bool iso2022 = false;
+  bool isoShift = false;  // KR/CN：SO(SI) 切双字节状态
   bool twoByte = false;
   const unsigned char* src = nullptr;
   size_t srcLen = 0;
@@ -69,18 +72,56 @@ struct LegacyMap {
     return byteIdx;
   }
 
+  // ISO-2022 的 ESC 序列长度：设计字符集 3 或 4 字节，单次移位（SS2/SS3）后跟
+  // 一个字符。判错长度会把序列尾巴当成正文字符，整块偏移全错。
+  size_t EscLen() const {
+    if (byteIdx + 1 >= srcLen) return srcLen - byteIdx;
+    const unsigned char n1 = src[byteIdx + 1];
+    if (n1 == '$') {
+      // ESC $ @ / ESC $ B 是 3 字节；ESC $ ( D、ESC $ ) C、ESC $ * H、ESC $ + I 是 4 字节
+      if (byteIdx + 2 < srcLen) {
+        const unsigned char n2 = src[byteIdx + 2];
+        if (n2 == '(' || n2 == ')' || n2 == '*' || n2 == '+' || n2 == '-') return 4;
+      }
+      return 3;
+    }
+    if (n1 == 'N' || n1 == 'O') {
+      // SS2/SS3：ESC N/O + 一个双字节字符
+      return 4;
+    }
+    return 3;
+  }
+
   void Step() {
     size_t len = 1;
     if (iso2022) {
-      if (src[byteIdx] == 0x1B) {
+      const unsigned char ch = src[byteIdx];
+      if (ch == 0x1B) {
         if (byteIdx + 1 < srcLen) {
-          if (src[byteIdx + 1] == '$') {
+          const unsigned char n1 = src[byteIdx + 1];
+          if (n1 == '$') {
             twoByte = true;
-          } else if (src[byteIdx + 1] == '(' || src[byteIdx + 1] == '.') {
+          } else if (n1 == '(' || n1 == '.') {
             twoByte = false;
           }
+          if (n1 == 'N' || n1 == 'O') {
+            // 单次移位只作用一个字符：吃掉 ESC + 2 字节，产出 1 个单元
+            const size_t want = std::min<size_t>(4, srcLen - byteIdx);
+            byteIdx += want;
+            unitIdx += (unitIdx + 1 < wideLen && wide[unitIdx] >= 0xD800 &&
+                        wide[unitIdx] <= 0xDBFF)
+                           ? 2
+                           : 1;
+            return;
+          }
         }
-        byteIdx += std::min<size_t>(3, srcLen - byteIdx);
+        const size_t esc = std::min<size_t>(EscLen(), srcLen - byteIdx);
+        byteIdx += esc;
+        return;
+      }
+      if (isoShift && (ch == 0x0E || ch == 0x0F)) {
+        twoByte = ch == 0x0E;  // SO 进双字节，SI 回单字节；本身不产出单元
+        ++byteIdx;
         return;
       }
       if (twoByte && byteIdx + 1 < srcLen) len = 2;
@@ -213,11 +254,19 @@ bool RegexScanUtf16(const std::wstring& path, uint64_t startOffset, bool bigEndi
           // 触上限就整篇停下（同 8 位实现）。
           out->limited = true;
           canceled = true;
-        } else if (!validated && error) {
-          *error = L"文件含无效的 UTF-16 序列（偏移 " +
-                   std::to_wstring(static_cast<unsigned long long>(chunkStart + start * 2)) +
-                   L"）";
+        } else if (!validated) {
+          // 第一次匹配就报错：文件里的 UTF-16 序列本身有问题。
+          if (error) {
+            *error = L"文件含无效的 UTF-16 序列（偏移 " +
+                     std::to_wstring(static_cast<unsigned long long>(chunkStart + start * 2)) +
+                     L"）";
+          }
           ok = false;
+        } else {
+          // 其它负返回（内存不足、内部错误）：既不是"没有更多命中"也不是编码问题。
+          // 静默跳过会让调用方拿到一份不完整却看着正常的计数，按"计数可能偏小"处理。
+          out->limited = true;
+          canceled = true;
         }
         break;
       }
@@ -338,10 +387,13 @@ bool RegexScanLegacy(const std::wstring& path, uint64_t startOffset, uint32_t co
     }
     const size_t subjectUnits = static_cast<size_t>(wideLen);
 
-    // 单元偏移 → 块内源字节偏移的起点；chunkEnd 在字节上，换算成单元。
+    // map 把命中在解码文本里的单元偏移换回块内源字节偏移（ToByte）；后面判
+    // "起点是否已越到下一块"用的是换回来的字节偏移与 chunkEnd 比较。
     LegacyMap map;
     map.cp = cp;
     map.iso2022 = IsIso2022CodePage(codepage);
+    // 韩国与中国的 ISO-2022 用 SO/SI 切双字节状态；日文那三个代码页不用。
+    map.isoShift = codepage == 50225 || codepage == 50227;
     map.src = raw.data();
     map.srcLen = static_cast<size_t>(subjectEnd - chunkStart);
     map.wide = wide.data();
@@ -363,10 +415,10 @@ bool RegexScanLegacy(const std::wstring& path, uint64_t startOffset, uint32_t co
                                  flags | PCRE2_NO_UTF_CHECK, md, mctx);
       if (rc == PCRE2_ERROR_NOMATCH) break;
       if (rc < 0) {
-        if (IsResourceLimit(rc)) {
-          out->limited = true;
-          canceled = true;
-        }
+        // 解码结果是合法 UTF-16，这里只可能是资源上限或内存/内部错误；
+        // 后者不能静默当成"没有更多命中"，否则返回的计数是残缺的。
+        out->limited = true;
+        canceled = true;
         break;
       }
       const PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);

@@ -138,10 +138,18 @@ bool RegexScanUtf8(const std::wstring& path, uint64_t startOffset, const std::st
           // 触上限就整篇停下：只跳出这一块的话，后面每块都会再撞一次，白烧 CPU。
           out->limited = true;
           canceled = true;
-        } else if (!validated && error) {
-          *error = L"文件含无效的 UTF-8 序列（偏移 " +
-                   std::to_wstring(static_cast<unsigned long long>(chunkStart + start)) + L"）";
+        } else if (!validated) {
+          // 第一次匹配就报错：文件里的 UTF-8 序列本身有问题。
+          if (error) {
+            *error = L"文件含无效的 UTF-8 序列（偏移 " +
+                     std::to_wstring(static_cast<unsigned long long>(chunkStart + start)) + L"）";
+          }
           ok = false;
+        } else {
+          // 其它负返回（内存不足、内部错误）：既不是"没有更多命中"也不是编码问题。
+          // 静默跳过会让调用方拿到一份不完整却看着正常的计数，按"计数可能偏小"处理。
+          out->limited = true;
+          canceled = true;
         }
         break;
       }

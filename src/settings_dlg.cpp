@@ -53,9 +53,7 @@ enum {
   kIdChainUp,
   kIdChainDown,
   kIdChainDel,
-  kIdPreview,
   kIdPreviewNote,
-  kIdRefreshFonts,
   kIdRenderMermaid = 3300,
   kIdRenderKatex,
   kIdRenderHighlight,
@@ -113,7 +111,6 @@ struct DialogState {
   HWND hwnd = nullptr;
   HFONT font = nullptr;
   HFONT fontBold = nullptr;   // 页签当前页用，见 DrawTab
-  HFONT previewFont = nullptr;
   UINT dpi = 96;
   Config staged;
   std::vector<SkinEntry> skins;
@@ -566,16 +563,22 @@ void DrawChainItem(DialogState* st, const DRAWITEMSTRUCT* dis) {
   RECT rc = dis->rcItem;
   ::FillRect(dis->hDC, &rc, ::GetSysColorBrush(sel ? COLOR_HIGHLIGHT : COLOR_WINDOW));
 
-  wchar_t text[LF_FACESIZE * 2] = {};
-  ::SendMessageW(dis->hwndItem, LB_GETTEXT, dis->itemID, reinterpret_cast<LPARAM>(text));
-  const bool installed = FamilyInstalled(st, text);
+  // 条目文本可能来自 config.json 或面板的「使用「%s」」，长字体名远超 LF_FACESIZE；
+  // LB_GETTEXT 不做边界检查，必须按实际长度分配。
+  const LRESULT textLen = ::SendMessageW(dis->hwndItem, LB_GETTEXTLEN, dis->itemID, 0);
+  if (textLen <= 0) return;
+  std::vector<wchar_t> text(static_cast<size_t>(textLen) + 1, L'\0');
+  ::SendMessageW(dis->hwndItem, LB_GETTEXT, dis->itemID,
+                 reinterpret_cast<LPARAM>(text.data()));
+  const std::wstring family(text.data());
+  const bool installed = FamilyInstalled(st, family);
   ::SetBkMode(dis->hDC, TRANSPARENT);
   COLORREF color = ::GetSysColor(sel ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT);
   if (!installed) color = sel ? RGB(0xd8, 0xd8, 0xd8) : RGB(0x9a, 0x9a, 0x9a);
   ::SetTextColor(dis->hDC, color);
   rc.left += ScaleOf(st, 6);
   HGDIOBJ old = ::SelectObject(dis->hDC, st->font);
-  ::DrawTextW(dis->hDC, text, -1, &rc,
+  ::DrawTextW(dis->hDC, text.data(), -1, &rc,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
   ::SelectObject(dis->hDC, old);
 }
@@ -666,8 +669,19 @@ void UpdatePreview(DialogState* st) {
     inherited = true;
   }
 
+  // 独立 WebView2 没建起来（运行时缺失、初始化失败）：预览区只会是一块空白，
+  // 至少把原因写在下面那句说明里，否则看着就像字体设置没生效。
+  if (!st->preview) {
+    st->previewMissing = false;
+    if (st->hPreviewNote) {
+      ::SetWindowTextW(st->hPreviewNote, loc::T(loc::Str::PreviewUnavailable));
+      ::InvalidateRect(st->hPreviewNote, nullptr, TRUE);
+    }
+    return;
+  }
+
   // 整条回退链交给浏览器：第一项缺失时它会自己按顺序往下找，预览里看到的就是最终效果。
-  if (st->preview) SettingsPreviewSetFont(st->preview, *stack, st->staged.font.sizePx);
+  SettingsPreviewSetFont(st->preview, *stack, st->staged.font.sizePx);
 
   st->previewMissing = !stack->empty() && !FamilyInstalled(st, stack->front());
   if (st->previewMissing) {
@@ -1103,8 +1117,11 @@ void RefreshSkins(DialogState* st) {
                    reinterpret_cast<LPARAM>(st->staged.skin.c_str()));
     selected = 0;
   } else if (selected < 0) {
-    selected = 0;
-    st->staged.skin = st->skins[0].id;
+    // 配置里的皮肤文件没了（删了或改名）：把当前 id 补成一项显示出来，别悄悄
+    // 换成列表第一项——那样打开设置点「确定」就白改了配置。
+    ::SendMessageW(st->hSkin, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(st->staged.skin.c_str()));
+    selected = static_cast<int>(st->skins.size());
   }
   ::SendMessageW(st->hSkin, CB_SETCURSEL, selected, 0);
 }
@@ -1902,6 +1919,10 @@ void BuildUi(DialogState* st) {
 
 // 只重置当前页签对应的设置项。改的是暂存值，点「应用 / 确定」才落盘。
 void ResetPageSettings(DialogState* st, int page) {
+  // 先把界面上的现值收回 staged：LoadUiFromStaged 会重写**全部**页的控件，
+  // 不先收回就会把其它页尚未应用的改动一起回滚掉。
+  ReadUiIntoStaged(st);
+
   const Config def = ConfigDefaults();
   Config& c = st->staged;
   switch (page) {
@@ -2012,7 +2033,7 @@ void OnCommand(DialogState* st, int id, int code) {
       }
       return;
 
-    // 这三个编辑框也可能被上面三个上下微调改写（不一定发 EN_CHANGE）
+    // 这四个编辑框也可能被各自的上下微调改写（不一定发 EN_CHANGE）
     case kIdSize:
     case kIdLh:
     case kIdMeasure:
@@ -2063,10 +2084,6 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdChainDown:
       MoveInChain(st, 1);
       SetDirty(st, true);
-      return;
-
-    case kIdRefreshFonts:
-      LoadFamilies(st);
       return;
 
     // 渲染开关、网络图档位、目录外图片：点一下就算未保存改动
@@ -2265,7 +2282,6 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
       g_hwnd = nullptr;
       if (st) {
         if (st->preview) SettingsPreviewDestroy(st->preview);
-        if (st->previewFont) ::DeleteObject(st->previewFont);
         if (st->fontBold) ::DeleteObject(st->fontBold);
         if (st->font) ::DeleteObject(st->font);
         ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -2305,9 +2321,12 @@ bool RegisterWindowClass(void) {
   return false;
 }
 
+// 不取引用计数（UNCHANGED_REFCOUNT）：这个函数每建一次窗口都会调，带引用计数
+// 就会一轮轮加，DLL 永远卸不掉。
 HMODULE ModuleHandle(void) {
   HMODULE mod = nullptr;
-  if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+  if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<LPCWSTR>(&SettingsProc), &mod)) {
     mod = ::GetModuleHandleW(nullptr);
   }
@@ -2374,6 +2393,7 @@ HWND SettingsShow(HWND parent) {
                                 parent, nullptr, ModuleHandle(), st);
   if (!hwnd) {
     if (st->font) ::DeleteObject(st->font);
+    if (st->fontBold) ::DeleteObject(st->fontBold);
     delete st;
     LogLine(L"SETTINGS: 创建窗口失败 err=%lu", ::GetLastError());
     return nullptr;

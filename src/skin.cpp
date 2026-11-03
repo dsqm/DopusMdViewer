@@ -13,12 +13,18 @@ namespace {
 // 皮肤文件上限 1 MB，超过拒绝。
 const size_t kMaxSkinBytes = 1024 * 1024;
 
-std::wstring SanitizeId(const std::wstring& id) {
-  std::wstring out;
+// 皮肤 id 就是文件名主干，配置里存什么就用什么：Dark.css、my.skin.css 都要能加载。
+// 只挡会把查找带出皮肤目录（或把 MakeSkin 的字段分隔打乱）的字符。
+bool IsSafeSkinId(const std::wstring& id) {
+  if (id.empty() || id.size() > 128) return false;
   for (wchar_t ch : id) {
-    if ((ch >= L'a' && ch <= L'z') || (ch >= L'0' && ch <= L'9') || ch == L'-') out += ch;
+    if (ch < 0x20) return false;
+    if (ch == L'\\' || ch == L'/' || ch == L':' || ch == L'*' || ch == L'?' ||
+        ch == L'"' || ch == L'<' || ch == L'>' || ch == L'|') {
+      return false;
+    }
   }
-  return out;
+  return true;
 }
 
 }  // namespace
@@ -75,18 +81,17 @@ std::wstring SkinUserDir(void) {
 bool SkinLoad(const std::wstring& id, std::wstring* cssOut) {
   if (!cssOut) return false;
 
-  const std::wstring clean = SanitizeId(id);
-  if (clean.empty()) {
+  if (!IsSafeSkinId(id)) {
     LogLine(L"SKIN: 非法 id \"%s\"", id.c_str());
     return false;
   }
 
-  std::wstring path = UtilJoin(SkinUserDir(), (clean + L".css").c_str());
+  std::wstring path = UtilJoin(SkinUserDir(), (id + L".css").c_str());
   bool fromUser = UtilFileExists(path);
   if (!fromUser) {
-    path = UtilJoin(SkinBuiltinDir(), (clean + L".css").c_str());
+    path = UtilJoin(SkinBuiltinDir(), (id + L".css").c_str());
     if (!UtilFileExists(path)) {
-      LogLine(L"SKIN: 找不到 %s.css（用户目录与内置目录都没有）", clean.c_str());
+      LogLine(L"SKIN: 找不到 %s.css（用户目录与内置目录都没有）", id.c_str());
       return false;
     }
   }

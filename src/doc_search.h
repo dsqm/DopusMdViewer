@@ -24,7 +24,8 @@ struct SearchHits {
 // doc::LiteralSearchFile（PCRE2 的 Unicode 简单折叠），见 doc_regex.h。
 // wholeWord=true 时要求命中前后都不是 ASCII 词字符（字母、数字、下划线）；
 // 对中文这类没有词边界的文字不生效，查询本身就等于整段。
-// cancel 非空且置位时尽快返回（每读 1 MB 查一次），结果只保证是前缀。
+// cancel 非空且置位时尽快返回（每读 1 MB 查一次）；多线程下各段独立收手，
+// 结果只是"已扫过区段的并集"，不保证仍是文件开头的一段前缀。
 SearchHits SearchFileBytes(const std::wstring& path, const std::string& needle,
                            int threads, std::wstring* error = nullptr,
                            bool caseSensitive = true, bool wholeWord = false,

@@ -17,9 +17,9 @@ namespace doc {
 
 struct RegexHits {
   std::vector<uint64_t> offsets;  // 源文件字节偏移，升序，最多 10000 条
-  uint64_t total = 0;             // 精确命中数（受匹配上限影响时可能偏小）
-  bool truncated = false;         // offsets 被截断
-  bool limited = false;           // 触发过 PCRE2 的匹配/深度上限，结果不完整
+  uint64_t total = 0;             // 命中数；limited 为真时可能偏小
+  bool truncated = false;         // offsets 被截断，或 limited 为真
+  bool limited = false;           // 撞过 PCRE2 的上限或遇到匹配错误，结果不完整
 };
 
 // bomBytes：跳过文件头的 BOM（正则从第一个真实字符开始，^ 才能命中首行）。

@@ -45,6 +45,7 @@ enum class Str : int {
   PreviewSample,
   PreviewMissing,   // 带一个 %s：字体名
   PreviewInherited,
+  PreviewUnavailable,
 
   // 渲染
   RenderGroupContent,

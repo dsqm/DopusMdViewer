@@ -1807,9 +1807,12 @@ function applyBigSeg(seg, i, from, got, text) {
   }
   syncSegGutter(seg, lineBase, count, m ? m.lines : 0)
   seg.dropHead = dropHead
-  const segTop = from - Math.floor(from / BIG_SEG_LINES) * BIG_SEG_LINES
+  // 段是整块复用同一个 <code>（只有 innerHTML 被换掉），缓存里的 span 已脱离
+  // 文档，comparePoint 会抛 WrongDocumentError，必须在这里作废。
+  delete seg.code.__wsSpans
+  const segOffset = from - Math.floor(from / BIG_SEG_LINES) * BIG_SEG_LINES
   seg.pre.style.transform =
-    'translateY(' + (segTop * g.lineH + dropHead * g.lineH).toFixed(1) + 'px)'
+    'translateY(' + (segOffset * g.lineH + dropHead * g.lineH).toFixed(1) + 'px)'
   // 段是整块重建的，原来点亮的 span 已成孤儿：选区还在就得重新点亮一次。
   // 只在「仅选中」档下是硬需求（点亮是它唯一的显示来源），其余档多跑一次也无妨：
   // 没有选区时这里第一件事就返回，有 rAF 合并，滚动不会把它堆起来。
@@ -1882,9 +1885,10 @@ function updateBigLines(i, lines) {
 const KIND_FENCE = 8
 
 function parseBigTable(text) {
-  const big = new Map()
+  // 别叫 big：那会遮住模块级的段几何（big.lineH 等），以后在这里顺手引用就踩空
+  const bigs = new Map()
   const tables = new Map()
-  if (!text) return { big, tables }
+  if (!text) return { big: bigs, tables }
   for (const part of text.split(',')) {
     const f = part.split(':')
     if (f.length < 2) continue
@@ -1894,9 +1898,9 @@ function parseBigTable(text) {
     const kind = f.length > 3 ? parseInt(f[3], 10) : -1
     // lines 含表头行与分隔行，数据行要减 2
     if (f[2] === '1' && lines - 2 <= BT_MAX_LINES) tables.set(i, { lines })
-    else big.set(i, { lines, kind })
+    else bigs.set(i, { lines, kind })
   }
-  return { big, tables }
+  return { big: bigs, tables }
 }
 
 function applyBigTable(text) {
@@ -1994,7 +1998,13 @@ function requestBlocks(from, count, mode) {
         return
       }
       for (const it of items) {
-        if (it.i >= V.windowStart && it.i <= V.windowEnd) V.queue.push(it)
+        if (it.i >= V.windowStart && it.i <= V.windowEnd) {
+          V.queue.push(it)
+        } else {
+          // 滚出窗口的块不入队，也就不会有人渲染它：这里必须同时解除等待，
+          // 否则它此后既不请求也不渲染，滚回来就是永久空白。
+          V.pending.delete(it.i)
+        }
       }
       schedulePump()
       schedulePlace()
@@ -2102,9 +2112,15 @@ function place() {
     V.windowEnd = b
     recycleOutside(a, b)
     V.pinsDirty = false
-    // 跳跃滚动时队列里会攒下大量已经过时的窗口块，别让它们挡住当前窗口
+    // 跳跃滚动时队列里会攒下大量已经过时的窗口块，别让它们挡住当前窗口。
+    // 丢掉的条目同时解除 pending：它们既不入队也不会被渲染，留着就是永久空白。
     if (V.queue.length) {
-      V.queue = V.queue.filter((it) => it.i >= a && it.i <= b)
+      const kept = []
+      for (const it of V.queue) {
+        if (it.i >= a && it.i <= b) kept.push(it)
+        else V.pending.delete(it.i)
+      }
+      V.queue = kept
     }
   }
   // 基点只在离开 4 屏时重定一次；窗口本身移动不改变块间相对位置，不需要刷全部 top
@@ -2264,6 +2280,7 @@ function resetVirtual() {
   SLUG.byBlock.clear()
   V.pinned.clear()
   V.pinsDirty = false
+  V.flashBlock = -1  // 换文档后同一块号不该再闪一次
   SEL.all = false
   onSelUp()
   cleanupPrint()
@@ -3398,9 +3415,21 @@ function tableRowCells(line) {
   let cur = ''
   for (let k = 0; k < s.length; k++) {
     const ch = s[k]
-    if (ch === '\\' && s[k + 1] === '|') {
-      cur += '\u0000'
-      k++
+    if (ch === '\\') {
+      // 反斜杠连跑要一起数：`\|` 是转义的竖线，`\\|` 是转义反斜杠 + 分隔符。
+      // 两个反斜杠折成一个字面反斜杠，剩下单个若用来转义竖线就直接丢掉。
+      let run = 1
+      while (s[k + run] === '\\') run++
+      for (let n = 0; n < Math.floor(run / 2); n++) cur += '\\'
+      k += run - 1
+      if (run % 2 === 1) {
+        if (s[k + 1] === '|') {
+          cur += '\u0000'
+          k++
+        } else {
+          cur += '\\'
+        }
+      }
       continue
     }
     if (ch === '|') {
@@ -3906,8 +3935,9 @@ function nearestHit(el, unitOff) {
 // 上跑一遍——后端只给偏移，不给匹配长度。
 function sourceMatchSpan(src, unitOff) {
   if (!FIND.re) {
-    // 不从后端偏移直接切：有序列表这类块里它实测会差 1（`2. 2026-…` 报了 4、实际 3），
-    // 切出来的针脚多一个字就整段找不着。改在源码里列出所有出现位置、挑离偏移最近的。
+    // 后端给的偏移是块内解码文本的 UTF-16 下标，普通块上就是准的；但巨型块
+    // 前端手里只有一段行窗口、代码块还剔掉了围栏行，两边不是同一份文本，按偏移
+    // 直接切会切错字。这里列出源码里所有出现位置，挑离偏移最近的那处。
     const len = FIND.query.length
     const starts = findOccurrences(src, FIND.query, FIND.cs, FIND.ww)
     if (!starts.length) return { start: unitOff, len }
@@ -4299,7 +4329,16 @@ function bindFindUi() {
 function remeasureAll() {
   if (!V.active) return
   for (const [i, rec] of V.resident) {
-    if (rec.el) setHeight(i, rec.el.offsetHeight)
+    if (!rec.el) continue
+    // 巨型块的高度是段几何算出来的，巨型表格在补块途中是按平均行高外推的：
+    // 拿「当前插了多少」的元素高度覆盖回去，滚动条会骤短、视口内容被推走。
+    if (rec.big) continue
+    if (rec.table) {
+      if (!rec.table.done) continue
+      setHeight(i, (rec.table.host || rec.el).offsetHeight)
+      continue
+    }
+    setHeight(i, rec.el.offsetHeight)
   }
   schedulePlace()
 }
@@ -4770,9 +4809,9 @@ function report(kind, detail) {
 }
 
 function splitFirst(text) {
-  const pos = text.indexOf('|')
-  if (pos < 0) return [text, '']
-  return [text.slice(0, pos), text.slice(pos + 1)]
+  const at = text.indexOf('|')
+  if (at < 0) return [text, '']
+  return [text.slice(0, at), text.slice(at + 1)]
 }
 
 function onHostMessage(event) {
@@ -4851,7 +4890,8 @@ function onHostMessage(event) {
       lineNumbers: flag(10),
       // 第 12 个字段是空白符档位（0 关 / 1 仅选中 / 2 边界 / 3 全部）；老宿主没有这一项，按关处理
       codeWs: f[11] === undefined ? 0 : parseInt(f[11], 10) || 0,
-      indentedBlocks: flag(12),
+      // 老宿主不发这一项：按关处理，与 state.render 的默认值一致
+      indentedBlocks: f[12] === '1',
     })
     return
   }
