@@ -315,9 +315,14 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
     const uint64_t chunkStart = pos;
     size_t i = 0;
     bool stop = false;
+    // 残行起点：本块尾部那段还没等到换行的字节。等于 n 表示本块正好在行尾结束。
+    // 不能只把 i 推到 n 了事——块尾的残行要按一行计入 got，跨读块的半行也要靠它
+    // 拼回去，否则块内最后一行永远少一条，行总数跟着少一。
+    size_t tailAt = n;
     while (i + unit <= n) {
       const size_t nl = NextNewline(buf.data() + i, n - i, wide, bigEndian);
       if (nl == kNoNewline) {
+        tailAt = i;
         i = n - (n - i) % unit;
         break;
       }
@@ -340,18 +345,18 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
     }
     if (stop) break;
 
-    // 读到块尾：i 起的剩余字节就是最后一行（它没有换行结尾），若前面还有残行
-    // 就接上，两者加起来才是完整的一行。
+    // 读到块尾：tailAt 起的剩余字节就是最后一行（它没有换行结尾），若前面还有
+    // 残行就接上，两者加起来才是完整的一行。
     // 这一步必须在退出前做，否则每个巨型块的最后一行永远少一条，行总数也少 1。
     if (chunkStart + n >= c->blockEnd) {
-      const size_t tailLen = n - i;
+      const size_t tailLen = n - tailAt;
       if (tailLen > 0) {
         if (raw->size() + tailLen > kMaxWindowBytes) {
           // 行还在，只是内容放不进窗口：计数不能丢，否则 totalLines 少一行。
           raw->resize(lineBegin);
           ++got;
         } else {
-          raw->append(reinterpret_cast<const char*>(buf.data() + i), tailLen);
+          raw->append(reinterpret_cast<const char*>(buf.data() + tailAt), tailLen);
           ++got;
         }
       }
@@ -361,7 +366,7 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
     }
 
     // 本块读完还没等到换行：把这一段的尾巴留在 raw 里，下一块从行中间接着拼。
-    const size_t rest = n - i;
+    const size_t rest = n - tailAt;
     if (rest > 0) {
       if (raw->size() + rest > kMaxWindowBytes) {
         // 残行已经涨到窗口装不下：退回上一条完整行的边界收工（末行不完整，
@@ -369,7 +374,7 @@ bool ReadLines(HANDLE h, LineCache* c, uint64_t start, uint32_t count, bool wide
         raw->resize(lineBegin);
         break;
       }
-      raw->append(reinterpret_cast<const char*>(buf.data() + i), rest);
+      raw->append(reinterpret_cast<const char*>(buf.data() + tailAt), rest);
     }
     pos = chunkStart + n;
   }
@@ -1093,14 +1098,15 @@ bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
   const bool allowOutside = ConfigAllowOutsideImages();
   if (allowOutside) {
     if (!ResolveAssetPath(snap->folder, rel, &full)) return true;
-    // 放行目录外路径时只认图片扩展名，别让页面借 __asset 读任意文件
-    if (ContentTypeFor(full) == L"application/octet-stream") return true;
   } else {
     if (!SafeRelativePath(rel)) return true;
     full = snap->folder;
     if (full.back() != L'\\' && full.back() != L'/') full += L'\\';
     for (wchar_t c : rel) full += (c == L'/') ? L'\\' : c;
   }
+  // 只认图片扩展名，两种模式一样：__asset 是页面能触发的读文件通道，
+  // 不该顺手把目录里的 .txt / .ini 之类内容也吐出去。
+  if (ContentTypeFor(full) == L"application/octet-stream") return true;
 
   const DWORD attr = ::GetFileAttributesW(full.c_str());
   if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) return true;

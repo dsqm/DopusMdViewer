@@ -550,6 +550,27 @@ md.renderer.rules.table_close = (tokens, idx, options, env, self) => {
 
 /* ---------------- 清洗与 URL 改写 ---------------- */
 
+// 图片：src 必须在渲染期就定下来。改写只写在 DOMPurify 钩子里是不够的——
+// sanitizeBlock 会跳过「源码不含 < 的块」，`![](pic.png)` 正是这种块，钩子根本
+// 不执行，src 原样留在 HTML 里被按 shell.html 的基址解析成 mdprev.localhost/pic.png，
+// 既不进 __asset 也不报日志，变成一张破图。
+const defaultImage = md.renderer.rules.image ||
+  ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
+
+md.renderer.rules.image = (tokens, idx, options, env, self) => {
+  const t = tokens[idx]
+  const at = t.attrIndex('src')
+  if (at >= 0) {
+    const a = imagePolicy(t.attrs[at][1])
+    if (a.src) t.attrs[at][1] = a.src
+    else t.attrs.splice(at, 1)
+    if (a.mdvSrc) t.attrPush(['data-mdv-src', a.mdvSrc])
+    if (a.title) t.attrPush(['title', a.title])
+  }
+  // alt 交给默认规则填（它会按 markdown-it 的规则转义）
+  return defaultImage(tokens, idx, options, env, self)
+}
+
 const TRANSPARENT_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
 // 网络图片的确认状态。键是 URL.host（域名 + 非默认端口，不含协议）。
@@ -617,29 +638,14 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   if (node.tagName === 'IMG') {
     const src = node.getAttribute('src')
     if (!src) return
-    // 本地图片开关关闭：data/blob 属于文档自身，仍保留；网络图交给下面的确认流程
-    if (!state.render.localImages && !/^(?:data|blob):/i.test(src) && !isRemoteUrl(src)) {
-      node.removeAttribute('src')
-      node.setAttribute('title', '本地图片已关闭')
-      return
-    }
-    // 绝对路径/../ 已被上面的 hook 换成本地 __asset，不要再走网络图确认
-    if (/^https:\/\/mdblocks\.localhost\//i.test(src)) return
-    if (isRemoteUrl(src)) {
-      let absolute = null
-      try { absolute = new URL(src, location.href) } catch { absolute = null }
-      if (absolute && absolute.protocol === 'https:') {
-        // 先放透明占位，宿主确认后再设真 src；CSP 只放行 https:
-        node.setAttribute('data-mdv-src', absolute.href)
-        node.setAttribute('src', TRANSPARENT_IMG)
-      } else {
-        node.removeAttribute('src')  // http / 其他协议：不发起请求，只留 alt
-      }
-      return
-    }
+    // 内联 HTML 走的 <img> 也按同一套策略定 src（Markdown 图片在渲染期就算好了）。
     // 不设 loading=lazy：块级虚拟化已经只保留视口附近的块，原生懒加载在
     // translate3d 的虚拟滚动里判定不准，会让图片一直不发起请求。
-    node.setAttribute('src', resolveImageUrl(src))
+    const a = imagePolicy(src)
+    if (a.src) node.setAttribute('src', a.src)
+    else node.removeAttribute('src')
+    if (a.mdvSrc) node.setAttribute('data-mdv-src', a.mdvSrc)
+    if (a.title) node.setAttribute('title', a.title)
     return
   }
   if (node.tagName === 'A') {
@@ -666,18 +672,44 @@ function decodePath(raw) {
   }
 }
 
+// 本地图片一律走 __asset。markdown-it 已经把路径里的非 ASCII 字符百分号化了，
+// 所以要先解一层再编码一次：直接对 raw 再 encodeURIComponent 会二次编码，中文或
+// 带空格的文件名会变成 %25E5…，宿主只解一层、拿到字面量 %E5…，文件必然找不到。
 function resolveImageUrl(raw) {
   if (!raw) return raw
   if (/^(?:data|blob):/i.test(raw)) return raw
-  if (/^\/\//.test(raw)) return raw  // 协议相对 URL（https: 由清洗钩子接管）
-  // Windows 盘符绝对路径；markdown-it 会把反斜杠编码成 %5C，先解回来
-  if (/^[a-zA-Z]:[\\/%]/.test(raw)) return assetUrl(decodePath(raw))
+  if (/^\/\//.test(raw)) return raw  // 协议相对 URL（https:）
+  const file = /^file:\/\/(.*)$/i.exec(raw)
+  if (file) {
+    let p = decodePath(file[1])
+    if (/^\/[a-zA-Z]:/.test(p)) p = p.slice(1)        // file:///C:/x
+    else if (!p.startsWith('/')) p = '\\\\' + p       // file://server/share
+    return assetUrl(p)
+  }
   const decoded = decodePath(raw)
-  if (/^[a-zA-Z]:[\\/]/.test(decoded)) return assetUrl(decoded)
-  if (/^\\\\/.test(decoded)) return assetUrl(decoded)  // UNC
+  // Windows 盘符绝对路径 / UNC
+  if (/^[a-zA-Z]:[\\/]/.test(decoded) || /^\\\\/.test(decoded)) return assetUrl(decoded)
   // 其它协议（mailto 等）原样交给浏览器
   if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return raw
-  return assetUrl(raw)  // 文档目录内（含 ../，宿主决定是否放行）
+  return assetUrl(decoded)  // 文档目录内（含 ../，宿主按设置决定放不放行）
+}
+
+// 图片该带什么属性：本地图走 __asset，远程图先放透明占位等页内确认，
+// data/blob 属于文档自身直接放行。「本地图片」开关关掉时连 src 都不给。
+function imagePolicy(raw) {
+  if (!raw) return {}
+  if (/^(?:data|blob):/i.test(raw)) return { src: raw }
+  if (isRemoteUrl(raw)) {
+    // 已经被上面的钩子换成本地 __asset 的，不要再当成网络图去走确认
+    if (/^https:\/\/mdblocks\.localhost\//i.test(raw)) return { src: raw }
+    let abs = null
+    try { abs = new URL(raw, location.href) } catch { abs = null }
+    // CSP 只放行 https:：http 等协议不发起请求，只留 alt
+    if (!abs || abs.protocol !== 'https:') return {}
+    return { src: TRANSPARENT_IMG, mdvSrc: abs.href }
+  }
+  if (!state.render.localImages) return { title: '本地图片已关闭' }
+  return { src: resolveImageUrl(raw) }
 }
 
 function resolveDocUrl(raw) {
@@ -3506,105 +3538,149 @@ function bigTableChunkHtml(header, rows, withHead) {
   return src.includes('<') ? sanitize(out) : out
 }
 
+// 把量出来的列宽写进这一块。窗口或字号变了要能重写，所以不能只做一次：
+// 已有的 colgroup 先清空再填，否则第二个 colgroup 会被忽略、列宽永远停在首测值。
 function bigTableFixWidth(t, bt) {
-  if (!bt.colW || !bt.width || t.dataset.wfixed === '1') return
+  if (!bt.colW || !bt.width) return
   t.style.tableLayout = 'fixed'
   t.style.width = bt.width + 'px'
   t.style.minWidth = '100%'
-  const cg = document.createElement('colgroup')
+  let cg = t.querySelector('colgroup')
+  if (!cg) {
+    cg = document.createElement('colgroup')
+    t.insertBefore(cg, t.firstChild)
+  }
+  while (cg.firstChild) cg.removeChild(cg.firstChild)
   for (const w of bt.colW) {
     const col = document.createElement('col')
     col.style.width = w + 'px'
     cg.appendChild(col)
   }
-  t.insertBefore(cg, t.firstChild)
   t.dataset.wfixed = '1'
 }
 
-// 首块插入后量一次：列宽与行高。
+// 列宽与行高都量出来之后，统一刷到所有已插入的块上。
+// contain-intrinsic-size 也要跟着改：列宽变了，同一行可能在别处折行，行高随之变化。
+function bigTableApplyWidth(bt) {
+  const tables = bt.host.querySelectorAll('table.bt-table')
+  for (const t of tables) {
+    bigTableFixWidth(t, bt)
+    const rows = Number(t.dataset.rows) || 0
+    t.style.containIntrinsicSize = 'auto ' + Math.round(
+      (t.tHead ? bt.headH : 0) + rows * bt.rowH) + 'px'
+  }
+}
+
+// 量一次：列宽与行高。窗口尺寸、字号、行宽变化后要能量第二次。
 //
-// 两个坑都在这里处理：
+// 三个坑都在这里处理：
 //   1) 不能直接量已经插进 DOM 的那一块——它带着 content-visibility:auto，被跳过时
 //      宽度返回的是占位值（实测列宽只剩 min-content，「序号」会被压成竖排）。
 //   2) 只按首块 500 行定列宽会偏窄：行号到 20000 是五位数，「序号」「名称」两列在
 //      后半张表里会被折行。所以在离屏探针里按「表头 + 首尾各 24 行」重排一次，
-//      尾样本用 __lines 单独取。探针只有几十行，代价可以忽略。
+//      尾样本用 __lines 单独取；样本留着重测时复用，不必再取一次。
+//   3) 表头是加粗字、末列还让出了复制按钮，只量 tbody 会让表头在那些列上折行。
 async function bigTableMeasure(i, rec) {
   const bt = rec.table
-  if (!bt.firstRows || !bt.header || bt.measuring) return
+  if (!bt.header || bt.measuring) return
   bt.measuring = true
-  const host = bt.host
-  const width = Math.max(160, host.clientWidth || host.offsetWidth || 480)
-  const head = bt.firstRows.slice(0, 24)
-  let tail = []
-  if (bt.total > 96) {
-    try {
-      const part = await bigTableFetch(i, Math.max(2, bt.total - 24), 24)
-      tail = part.lines
-    } catch (err) {
-      report('bigtable-sample-error', String(err))
-    }
-  }
-  const cur = V.resident.get(i)
-  if (!cur || !cur.table) return
-  const probe = document.createElement('div')
-  probe.style.cssText =
-    'position:absolute;left:-100000px;top:0;visibility:hidden;width:' + width + 'px'
-  document.body.appendChild(probe)
-  probe.innerHTML = bigTableChunkHtml(bt.header, head.concat(tail), true)
-  const t = probe.querySelector('table')
-  let colW = null
-  let rowH = 0
-  if (t) {
-    const thead = t.tHead
-    const body = t.tBodies[0]
-    bt.headH = thead ? thead.offsetHeight : BT_EST_HEAD
-    const row0 = body && body.rows[0]
-    const rowN = body && body.rows[Math.min(head.length, body.rows.length) - 1]
-    if (row0 && rowN && rowN !== row0) {
-      const step = body.rows[Math.min(head.length, body.rows.length) - 1].rowIndex -
-        row0.rowIndex
-      rowH = step > 0 ? (rowN.offsetTop - row0.offsetTop) / step : 0
-    }
-    if (rowH > 0) bt.rowH = Math.max(10, rowH)
-    if (row0 && row0.cells.length) {
-      // 向上取整再补 1px：高 DPI 下列宽带小数，四舍五入后每列会少不到 1px，
-      // 加粗的表头字正好在这个误差上折行（「序号」被压成竖排就是这个原因）。
-      colW = Array.prototype.map.call(
-        row0.cells, (c) => Math.ceil(c.getBoundingClientRect().width) + 1)
-      let sum = colW.reduce((a, b) => a + b, 0)
-      // 总宽对齐正文宽度，和普通表格一样不多出横向滚动条；超得太多（列多、内容宽）
-      // 就保持自然宽度交给横向滚动，硬压下去反而更难读。
-      const align = sum <= width || sum < width * 1.08
-      if (align && sum > width) {
-        const k = width / sum
-        for (let j = 0; j < colW.length; j++) colW[j] = Math.max(24, Math.floor(colW[j] * k))
+  try {
+    const host = bt.host
+    const width = Math.max(160, host.clientWidth || host.offsetWidth || 480)
+    if (!bt.sample) {
+      const head = (bt.firstRows || []).slice(0, 24)
+      let tail = []
+      if (bt.total > 96) {
+        try {
+          const part = await bigTableFetch(i, Math.max(2, bt.total - 24), 24)
+          if (part) tail = part.lines
+        } catch (err) {
+          report('bigtable-sample-error', String(err))
+        }
       }
-      if (align) {
-        // 余数全部落在最宽的一列：总宽严格等于正文宽度
-        let widest = 0
-        for (let j = 1; j < colW.length; j++) if (colW[j] > colW[widest]) widest = j
-        sum = colW.reduce((a, b) => a + b, 0)
-        colW[widest] += width - sum
+      bt.sample = head.concat(tail)
+      bt.firstRows = null
+    }
+    const cur = V.resident.get(i)
+    if (!cur || cur.table !== bt) return
+    const probe = document.createElement('div')
+    probe.style.cssText =
+      'position:absolute;left:-100000px;top:0;visibility:hidden;width:' + width + 'px'
+    document.body.appendChild(probe)
+    probe.innerHTML = bigTableChunkHtml(bt.header, bt.sample, true)
+    const t = probe.querySelector('table')
+    let colW = null
+    if (t) {
+      const thead = t.tHead
+      const body = t.tBodies[0]
+      bt.headH = thead ? thead.offsetHeight : BT_EST_HEAD
+      const row0 = body && body.rows[0]
+      const lastRow = body && body.rows[Math.min(bt.sample.length, body.rows.length) - 1]
+      if (row0 && lastRow && lastRow !== row0) {
+        const step = lastRow.rowIndex - row0.rowIndex
+        const rowH = step > 0 ? (lastRow.offsetTop - row0.offsetTop) / step : 0
+        if (rowH > 0) bt.rowH = Math.max(10, rowH)
+      }
+      if (row0 && row0.cells.length) {
+        const th = thead && thead.rows[0]
+        // 向上取整再补 1px：高 DPI 下列宽带小数，四舍五入后每列会少不到 1px，
+        // 加粗的表头字正好在这个误差上折行（「序号」被压成竖排就是这个原因）。
+        colW = Array.prototype.map.call(row0.cells, (c, k) => {
+          let w = c.getBoundingClientRect().width
+          const thc = th && th.cells[k]
+          if (thc) w = Math.max(w, thc.getBoundingClientRect().width)
+          return Math.ceil(w) + 1
+        })
+        let sum = colW.reduce((a, b) => a + b, 0)
+        // 总宽对齐可用宽度，和普通表格一样不多出横向滚动条；超得太多（列多、内容宽）
+        // 就保持自然宽度交给横向滚动，硬压下去反而更难读。
+        const align = sum <= width || sum < width * 1.08
+        if (align && sum > width) {
+          const k = width / sum
+          for (let j = 0; j < colW.length; j++) colW[j] = Math.max(24, Math.floor(colW[j] * k))
+        }
+        if (align) {
+          // 余数全部落在最宽的一列：总宽严格等于可用宽度
+          let widest = 0
+          for (let j = 1; j < colW.length; j++) if (colW[j] > colW[widest]) widest = j
+          sum = colW.reduce((a, b) => a + b, 0)
+          colW[widest] += width - sum
+        }
       }
     }
+    probe.innerHTML = ''
+    document.body.removeChild(probe)
+    const after = V.resident.get(i)
+    if (!after || after.table !== bt) return
+    if (!colW || !colW.length) return
+    bt.colW = colW
+    bt.width = colW.reduce((a, b) => a + b, 0)
+    bigTableApplyWidth(bt)
+    // 此刻只有第一批行：按已测行高外推整表高度，滚动条立刻是整表长度，
+    // 后台补块期间用户也能滚到任意位置（未补到的地方由视口优先补块追上）
+    const lines = Math.max(1, (V.bigTable.get(i) || {}).lines || 1)
+    setHeight(i, BT_EST_HEAD + lines * bt.rowH)
+  } finally {
+    bt.measuring = false
   }
-  probe.innerHTML = ''
-  document.body.removeChild(probe)
-  const after = V.resident.get(i)
-  if (!after || !after.table) return
-  after.table.measuring = false
-  if (!colW || !colW.length) return
-  after.table.colW = colW
-  after.table.width = colW.reduce((a, b) => a + b, 0)
-  after.table.firstRows = null
-  for (const t2 of after.table.host.querySelectorAll('table.bt-table')) {
-    bigTableFixWidth(t2, after.table)
-  }
-  // 此刻只有第一批行：按已测行高外推整表高度，滚动条立刻是整表长度，
-  // 后台补块期间用户也能滚到任意位置（未补到的地方由视口优先补块追上）
-  const lines = Math.max(1, (V.bigTable.get(i) || {}).lines || 1)
-  setHeight(i, BT_EST_HEAD + lines * after.table.rowH)
+}
+
+// 宽度基准变了（拖窗口、改字号、改行宽）：列宽是按当时的可用宽度量的 px，
+// 不重量就会被旧值锁死——窗口拖宽只会留白，拖窄就整片折行。
+let bigTableRemeasureTimer = 0
+function scheduleBigTableRemeasure() {
+  if (bigTableRemeasureTimer) clearTimeout(bigTableRemeasureTimer)
+  bigTableRemeasureTimer = setTimeout(() => {
+    bigTableRemeasureTimer = 0
+    if (!V.active) return
+    for (const [i, rec] of V.resident) {
+      const bt = rec.table
+      if (!bt || bt.measuring) continue
+      bt.colW = null
+      bt.width = 0
+      bigTableMeasure(i, rec)
+    }
+  }, 150)
 }
 
 function bigTableMount(i) {
@@ -3637,7 +3713,7 @@ function bigTableMount(i) {
     table: {
       // 总行数用索引给的值：__lines 只在读到块尾时才回报 total，首块拿不到
       host, wrap, total: ((V.bigTable.get(i) || {}).lines || 0),
-      next: 0, rows: 0, header: '', text: '', firstRows: null,
+      next: 0, rows: 0, header: '', text: '', firstRows: null, sample: null,
       busy: false, done: false, loadingTo: false, idle: 0, timer: false, measuring: false,
       rowH: BT_EST_ROW, headH: BT_EST_HEAD, colW: null, width: 0,
     },
@@ -3750,7 +3826,9 @@ async function bigTableFill(i) {
     }
   }
   if (from === 0) bigTableMeasure(i, cur)
-  if (part.lines.length < want) {
+  // 短读不等于读到底：1 MB 窗口装满时宿主也只回一部分，那时后面还有行。宿主只有
+  // 扫到块尾才会给出 total，所以「有 total 且短读」才是真收尾，否则继续往后取。
+  if (part.lines.length < want && part.total !== 0) {
     bigTableDone(i, cur)
     return
   }
@@ -3759,9 +3837,11 @@ async function bigTableFill(i) {
 
 // 视口正在看的那一块还没补到：补过去（每次只走一块，由 loadingTo 自己限流）。
 // 后台补块在滚动期间会让路，这里保证「正在看的地方」不会长时间空着。
+let bigTableLoadAt = 0
 function bigTableEnsureVisible() {
   if (!V.bigTable.size) return
   if (Math.abs(V.target - V.off) > V.vh * 1.5) return
+  // 一次补块是 60–80 ms 的同步任务：每帧都起一条补块链，滚动就被它切成幻灯片。
   for (const [i, rec] of V.resident) {
     const bt = rec.table
     if (!bt || bt.done || bt.loadingTo) continue
@@ -3770,7 +3850,14 @@ function bigTableEnsureVisible() {
     if (V.off + V.vh <= top || V.off >= top + bh) continue
     const rowH = bt.rowH > 0 ? bt.rowH : BT_EST_ROW
     const ci = Math.floor(Math.max(0, V.off - top - BT_EST_HEAD) / rowH / BT_ROWS)
-    if (bt.next < 2 + ci * BT_ROWS) bigTableLoadTo(i, ci)
+    // 多补一块缓冲：滚动速度超过「一块/补块周期」时，下一块已经在 DOM 里，
+    // 不会等滚到空白区才开始同步渲染（那一下就是明显的掉帧）。
+    if (bt.next < 2 + (ci + 1) * BT_ROWS) {
+      const now = performance.now()
+      if (now - bigTableLoadAt < 120) return
+      bigTableLoadAt = now
+      bigTableLoadTo(i, ci + 1)
+    }
   }
 }
 
@@ -3866,12 +3953,14 @@ async function bigTableSource(i) {
   let from = 0
   let total = 0
   for (let guard = 0; guard < 200; guard++) {
+    // 越界时宿主回 404，bigTableFetch 解成 null：这里就是取完了
     const part = await bigTableFetch(i, from, from === 0 ? BT_ROWS + 2 : BT_ROWS * 4)
-    if (!part.lines.length) break
+    if (!part || !part.lines.length) break
     total = part.total
     text += part.lines.join('\n') + '\n'
     from += part.lines.length
     if (total && from >= total) break
+    // 短读且宿主没给 total：1 MB 窗口装满了，继续往后取，别当成到底
   }
   return text
 }
@@ -4485,6 +4574,9 @@ function applyFx(fx) {
     'code,kbd,samp,pre{font-family:var(--fx-mono)!important;}',
     '.ui{font-family:var(--fx-ui)!important;}',
     '.measure,.blk{max-width:' + measure + '!important;}',
+    // 表格块不吃行宽：行宽是给正文读的，表格要按自己的列数用足窗口。
+    // 必须写死在这里——上面那条带 !important，base.css 里盖不住。
+    '.blk--table{max-width:none!important;}',
   ].join('')
 
   document.getElementById('fx').textContent = css
@@ -4494,6 +4586,7 @@ function applyFx(fx) {
     if (!V.active) return
     remeasureAll()
     refreshBigLayout()
+    scheduleBigTableRemeasure()
   })
 }
 
@@ -5070,6 +5163,8 @@ function bindInput() {
     V.vh = window.innerHeight
     V.trackH = 0
     place()
+    // 分块表的列宽是按可用宽度量的 px，拖完要重量（防抖在里层）
+    scheduleBigTableRemeasure()
   })
   thumbEl.addEventListener('pointerdown', onThumbDown)
   thumbEl.addEventListener('pointermove', onThumbMove)

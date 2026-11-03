@@ -606,15 +606,21 @@ blockquote > *:last-child { margin-bottom: 0; }
   --md-alert-bg: var(--md-alert-caution-bg);
 }
 
-/* ---------------- 表格 ---------------- */
+/* ---------------- 表格 ----------------
+   表格按自己的列数占宽：行宽（--fx-measure）是给正文读的，表格比正文宽时不该被栏宽
+   压着折行，所以 .blk--table 不受行宽限制（applyFx 注入的同名规则把它放开）。
+   table 设 width:100% 让各列按内容比例铺开——放得下就一个字符都不折，放不下时
+   由外层 .mdv-cb--table 横向滚动。display:table 是必需的：display:block 会让表格
+   退化成「块里的匿名表」，宽度算不准（表格被压到容器宽、列宽分配不对）。 */
+
+.mdv-cb--table { overflow-x: auto; }
 
 table {
   margin: var(--md-space-block) 0;
   border-collapse: collapse;
   border-spacing: 0;
-  display: block;
+  width: 100%;
   max-width: 100%;
-  overflow-x: auto;
 }
 
 th, td {
@@ -831,9 +837,9 @@ pre.mermaid-src {
 .mdv-cb > pre,
 .mdv-cb > table { margin: 0; }
 
-/* 表格按内容收缩，按钮才贴着表格右上角而不是窗口右边 */
+/* 表格铺满所在块（块本身已不受行宽限制），复制按钮就贴着表格右上角 */
 .mdv-cb--table {
-  width: fit-content;
+  width: auto;
   max-width: 100%;
 }
 

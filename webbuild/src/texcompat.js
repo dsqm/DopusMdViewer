@@ -175,12 +175,28 @@ function texLabel(src) {
     .replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+// 文档经模板引擎转义后双花括号会成对留下（`\begin{{bmatrix}}`、`a_{{11}}`），
+// KaTeX 不认。只有渲染真的报了错、源码里又确实有 `{{` 时才折叠一层重试一次：
+// 正确写法一次都不多渲染，也不会把 \text{{{x}}} 这类合法分组改坏。
+function foldBraces(src) {
+  return src.replace(/\{\{/g, '{').replace(/\}\}/g, '}')
+}
+
 // 插件通过 engine.renderToString 调用，包一层让所有公式走同一套改写
 export const katexEngine = {
   renderToString(tex, opts) {
     const src = prepareTex(tex)
+    let out = katex.renderToString(src, opts)
+    if (src.indexOf('{{') >= 0 && out.indexOf('katex-error') >= 0) {
+      const folded = foldBraces(src)
+      if (folded !== src) {
+        const retry = katex.renderToString(folded, opts)
+        // 折叠后还是错就留原结果：报错位置指回用户真正写的那一行才有用
+        if (retry.indexOf('katex-error') < 0) out = retry
+      }
+    }
     // HTML 输出不带 MathML，给根节点补 aria-label，读屏软件至少能读到 TeX 源
-    return katex.renderToString(src, opts).replace('<span class="katex"',
+    return out.replace('<span class="katex"',
       '<span class="katex" role="math" aria-label="' + texLabel(src) + '"')
   },
 }
