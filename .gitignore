@@ -21,6 +21,10 @@ webbuild/node_modules/
 # —— 会话过程产物：决策地图、票、调研原始输出、验收截图 ——
 .scratch/
 
+# —— 本地 agent 配置：保留在磁盘，不入库 ——
+AGENTS.md
+docs/agents/
+
 # —— 本机临时文件 ——
 *.log
 
