@@ -1756,7 +1756,7 @@ void BuildUi(DialogState* st) {
                                kIdOutlineBtn);
 
   y = 264;
-  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeBlockGroup), BS_GROUPBOX, 16, y, 524, 88,
+  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeBlockGroup), BS_GROUPBOX, 16, y, 524, 76,
              kIdCodeGroup);
   st->hLineNumbers = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderLineNumbers),
                                 BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 16, 140, 24,
@@ -1776,17 +1776,25 @@ void BuildUi(DialogState* st) {
                                    BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 44, 400, 24,
                                    kIdIndentedBlocks);
 
-  y = 360;
-  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderGroupImages), BS_GROUPBOX, 16, y, 524, 92,
+  y = 348;
+  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderGroupImages), BS_GROUPBOX, 16, y, 524, 104,
              0);
-  AddControl(st, 2, L"STATIC", loc::T(loc::Str::NetAskWhen), SS_LEFT, 28, y + 16, 300, 20, 0);
-  st->hNetDoc = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::NetPerDoc),
-                           BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP, 28, y + 40, 130, 24,
-                           kIdNetDoc);
-  st->hNetHost = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::NetPerHost),
-                            BS_AUTORADIOBUTTON | WS_TABSTOP, 168, y + 40, 300, 24, kIdNetHost);
+  AddControl(st, 2, L"STATIC", loc::T(loc::Str::NetAskWhen), SS_LEFT, 28, y + 14, 300, 20, 0);
+  // 两个档位的说明写全了，一行放不下两个；按实测文字宽度定宽，免得 150% 缩放下被截断
+  {
+    const wchar_t* docLabel = loc::T(loc::Str::NetPerDoc);
+    const wchar_t* hostLabel = loc::T(loc::Str::NetPerHost);
+    const int docW = 22 + UnscaleOf(st, TextWidth(st, docLabel)) + 6;
+    const int hostW = 22 + UnscaleOf(st, TextWidth(st, hostLabel)) + 6;
+    st->hNetDoc = AddControl(st, 2, L"BUTTON", docLabel,
+                             BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP, 28, y + 34, docW, 24,
+                             kIdNetDoc);
+    st->hNetHost = AddControl(st, 2, L"BUTTON", hostLabel,
+                              BS_AUTORADIOBUTTON | WS_TABSTOP, 28, y + 56, hostW, 24,
+                              kIdNetHost);
+  }
   st->hNetOff = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::NetNever),
-                           BS_AUTORADIOBUTTON | WS_TABSTOP, 28, y + 64, 200, 24, kIdNetOff);
+                           BS_AUTORADIOBUTTON | WS_TABSTOP, 28, y + 78, 200, 24, kIdNetOff);
 
   // ---------------- 高级 ----------------
   std::wstring version = UtilModuleVersion();

@@ -552,9 +552,13 @@ md.renderer.rules.table_close = (tokens, idx, options, env, self) => {
 
 const TRANSPARENT_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
-// 网络图片的确认状态（每文档重置）。确认面板画在预览页里，不再弹原生窗。
+// 网络图片的确认状态。键是 URL.host（域名 + 非默认端口，不含协议）。
+// 两个档位的答复都只在本篇文档内有效，换文件全部重问：
+//   allowed / denied —— "每主机"档按主机记的答复；
+//   docDecided       —— "每文档"档的整篇答复（一篇只有一个，不看主机）。
+// 不跨文档、不跨引擎：换文件时 resetNetConsent 一起清。
 const NET = {
-  mode: 1,             // 0 不询问 / 1 每主机每文档 / 2 每文档
+  mode: 1,             // 0 不询问 / 1 每主机一次 / 2 每文档一次
   allowed: new Set(),
   denied: new Set(),
   docDecided: null,
@@ -562,6 +566,7 @@ const NET = {
   current: null,
   panel: null,
   title: null,
+  hint: null,
 }
 
 function isRemoteUrl(raw) {
@@ -1234,6 +1239,7 @@ function ensureConsentPanel() {
   panel.innerHTML =
     '<div class="net-consent-text">' +
     '<span class="net-consent-title"></span>' +
+    '<span class="net-consent-hint"></span>' +
     '</div>' +
     '<div class="net-consent-actions">' +
     '<button type="button" data-act="deny">拒绝</button>' +
@@ -1244,14 +1250,17 @@ function ensureConsentPanel() {
   document.body.appendChild(panel)
   NET.panel = panel
   NET.title = panel.querySelector('.net-consent-title')
+  NET.hint = panel.querySelector('.net-consent-hint')
   return panel
 }
 
-function showNetPrompt(origin) {
+function showNetPrompt(host) {
   const panel = ensureConsentPanel()
-  let host = origin
-  try { host = new URL(origin).host } catch { /* 保留原文 */ }
   NET.title.textContent = '允许加载来自 ' + host + ' 的网络图片吗？'
+  // 两个档位的答复都只在本篇有效，差别只在覆盖范围
+  NET.hint.textContent =
+    NET.mode === 2 ? '允许或拒绝：本篇所有来源都不再询问，换文件重新问。'
+                   : '允许或拒绝：本篇内该主机不再询问，换文件重新问。'
   panel.hidden = false
 }
 
@@ -1259,21 +1268,21 @@ function hideNetPrompt() {
   if (NET.panel) NET.panel.hidden = true
 }
 
-function ensureNetConsent(origin) {
+function ensureNetConsent(host) {
   if (NET.mode === 0) return Promise.resolve(true)
   if (NET.mode === 2) {
     if (NET.docDecided !== null) return Promise.resolve(NET.docDecided)
   } else {
-    if (NET.allowed.has(origin)) return Promise.resolve(true)
-    if (NET.denied.has(origin)) return Promise.resolve(false)
+    if (NET.allowed.has(host)) return Promise.resolve(true)
+    if (NET.denied.has(host)) return Promise.resolve(false)
   }
   return new Promise((resolve) => {
-    NET.queue.push({ origin, resolve })
+    NET.queue.push({ host, resolve })
     pumpNetConsent()
   })
 }
 
-// 一次只问一个来源；拒绝/允许只作用于当前来源（每文档档位除外）
+// 一次只问一个来源；档位 2 的答复管整篇，档位 1 的答复只针对当前主机
 function pumpNetConsent() {
   if (NET.current) return
   while (NET.queue.length) {
@@ -1288,19 +1297,19 @@ function pumpNetConsent() {
       item.resolve(NET.docDecided)
       continue
     }
-    if (NET.mode === 1 && NET.allowed.has(item.origin)) {
+    if (NET.mode === 1 && NET.allowed.has(item.host)) {
       NET.queue.shift()
       item.resolve(true)
       continue
     }
-    if (NET.mode === 1 && NET.denied.has(item.origin)) {
+    if (NET.mode === 1 && NET.denied.has(item.host)) {
       NET.queue.shift()
       item.resolve(false)
       continue
     }
     NET.queue.shift()
     NET.current = item
-    showNetPrompt(item.origin)
+    showNetPrompt(item.host)
     return
   }
 }
@@ -1312,8 +1321,8 @@ function decideNetConsent(allow) {
   if (NET.mode === 2) {
     NET.docDecided = allow
   } else if (NET.mode === 1) {
-    if (allow) NET.allowed.add(item.origin)
-    else NET.denied.add(item.origin)
+    if (allow) NET.allowed.add(item.host)
+    else NET.denied.add(item.host)
   }
   hideNetPrompt()
   item.resolve(allow)
@@ -1333,13 +1342,15 @@ function setNetMode(mode) {
 }
 
 function resetNetConsent() {
-  // 只清“正在等答复”的问答与每文档决定；允许/拒绝的来源记住到页面结束
-  // （页面随 DO 进程存活，关预览窗口、换文件都不清）。
+  // 换文档：在排队的问答作废，两个档位的记忆一起清——答复只对本篇文档有效，
+  // 下一篇文档里同一个主机要重新问。
   for (const item of NET.queue) item.resolve(false)
   if (NET.current) NET.current.resolve(false)
   NET.queue = []
   NET.current = null
   NET.docDecided = null
+  NET.allowed.clear()
+  NET.denied.clear()
   hideNetPrompt()
 }
 
@@ -1348,9 +1359,10 @@ function processNetImages(root) {
   for (const img of imgs) {
     if (img.dataset.mdvNet === '1') continue
     img.dataset.mdvNet = '1'
-    let origin = ''
-    try { origin = new URL(img.dataset.mdvSrc).origin } catch { continue }
-    ensureNetConsent(origin).then((allow) => {
+    // 键用 host 而不是 origin：同一个域名换个协议/端口不该再问一次（弹窗上显示的也是它）
+    let host = ''
+    try { host = new URL(img.dataset.mdvSrc).host } catch { continue }
+    ensureNetConsent(host).then((allow) => {
       if (!img.isConnected) return
       if (allow) {
         img.src = img.dataset.mdvSrc

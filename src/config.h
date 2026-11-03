@@ -24,8 +24,10 @@ struct FontSettings {
 struct Config {
   std::wstring skin;  // 皮肤 id（文件名去扩展名）
   FontSettings font;
-  // 网络图片的确认粒度：0 = 不确认直接加载，1 = 每主机一次（DO 运行期间记住），
-  // 2 = 每文档一次。
+  // 网络图片的确认粒度（两个档位的答复都只对当前文档有效，换文件全部重问）：
+  //   0 = 不确认直接加载；
+  //   1 = 每主机一次：一篇里每个主机各问一次，各自记各自的；
+  //   2 = 每文档一次：整篇只问一次，一个答复管所有来源。
   int netImageMode;
   // 图片是否允许引用文档目录之外的路径（../ 与绝对路径）。默认关闭。
   bool allowOutsideImages;

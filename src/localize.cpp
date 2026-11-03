@@ -68,8 +68,8 @@ const wchar_t* const kZh[kCount] = {
     /* CopyFormatTsv    */ L"TSV 纯文本",
     /* CopyFormatMarkdown */ L"Markdown 源码",
     /* NetAskWhen       */ L"网络图片加载前：",
-    /* NetPerDoc        */ L"每文档询问一次",
-    /* NetPerHost       */ L"每主机询问一次（DO 运行期间记住）",
+    /* NetPerDoc        */ L"每文档询问一次（整篇只问一次，答一次管所有来源）",
+    /* NetPerHost       */ L"每主机询问一次（本篇内每个主机各问一次）",
     /* NetNever         */ L"不询问，直接加载",
     /* OutsideImages    */ L"允许图片引用文档目录外的路径（../ 与绝对路径）",
 

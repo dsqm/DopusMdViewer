@@ -34,7 +34,7 @@ std::wstring MakeIndexFull(uint32_t blockCount, uint32_t lastVisible);
 std::wstring MakeBig(const std::string& table);
 
 // net|<mode>：网络图片确认粒度（0 不询问 / 1 每主机一次 / 2 每文档一次）。
-// 「每主机一次」在 DO 运行期间记住，不按文档重新询问。
+// 两个档位的答复都只对当前文档有效，换文件全部重问。
 // 确认面板在页面内渲染，这里只推配置。
 std::wstring MakeNetMode(int mode);
 
