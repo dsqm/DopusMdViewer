@@ -887,6 +887,9 @@ pre.mermaid-src {
   z-index: 22;
   display: flex;
   gap: 4px;
+  /* .ui 给了实底（--md-outline-bg）：正文是白底时看不出来，浮到图片上就是一块
+     白色托盘。这里只承载两个图标按钮，底必须透出去。 */
+  background: transparent;
 }
 
 #tools[hidden] { display: none; }
@@ -920,10 +923,6 @@ pre.mermaid-src {
   background: var(--md-icon-bg);
   color: var(--md-icon);
 }
-
-#tools button.mdv-ibtn:hover,
-#find button.mdv-ibtn:hover,
-.outline-head button.mdv-ibtn:hover { color: var(--md-icon-hover); }
 
 /* 设置里关掉的按钮不占位 */
 #tools button[hidden] { display: none; }
