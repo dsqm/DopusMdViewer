@@ -33,6 +33,8 @@ struct Config {
   bool renderMermaid;
   bool renderKatex;
   bool renderHighlight;
+  // 界面叫「渲染原始 HTML」；JSON 键沿用 render.inlineHtml，正名会让已有配置
+  // 里那一项静默回落默认值。
   bool renderInlineHtml;
   bool renderLocalImages;
   // 代码块 / 表格右上角的复制按钮。默认开。

@@ -51,7 +51,7 @@ const wchar_t* const kZh[kCount] = {
     /* RenderMermaid    */ L"Mermaid 图表",
     /* RenderKatex      */ L"KaTeX 公式",
     /* RenderHighlight  */ L"代码语法高亮",
-    /* RenderHtml       */ L"内联原始 HTML",
+    /* RenderHtml       */ L"渲染原始 HTML",
     /* RenderLocal      */ L"本地相对图片",
     /* RenderCopyCode   */ L"代码块复制按钮",
     /* RenderCopyTable  */ L"表格复制按钮",
@@ -124,7 +124,7 @@ const wchar_t* const kZh[kCount] = {
     L"所有页签的设置都会恢复默认值。\r\n\r\n"
     L"确定后仍需点「应用」或「确定」才会写入配置文件。",
     /* MeasureHintUnlimited */ L"不限宽：正文宽度随窗口自适应，不再按 em 限制。",
-    /* RenderHtmlHint   */ L"关闭后，正文里的 HTML 标签按原文显示，不会被解释成元素。",
+    /* RenderHtmlHint   */ L"关闭「渲染原始 HTML」后，正文里的 HTML 标签按原文显示，不会被解释成元素。",
     /* Restore          */ L"重置全部",
     /* Apply            */ L"应用",
     /* Ok               */ L"确定",

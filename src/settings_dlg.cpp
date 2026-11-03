@@ -1722,12 +1722,14 @@ void BuildUi(DialogState* st) {
                               28, y + 40, 170, 24, renders[3].id);
   st->hRender[4] = AddControl(st, 2, L"BUTTON", renders[4].text, BS_AUTOCHECKBOX | WS_TABSTOP,
                               208, y + 40, 170, 24, renders[4].id);
+  // 这句解释的是上一行「渲染原始 HTML」，所以紧贴它放。原先在组末最后一行，
+  // 紧挨着的是「允许图片引用文档目录外的路径」，读起来像是在解释那条。
+  AddControl(st, 2, L"STATIC", loc::T(loc::Str::RenderHtmlHint), SS_LEFT, 28, y + 64, 500, 18,
+             0);
   // 图片的路径策略与「本地图片」是同一件事，放在同一组里
   st->hOutside = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::OutsideImages),
-                            BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 28, y + 64, 500, 24,
+                            BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 28, y + 88, 500, 24,
                             kIdOutside);
-  AddControl(st, 2, L"STATIC", loc::T(loc::Str::RenderHtmlHint), SS_LEFT, 28, y + 92, 500, 18,
-             0);
 
   y = 176;
   AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderGroupUi), BS_GROUPBOX, 16, y, 524, 80, 0);
