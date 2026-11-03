@@ -1152,6 +1152,15 @@ void EnableCodeWsRange(DialogState* st, bool enabled) {
   if (st->hCodeWsAll) ::EnableWindow(st->hCodeWsAll, enabled ? TRUE : FALSE);
 }
 
+// 本窗口是自建窗口，不是对话框：BS_AUTORADIOBUTTON 的互斥由对话框管理器负责，
+// 这里没有那一层，点一个只会勾上它自己，同组旧按钮仍留着勾。读回来时按
+// 「仅选中 > 全部 > 边界」取优先级，于是回到之前点过的档位就再也点不动了。
+// 组内 id 连续，点下时按区间补一次互斥。
+void CheckRadioExclusive(DialogState* st, int id, int firstId, int lastId) {
+  if (::IsDlgButtonChecked(st->hwnd, id) != BST_CHECKED) return;
+  ::CheckRadioButton(st->hwnd, firstId, lastId, id);
+}
+
 // “应用”只在有未保存改动时可用；应用成功后立刻变灰。
 void SetDirty(DialogState* st, bool dirty) {
   st->dirty = dirty;
@@ -2069,6 +2078,7 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdSlotUi:
     case kIdSlotBody:
     case kIdSlotMono:
+      if (code == BN_CLICKED) CheckRadioExclusive(st, id, kIdSlotUi, kIdSlotMono);
       st->slot = id - kIdSlotUi;
       RefreshChainList(st);
       return;
@@ -2096,7 +2106,7 @@ void OnCommand(DialogState* st, int id, int code) {
       SetDirty(st, true);
       return;
 
-    // 渲染开关、网络图档位、目录外图片：点一下就算未保存改动
+    // 渲染开关、目录外图片：点一下就算未保存改动
     case kIdRenderMermaid:
     case kIdRenderKatex:
     case kIdRenderHighlight:
@@ -2106,16 +2116,28 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdFindBtn:
     case kIdOutlineBtn:
     case kIdLineNumbers:
-    case kIdCodeWsSelected:
-    case kIdCodeWsBoundary:
-    case kIdCodeWsAll:
     case kIdIndentedBlocks:
-    case kIdNetDoc:
-    case kIdNetHost:
-    case kIdNetOff:
     case kIdOutside:
     case kIdEnableLog:
       if (code == BN_CLICKED) SetDirty(st, true);
+      return;
+
+    case kIdCodeWsSelected:
+    case kIdCodeWsBoundary:
+    case kIdCodeWsAll:
+      if (code == BN_CLICKED) {
+        CheckRadioExclusive(st, id, kIdCodeWsSelected, kIdCodeWsAll);
+        SetDirty(st, true);
+      }
+      return;
+
+    case kIdNetDoc:
+    case kIdNetHost:
+    case kIdNetOff:
+      if (code == BN_CLICKED) {
+        CheckRadioExclusive(st, id, kIdNetDoc, kIdNetOff);
+        SetDirty(st, true);
+      }
       return;
 
     case kIdCopyTable:
