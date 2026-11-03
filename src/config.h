@@ -39,6 +39,8 @@ struct Config {
   // 里那一项静默回落默认值。
   bool renderInlineHtml;
   bool renderLocalImages;
+  // 表格长内容自动换行。默认开；关掉后单元格保持单行，表格在正文栏内横向滚动。
+  bool renderTableWrap;
   // 代码块 / 表格右上角的复制按钮。默认开。
   bool copyCodeBlock;
   bool copyTable;

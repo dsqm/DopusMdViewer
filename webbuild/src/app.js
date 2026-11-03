@@ -528,8 +528,11 @@ const defaultTableOpen = md.renderer.rules.table_open ||
 const defaultTableClose = md.renderer.rules.table_close ||
   ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
 
+// 内层 .mdv-cb__scroll 负责横向滚动，复制按钮留在不滚动的外层：
+// 否则按钮是滚动容器的绝对定位子元素，滚到表格右侧时会被带着滚出视野。
 md.renderer.rules.table_open = (tokens, idx, options, env, self) =>
-  '<div class="mdv-cb mdv-cb--table">' + defaultTableOpen(tokens, idx, options, env, self)
+  '<div class="mdv-cb mdv-cb--table"><div class="mdv-cb__scroll">' +
+  defaultTableOpen(tokens, idx, options, env, self)
 
 md.renderer.rules.table_close = (tokens, idx, options, env, self) => {
   // markdown-it 只给 table_open 挂 map（table_close 的 map 是空的），
@@ -548,7 +551,7 @@ md.renderer.rules.table_close = (tokens, idx, options, env, self) => {
       btn = copyButtonHtml('table', ' data-src="d"' + lines)
     }
   }
-  return defaultTableClose(tokens, idx, options, env, self) + btn + '</div>'
+  return defaultTableClose(tokens, idx, options, env, self) + '</div>' + btn + '</div>'
 }
 
 /* ---------------- 清洗与 URL 改写 ---------------- */
@@ -757,6 +760,7 @@ const state = {
     codeWs: WS_BOUNDARY, // 空白符标记：0 关 / 1 仅选中 / 2 边界 / 3 全部（写进块 HTML）
     indentedBlocks: false, // 缩进式代码块也套用行号与空白符（同上）
     tableCopyMd: false,  // 表格复制 Markdown 源码而不是 TSV；纯点击时行为，不进 HTML
+    tableWrap: true,     // 表格长内容自动换行；关掉后单行 + 包装层横向滚动
   },
   chrome: {
     find: true,     // 工具条搜索按钮
@@ -3540,7 +3544,6 @@ function bigTableFixWidth(t, bt) {
   if (!bt.colW || !bt.width) return
   t.style.tableLayout = 'fixed'
   t.style.width = bt.width + 'px'
-  t.style.minWidth = '100%'
   let cg = t.querySelector('colgroup')
   if (!cg) {
     cg = document.createElement('colgroup')
@@ -3567,7 +3570,44 @@ function bigTableApplyWidth(bt) {
   }
 }
 
-// 量一次：列宽与行高。窗口尺寸、字号、行宽变化后要能量第二次。
+// 巨型表列宽：自然宽（单行最宽内容）→ 最小列宽兜底 → 折行模式按正文宽压缩。
+// 关掉折行时保持自然宽，超出的部分由包装层横向滚动；压缩后仍顶在最小列宽上的
+// 列加起来放不下正文宽，同样交给包装层滚动。打印不走这里，另按折行排版。
+function fitTableCols(natural, min, avail, wrap) {
+  const out = natural.map((w, k) => Math.max(Math.ceil(w), Math.ceil(min[k] || 0)))
+  const sum = out.reduce((a, b) => a + b, 0)
+  if (!wrap || !(avail > 0) || sum <= avail) return out
+  // 最小列宽先保住；可压缩的只有各列超出最小列宽的那部分，按比例分掉
+  let floorSum = 0
+  let extraSum = 0
+  for (let k = 0; k < out.length; k++) {
+    const m = Math.ceil(min[k] || 0)
+    floorSum += m
+    extraSum += out[k] - m
+  }
+  if (floorSum >= avail) {
+    // 列数 × 最小列宽本身就放不下：停在最小列宽，由包装层横向滚动
+    return out.map((w, k) => Math.ceil(min[k] || 0))
+  }
+  const k2 = (avail - floorSum) / extraSum
+  return out.map((w, k) => {
+    const m = Math.ceil(min[k] || 0)
+    return m + Math.floor((w - m) * k2)
+  })
+}
+
+// 可用宽度 = 所在块的内容宽（块自身居中、左右各 1.5em 内边距）。不能读
+// bt.host.clientWidth：折行模式下包装层是 fit-content，宽度反过来由表格决定。
+function bigTableContentWidth(rec) {
+  const el = rec && rec.el
+  if (!el) return 480
+  const cs = getComputedStyle(el)
+  const w = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) -
+    (parseFloat(cs.paddingRight) || 0)
+  return Math.max(160, Math.round(w) || 480)
+}
+
+// 量一次：列宽与行高。窗口尺寸、字号、行宽、折行模式变化后要能量第二次。
 //
 // 三个坑都在这里处理：
 //   1) 不能直接量已经插进 DOM 的那一块——它带着 content-visibility:auto，被跳过时
@@ -3581,8 +3621,7 @@ async function bigTableMeasure(i, rec) {
   if (!bt.header || bt.measuring) return
   bt.measuring = true
   try {
-    const host = bt.host
-    const width = Math.max(160, host.clientWidth || host.offsetWidth || 480)
+    const width = bigTableContentWidth(rec)
     if (!bt.sample) {
       const head = (bt.firstRows || []).slice(0, 24)
       let tail = []
@@ -3601,14 +3640,62 @@ async function bigTableMeasure(i, rec) {
     if (!cur || cur.table !== bt) return
     const probe = document.createElement('div')
     probe.style.cssText =
-      'position:absolute;left:-100000px;top:0;visibility:hidden;width:' + width + 'px'
+      'position:absolute;left:-100000px;top:0;visibility:hidden'
     document.body.appendChild(probe)
     probe.innerHTML = bigTableChunkHtml(bt.header, bt.sample, true)
     const t = probe.querySelector('table')
     let colW = null
     if (t) {
+      // 探针里的分块表不能懒渲染，否则量到的是占位值
+      t.style.contentVisibility = 'visible'
       const thead = t.tHead
       const body = t.tBodies[0]
+      const th = thead && thead.rows[0]
+      const headRow = th || (body && body.rows[0])
+      if (headRow && headRow.cells.length) {
+        // 先让表格按单行内容的自然宽排版（宽度与当前折行模式无关）：
+        // 逐行量单元格，取每列最宽的一条。向上取整再补 1px——高 DPI 下列宽
+        // 带小数，四舍五入后每列会少不到 1px，加粗的表头字正好在这个误差上折行。
+        t.style.width = 'max-content'
+        t.style.maxWidth = 'none'
+        const n = headRow.cells.length
+        const nat = new Array(n).fill(0)
+        const min = new Array(n).fill(0)
+        const rows = []
+        if (th) rows.push(th)
+        if (body) for (const row of body.rows) rows.push(row)
+        for (const row of rows) {
+          if (row.cells.length !== n) continue
+          for (let k = 0; k < n; k++) {
+            const w = Math.ceil(row.cells[k].getBoundingClientRect().width) + 1
+            if (w > nat[k]) nat[k] = w
+          }
+        }
+        // 最小列宽 = 两个汉字 + 该列的左右内边距（末列表头还含复制按钮的让位）
+        for (let k = 0; k < n; k++) {
+          const cs = getComputedStyle(headRow.cells[k])
+          min[k] = 2 * (parseFloat(cs.fontSize) || 15) +
+            (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0) + 2
+        }
+        colW = fitTableCols(nat, min, width, state.render.tableWrap)
+      }
+      // 按算出的列宽以固定布局重排，再量行高：折行模式下列被压窄，行高会变
+      if (colW) {
+        t.style.tableLayout = 'fixed'
+        t.style.width = colW.reduce((a, b) => a + b, 0) + 'px'
+        let cg = t.querySelector('colgroup')
+        if (!cg) {
+          cg = document.createElement('colgroup')
+          t.insertBefore(cg, t.firstChild)
+        }
+        while (cg.firstChild) cg.removeChild(cg.firstChild)
+        for (const w of colW) {
+          const col = document.createElement('col')
+          col.style.width = w + 'px'
+          cg.appendChild(col)
+        }
+        void t.offsetWidth
+      }
       bt.headH = thead ? thead.offsetHeight : BT_EST_HEAD
       const row0 = body && body.rows[0]
       const lastRow = body && body.rows[Math.min(bt.sample.length, body.rows.length) - 1]
@@ -3616,32 +3703,6 @@ async function bigTableMeasure(i, rec) {
         const step = lastRow.rowIndex - row0.rowIndex
         const rowH = step > 0 ? (lastRow.offsetTop - row0.offsetTop) / step : 0
         if (rowH > 0) bt.rowH = Math.max(10, rowH)
-      }
-      if (row0 && row0.cells.length) {
-        const th = thead && thead.rows[0]
-        // 向上取整再补 1px：高 DPI 下列宽带小数，四舍五入后每列会少不到 1px，
-        // 加粗的表头字正好在这个误差上折行（「序号」被压成竖排就是这个原因）。
-        colW = Array.prototype.map.call(row0.cells, (c, k) => {
-          let w = c.getBoundingClientRect().width
-          const thc = th && th.cells[k]
-          if (thc) w = Math.max(w, thc.getBoundingClientRect().width)
-          return Math.ceil(w) + 1
-        })
-        let sum = colW.reduce((a, b) => a + b, 0)
-        // 总宽对齐可用宽度，和普通表格一样不多出横向滚动条；超得太多（列多、内容宽）
-        // 就保持自然宽度交给横向滚动，硬压下去反而更难读。
-        const align = sum <= width || sum < width * 1.08
-        if (align && sum > width) {
-          const k = width / sum
-          for (let j = 0; j < colW.length; j++) colW[j] = Math.max(24, Math.floor(colW[j] * k))
-        }
-        if (align) {
-          // 余数全部落在最宽的一列：总宽严格等于可用宽度
-          let widest = 0
-          for (let j = 1; j < colW.length; j++) if (colW[j] > colW[widest]) widest = j
-          sum = colW.reduce((a, b) => a + b, 0)
-          colW[widest] += width - sum
-        }
       }
     }
     probe.innerHTML = ''
@@ -3961,34 +4022,15 @@ async function bigTableSource(i) {
   return text
 }
 
-// 打印：整表补齐再交给打印容器（打印时不分块懒渲染，见 base.css 的 print 段）
+// 打印：整表补齐再交给打印容器。打印不分块——一张表才能让各段列宽一致；
+// 打印样式按纸宽折行（见 base.css 的 print 段），横向滚动模式在这里不生效。
 async function bigTablePrintHtml(i) {
   const text = await bigTableSource(i)
   const lines = text.split('\n')
   if (lines.length && lines[lines.length - 1] === '') lines.pop()
   if (lines.length < 3) return ''
-  const header = lines[0] + '\n' + lines[1]
-  // 纸面宽度和屏幕不一样，列宽按比例给：有实测列宽就算百分比，没有就让浏览器自己排
-  const rec = V.resident.get(i)
-  const colW = rec && rec.table && rec.table.colW
-  let cols = ''
-  if (colW) {
-    const sum = colW.reduce((a, b) => a + b, 0)
-    if (sum > 0) {
-      cols = '<colgroup>' + colW.map((w) =>
-        '<col style="width:' + (w / sum * 100).toFixed(3) + '%">').join('') + '</colgroup>'
-    }
-  }
-  const parts = []
-  for (let k = 2; k < lines.length; k += BT_ROWS) {
-    let html = bigTableChunkHtml(header, lines.slice(k, k + BT_ROWS), k === 2)
-    if (html && cols) {
-      html = html.replace('<table class="bt-table"',
-        '<table class="bt-table" style="table-layout:fixed;width:100%">' + cols)
-    }
-    if (html) parts.push(html)
-  }
-  return parts.length ? '<div class="bt-print">' + parts.join('') + '</div>' : ''
+  const html = bigTableChunkHtml(lines[0] + '\n' + lines[1], lines.slice(2), true)
+  return html ? '<div class="bt-print">' + html + '</div>' : ''
 }
 
 function regexMatches(text, pattern, caseSensitive) {
@@ -4454,6 +4496,12 @@ function refreshBigLayout() {
 
 /* ---------------- 渲染开关（设置里的“渲染”页） ---------------- */
 
+// 表格折行模式挂在根节点上：普通表的样式与巨型表的测量读同一个标记，
+// 不在两处各自推断。
+function syncTableWrapMode() {
+  document.body.classList.toggle('mdv-table-nowrap', !state.render.tableWrap)
+}
+
 function applyRenderConfig(flags) {
   const next = {
     mermaid: !!flags.mermaid,
@@ -4464,18 +4512,29 @@ function applyRenderConfig(flags) {
     copyCode: !!flags.copyCode,
     copyTable: !!flags.copyTable,
     tableCopyMd: !!flags.tableCopyMd,
+    // 缺失按开启处理：设置页/测试脚本只发关心的项时，不会把折行意外关掉
+    tableWrap: flags.tableWrap !== false,
     lineNumbers: !!flags.lineNumbers,
     codeWs: Math.max(0, Math.min(3, flags.codeWs | 0)),
     indentedBlocks: !!flags.indentedBlocks,
   }
-  // 只有进块 HTML 的开关需要重渲染；表格复制格式是点击时的事
+  // 只有进块 HTML 的开关需要重渲染；表格复制格式是点击时的事，
+  // 表格折行模式只改根节点标记，普通表由 CSS 重排、巨型表重新测量
   const HTML_KEYS = ['mermaid', 'katex', 'highlight', 'inlineHtml', 'localImages',
     'copyCode', 'copyTable', 'lineNumbers', 'codeWs', 'indentedBlocks']
   const changed = HTML_KEYS.some((k) => state.render[k] !== next[k])
   const lnChanged = state.render.lineNumbers !== next.lineNumbers
   const hlChanged = state.render.highlight !== next.highlight
   const wsChanged = state.render.codeWs !== next.codeWs
+  const wrapChanged = state.render.tableWrap !== next.tableWrap
   state.render = next
+  if (wrapChanged) {
+    syncTableWrapMode()
+    if (V.active) {
+      remeasureAll()
+      scheduleBigTableRemeasure()
+    }
+  }
   // 空白标记重画过，之前点亮的选区标记不再作数
   if (wsChanged) wsClearLit()
 
@@ -4570,9 +4629,6 @@ function applyFx(fx) {
     'code,kbd,samp,pre{font-family:var(--fx-mono)!important;}',
     '.ui{font-family:var(--fx-ui)!important;}',
     '.measure,.blk{max-width:' + measure + '!important;}',
-    // 表格块不吃行宽：行宽是给正文读的，表格要按自己的列数用足窗口。
-    // 必须写死在这里——上面那条带 !important，base.css 里盖不住。
-    '.blk--table{max-width:none!important;}',
   ].join('')
 
   document.getElementById('fx').textContent = css
@@ -4975,7 +5031,7 @@ function onHostMessage(event) {
 
   if (type === 'cfg') {
     const f = rest.split('|')
-    // 后 6 项是后加的：老宿主不发这几项时按「全开、TSV」处理
+    // 后加的项：老宿主不发时按「全开、TSV、表格折行」处理
     const flag = (i) => (f[i] === undefined ? true : f[i] === '1')
     applyRenderConfig({
       mermaid: f[0] === '1',
@@ -4993,6 +5049,8 @@ function onHostMessage(event) {
       codeWs: f[11] === undefined ? 0 : parseInt(f[11], 10) || 0,
       // 老宿主不发这一项：按关处理，与 state.render 的默认值一致
       indentedBlocks: f[12] === '1',
+      // 老宿主不发这一项：按开处理，升级后观感不变
+      tableWrap: flag(13),
     })
     return
   }

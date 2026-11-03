@@ -57,6 +57,7 @@ const UINT_PTR kFindRaceTimerId = 30;
 const UINT_PTR kCrashTimerId = 31;
 const UINT_PTR kWsSelTimerId = 34;
 const UINT_PTR kSettingsCloseTimerId = 35;
+const UINT_PTR kTableGeomTimerId = 36;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -97,7 +98,10 @@ wchar_t g_findQuery[128] = L"中文";
 bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条目数与滚动位置
 bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，回流映射与滚动位置
 bool g_settingsClose = false;  // settings 模式：打开 6 秒后关掉设置窗口，验关窗是否干净
+bool g_settingsRender = false; // settings 模式：开窗后切到「渲染」页，便于截图核对布局
 HWND g_settingsHwnd = nullptr;
+bool g_tableGeom = false;   // 5 秒后回传表格包装层/表体的几何与滚动量
+bool g_tableNowrap = false; // 配合 tables：先把「长内容自动换行」关掉再量
 bool g_wsSel = false;       // 5 秒后在代码块里程序化选一段，读回点亮数量
 bool g_copy = false;        // 5 秒后按 Ctrl+A，7 秒读剪贴板，9 秒再走 SELECTALL 消息
 bool g_pin = false;         // 5 秒后选区钉块 + 拖边滚动，滚到底验钉块没被换出
@@ -175,11 +179,13 @@ DWORD WINAPI SecondThreadProc(LPVOID param) {
 
 // 从屏幕抓客户区，写成 BMP。WebView2 的内容由合成器直接上屏，PrintWindow 拿不到，
 // 只能从窗口实际占的屏幕区域取。
-bool SaveClientBmp(const wchar_t* path) {
-  if (!g_hwndMain || !path || !*path) return false;
+// usePrint：纯 Win32 窗口（设置对话框）用 PrintWindow 抓，窗口比父窗口高、
+// 上半截在屏幕外时也能拿到完整内容；WebView2 的画面只能走屏幕 BitBlt。
+bool SaveWindowBmp(HWND hwnd, const wchar_t* path, bool usePrint) {
+  if (!hwnd || !path || !*path) return false;
 
   RECT rc;
-  ::GetWindowRect(g_hwndMain, &rc);
+  ::GetWindowRect(hwnd, &rc);
   const int cx = rc.right - rc.left;
   const int cy = rc.bottom - rc.top;
   if (cx <= 0 || cy <= 0) return false;
@@ -190,7 +196,11 @@ bool SaveClientBmp(const wchar_t* path) {
   HDC hMem = ::CreateCompatibleDC(hScreen);
   HBITMAP hbm = ::CreateCompatibleBitmap(hScreen, cx, cy);
   HGDIOBJ oldObj = ::SelectObject(hMem, hbm);
-  ::BitBlt(hMem, 0, 0, cx, cy, hScreen, origin.x, origin.y, SRCCOPY);
+  if (usePrint) {
+    ::PrintWindow(hwnd, hMem, 0);
+  } else {
+    ::BitBlt(hMem, 0, 0, cx, cy, hScreen, origin.x, origin.y, SRCCOPY);
+  }
   ::SelectObject(hMem, oldObj);
 
   BITMAPINFOHEADER bih = {};
@@ -278,7 +288,10 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         ::PostQuitMessage(0);
       } else if (wParam == kShotTimerId) {
         ::KillTimer(hwnd, kShotTimerId);
-        SaveClientBmp(g_szShot);
+        // settings 模式优先抓设置窗口：控件布局、分组高度都在那一张图上
+        const bool settingsShot =
+            g_settings && g_settingsHwnd && ::IsWindow(g_settingsHwnd);
+        SaveWindowBmp(settingsShot ? g_settingsHwnd : g_hwndMain, g_szShot, settingsShot);
       } else if (wParam == kTwoTimerId) {
         ::KillTimer(hwnd, kTwoTimerId);
         g_threadCtx = new ThreadCtx();
@@ -293,6 +306,10 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       } else if (wParam == kSettingsTimerId) {
         ::KillTimer(hwnd, kSettingsTimerId);
         g_settingsHwnd = SettingsShow(g_hwndMain);
+        if (g_settingsHwnd && g_settingsRender) {
+          // 页签 id：3001 外观 / 3002 字体 / 3003 渲染 / 3004 高级
+          ::SendMessageW(g_settingsHwnd, WM_COMMAND, MAKEWPARAM(3003, BN_CLICKED), 0);
+        }
         if (g_settingsClose) ::SetTimer(hwnd, kSettingsCloseTimerId, 6000, nullptr);
       } else if (wParam == kSettingsCloseTimerId) {
         ::KillTimer(hwnd, kSettingsCloseTimerId);
@@ -491,6 +508,54 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"+' text='+t+' off='+Math.round(window.__mdv.V.off)"
             L"+' open='+(document.getElementById('outline').hidden?0:1));},700);},400);})();";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kTableGeomTimerId) {
+        // 表格宽度模型：回传包装层/表体的左边缘、宽度与横向滚动量。
+        // tablesnowrap 先把「长内容自动换行」关掉再量，两种模式用同一段脚本。
+        ::KillTimer(hwnd, kTableGeomTimerId);
+        wchar_t script[8192];
+        ::StringCchPrintfW(
+            script, ARRAYSIZE(script),
+            L"(function(){function post(t){window.chrome.webview.postMessage("
+            L"'event|perf|tablegeom '+t)}"
+            L"function n(v){return Math.round(v)}"
+            L"%s"
+            L"function measure(){var out=[];var doc=document.documentElement;"
+            L"out.push('page sw='+n(doc.scrollWidth)+' cw='+n(doc.clientWidth));"
+            L"var wraps=document.querySelectorAll('.mdv-cb--table');"
+            L"for(var i=0;i<wraps.length&&i<12;i++){var w=wraps[i];"
+            L"var tb=w.querySelector('table');var wr=w.getBoundingClientRect();"
+            L"var host=w.querySelector('.bt-host');var big=!!host;"
+            L"var box=big?host:(w.querySelector('.mdv-cb__scroll')||w);"
+            L"var cell=tb?tb.querySelector('th,td'):null;"
+            L"var ws=cell?getComputedStyle(cell).whiteSpace:'-';"
+            L"var cols='';if(tb){var cg=tb.querySelector('colgroup');"
+            L"if(cg)cols=' cols='+[].map.call(cg.children,function(c){"
+            L"return Math.round(parseFloat(c.style.width)||0)}).join('/');}"
+            // 滚到最右再量按钮离包装层右边的距离：按钮应留在可见区域右上角
+            L"var btn=w.querySelector('.mdv-copy');var btR=-1;"
+            L"if(box.scrollWidth>box.clientWidth+1)box.scrollLeft=1e9;"
+            L"if(btn)btR=n(wr.right-btn.getBoundingClientRect().right);"
+            L"out.push((big?'big':'tbl')+i+' L='+n(wr.left)+' W='+n(wr.width)"
+            L"+' bw='+box.clientWidth+' sw='+box.scrollWidth+' ws='+ws"
+            L"+' tw='+(tb?n(tb.getBoundingClientRect().width):-1)+' btR='+btR+cols);}"
+            L"var blk=document.querySelector('.blk--table');"
+            L"if(blk){var cs=getComputedStyle(blk);"
+            L"out.push('blkL='+n(blk.getBoundingClientRect().left+"
+            L"(parseFloat(cs.paddingLeft)||0))+' blkW='+n(blk.clientWidth-"
+            L"(parseFloat(cs.paddingLeft)||0)-(parseFloat(cs.paddingRight)||0)));}"
+            L"post(out.join(' ; '));}"
+            L"setTimeout(measure,%u);})()",
+            g_tableNowrap
+                ? L"var s=window.__mdv.state.render;"
+                  L"window.__mdv.applyRenderConfig({mermaid:s.mermaid,katex:s.katex,"
+                  L"highlight:s.highlight,inlineHtml:s.inlineHtml,"
+                  L"localImages:s.localImages,copyCode:s.copyCode,"
+                  L"copyTable:s.copyTable,tableCopyMd:s.tableCopyMd,"
+                  L"lineNumbers:s.lineNumbers,codeWs:s.codeWs,"
+                  L"indentedBlocks:s.indentedBlocks,tableWrap:false});"
+                : L"",
+            g_tableNowrap ? 1200u : 300u);
+        if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kWsSelTimerId) {
         // 空白符「仅选中」档：hosttest 不能拖鼠标，但可以用 Range 程序化选一段，
         // 再读回 .mdv-sel 的数量与 ::before 的 content —— 点亮是纯 CSS 生效的结果，
@@ -578,8 +643,8 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         ::KillTimer(hwnd, kPrintTimerId);
         const wchar_t* script =
             L"window.__mdv.printTest().then(function(r){"
-            L"window.chrome.webview.postMessage('event|print|'+r);})"
-            L".catch(function(e){window.chrome.webview.postMessage('event|print|err='"
+            L"window.chrome.webview.postMessage('event|perf|print '+r);})"
+            L".catch(function(e){window.chrome.webview.postMessage('event|perf|print err='"
             L"+(e&&e.message||e));});";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kPinTimerId) {
@@ -736,7 +801,12 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"hscroll")) g_hscroll = true;
   if (g_sweep) { const wchar_t* sx = wcsstr(p, L"sweepat=");
     if (sx) { int v = _wtoi(sx + 8); if (v > 0) g_sweepDelayMs = static_cast<UINT>(v); } }
-  if (*p && wcsstr(p, L"settings")) g_settings = true;
+  if (*p && wcsstr(p, L"settingsrender")) {
+    g_settings = true;
+    g_settingsRender = true;
+  } else if (*p && wcsstr(p, L"settings")) {
+    g_settings = true;
+  }
   if (*p && wcsstr(p, L"setclose")) {
     g_settings = true;
     g_settingsClose = true;
@@ -761,6 +831,12 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"outline")) g_outline = true;
   if (*p && wcsstr(p, L"slug")) g_slug = true;
   if (*p && wcsstr(p, L"wssel")) g_wsSel = true;
+  if (*p && wcsstr(p, L"tablesnowrap")) {
+    g_tableGeom = true;
+    g_tableNowrap = true;
+  } else if (*p && wcsstr(p, L"tables")) {
+    g_tableGeom = true;
+  }
   if (*p && wcsstr(p, L"copy")) g_copy = true;
   if (*p && wcsstr(p, L"pin")) g_pin = true;
   if (*p && wcsstr(p, L"crashb")) {
@@ -870,6 +946,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_wsSel) {
     ::SetTimer(g_hwndMain, kWsSelTimerId, 5000, nullptr);
+  }
+  if (g_tableGeom) {
+    ::SetTimer(g_hwndMain, kTableGeomTimerId, 5000, nullptr);
   }
   if (g_seam) {
     ::SetTimer(g_hwndMain, kSeamTimerId, kDumpAfterMs, nullptr);

@@ -46,6 +46,7 @@ void SetDefaults(Config* c) {
   c->renderHighlight = true;
   c->renderInlineHtml = true;
   c->renderLocalImages = true;
+  c->renderTableWrap = true;
   c->copyCodeBlock = true;
   c->copyTable = true;
   c->codeLineNumbers = true;
@@ -137,6 +138,8 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
     readBool("highlight", &c->renderHighlight);
     readBool("inlineHtml", &c->renderInlineHtml);
     readBool("localImages", &c->renderLocalImages);
+    // 旧配置没有这一项：保持默认开启
+    readBool("tableWrap", &c->renderTableWrap);
     readBool("copyCodeBlock", &c->copyCodeBlock);
     readBool("copyTable", &c->copyTable);
     readBool("lineNumbers", &c->codeLineNumbers);
@@ -406,6 +409,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   render["highlight"] = c.renderHighlight;
   render["inlineHtml"] = c.renderInlineHtml;
   render["localImages"] = c.renderLocalImages;
+  render["tableWrap"] = c.renderTableWrap;
   render["copyCodeBlock"] = c.copyCodeBlock;
   render["copyTable"] = c.copyTable;
   render["lineNumbers"] = c.codeLineNumbers;
@@ -430,12 +434,13 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
     g_config = c;
   }
   LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
-          L"net=%d outside=%d render=%d%d%d%d%d copy=%d%d/%d lines=%d ws=%d/%d ind=%d "
+          L"net=%d outside=%d render=%d%d%d%d%d%d copy=%d%d/%d lines=%d ws=%d/%d ind=%d "
           L"tools=%d%d log=%d prewarm=%d idle=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
           c.netImageMode, c.allowOutsideImages ? 1 : 0, c.renderMermaid ? 1 : 0,
           c.renderKatex ? 1 : 0, c.renderHighlight ? 1 : 0, c.renderInlineHtml ? 1 : 0,
-          c.renderLocalImages ? 1 : 0, c.copyCodeBlock ? 1 : 0, c.copyTable ? 1 : 0,
+          c.renderLocalImages ? 1 : 0, c.renderTableWrap ? 1 : 0,
+          c.copyCodeBlock ? 1 : 0, c.copyTable ? 1 : 0,
           c.tableCopyMode, c.codeLineNumbers ? 1 : 0, c.codeWsOn ? 1 : 0, c.codeWsRange,
           c.codeIndentedBlocks ? 1 : 0, c.showFindButton ? 1 : 0,
           c.showOutlineButton ? 1 : 0, c.enableLog ? 1 : 0, c.prewarm ? 1 : 0,

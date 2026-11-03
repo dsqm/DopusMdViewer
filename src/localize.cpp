@@ -56,6 +56,8 @@ const wchar_t* const kZh[kCount] = {
     /* RenderCopyCode   */ L"代码块复制按钮",
     /* RenderCopyTable  */ L"表格复制按钮",
     /* RenderCopyFormat */ L"表格复制格式",
+    /* TableGroup       */ L"表格",
+    /* RenderTableAutoWrap */ L"长内容自动换行（关闭后横向滚动）",
     /* RenderFindButton */ L"显示搜索按钮",
     /* RenderOutlineButton */ L"显示大纲按钮",
     /* RenderLineNumbers */ L"代码块行号",

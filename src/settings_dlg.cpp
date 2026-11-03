@@ -66,6 +66,7 @@ enum {
   kIdCopyCode = 3310,
   kIdCopyTable,
   kIdCopyFormat,
+  kIdTableWrap,
   kIdFindBtn,
   kIdOutlineBtn,
   kIdLineNumbers,
@@ -1206,6 +1207,8 @@ void LoadUiFromStaged(DialogState* st) {
   ::CheckDlgButton(st->hwnd, kIdCopyCode,
                    st->staged.copyCodeBlock ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdCopyTable, st->staged.copyTable ? BST_CHECKED : BST_UNCHECKED);
+  ::CheckDlgButton(st->hwnd, kIdTableWrap,
+                   st->staged.renderTableWrap ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdFindBtn,
                    st->staged.showFindButton ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdOutlineBtn,
@@ -1268,6 +1271,7 @@ void ReadUiIntoStaged(DialogState* st) {
   st->staged.renderLocalImages = ::IsDlgButtonChecked(st->hwnd, kIdRenderLocal) == BST_CHECKED;
   st->staged.copyCodeBlock = ::IsDlgButtonChecked(st->hwnd, kIdCopyCode) == BST_CHECKED;
   st->staged.copyTable = ::IsDlgButtonChecked(st->hwnd, kIdCopyTable) == BST_CHECKED;
+  st->staged.renderTableWrap = ::IsDlgButtonChecked(st->hwnd, kIdTableWrap) == BST_CHECKED;
   st->staged.showFindButton = ::IsDlgButtonChecked(st->hwnd, kIdFindBtn) == BST_CHECKED;
   st->staged.showOutlineButton = ::IsDlgButtonChecked(st->hwnd, kIdOutlineBtn) == BST_CHECKED;
   st->staged.codeLineNumbers = ::IsDlgButtonChecked(st->hwnd, kIdLineNumbers) == BST_CHECKED;
@@ -1740,31 +1744,18 @@ void BuildUi(DialogState* st) {
                             BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 28, y + 88, 500, 24,
                             kIdOutside);
 
+  // 表格复制按钮与复制格式挪去「表格」组后，这里只剩三个短开关，排成一行
   y = 176;
-  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderGroupUi), BS_GROUPBOX, 16, y, 524, 80, 0);
+  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderGroupUi), BS_GROUPBOX, 16, y, 524, 48, 0);
   st->hCopyCode = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderCopyCode),
                              BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 16, 140, 24, kIdCopyCode);
-  st->hCopyTable = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderCopyTable),
-                              BS_AUTOCHECKBOX | WS_TABSTOP, 176, y + 16, 140, 24, kIdCopyTable);
-  AddControl(st, 2, L"STATIC", loc::T(loc::Str::RenderCopyFormat), SS_LEFT, 322, y + 19, 80, 20,
-             0);
-  st->hCopyFormat = AddControl(st, 2, L"COMBOBOX", L"",
-                               CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 404,
-                               y + 16, 122, 120, kIdCopyFormat);
-  if (st->hCopyFormat) {
-    ::SendMessageW(st->hCopyFormat, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(loc::T(loc::Str::CopyFormatTsv)));
-    ::SendMessageW(st->hCopyFormat, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(loc::T(loc::Str::CopyFormatMarkdown)));
-    ::SendMessageW(st->hCopyFormat, CB_SETCURSEL, 0, 0);
-  }
   st->hFindBtn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderFindButton),
-                            BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 44, 140, 24, kIdFindBtn);
+                            BS_AUTOCHECKBOX | WS_TABSTOP, 176, y + 16, 140, 24, kIdFindBtn);
   st->hOutlineBtn = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderOutlineButton),
-                               BS_AUTOCHECKBOX | WS_TABSTOP, 176, y + 44, 140, 24,
+                               BS_AUTOCHECKBOX | WS_TABSTOP, 324, y + 16, 140, 24,
                                kIdOutlineBtn);
 
-  y = 264;
+  y = 232;
   AddControl(st, 2, L"BUTTON", loc::T(loc::Str::CodeBlockGroup), BS_GROUPBOX, 16, y, 524, 76,
              kIdCodeGroup);
   st->hLineNumbers = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderLineNumbers),
@@ -1785,7 +1776,28 @@ void BuildUi(DialogState* st) {
                                    BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 44, 400, 24,
                                    kIdIndentedBlocks);
 
-  y = 348;
+  // 表格：复制按钮与复制格式从「界面控件」迁进来，另加折行模式开关。
+  // 按创建顺序进 Tab 序列：代码块 → 表格 → 外部图片。
+  y = 316;
+  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::TableGroup), BS_GROUPBOX, 16, y, 524, 76, 0);
+  st->hCopyTable = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderCopyTable),
+                              BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 16, 140, 24, kIdCopyTable);
+  AddControl(st, 2, L"STATIC", loc::T(loc::Str::RenderCopyFormat), SS_LEFT, 176, y + 19, 80, 20,
+             0);
+  st->hCopyFormat = AddControl(st, 2, L"COMBOBOX", L"",
+                               CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 258,
+                               y + 16, 130, 120, kIdCopyFormat);
+  if (st->hCopyFormat) {
+    ::SendMessageW(st->hCopyFormat, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(loc::T(loc::Str::CopyFormatTsv)));
+    ::SendMessageW(st->hCopyFormat, CB_ADDSTRING, 0,
+                   reinterpret_cast<LPARAM>(loc::T(loc::Str::CopyFormatMarkdown)));
+    ::SendMessageW(st->hCopyFormat, CB_SETCURSEL, 0, 0);
+  }
+  AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderTableAutoWrap),
+             BS_AUTOCHECKBOX | WS_TABSTOP, 28, y + 44, 400, 24, kIdTableWrap);
+
+  y = 400;
   AddControl(st, 2, L"BUTTON", loc::T(loc::Str::RenderGroupImages), BS_GROUPBOX, 16, y, 524, 104,
              0);
   AddControl(st, 2, L"STATIC", loc::T(loc::Str::NetAskWhen), SS_LEFT, 28, y + 14, 300, 20, 0);
@@ -1922,15 +1934,15 @@ void BuildUi(DialogState* st) {
   st->hWebViewInfo = AddControl(st, 3, L"STATIC", L"", SS_LEFT, 114, y + 66, 434, 20, 0);
 
   // 底部按钮：两个重置在左（本页在前、全部在后），右侧是 应用/确定/取消
-  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::ResetPage), BS_PUSHBUTTON | WS_TABSTOP, 16, 470,
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::ResetPage), BS_PUSHBUTTON | WS_TABSTOP, 16, 522,
              88, 28, kIdResetPage);
-  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 112, 470,
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 112, 522,
              88, 28, kIdRestore);
   st->hApply = AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Apply),
-                          BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, 322, 470, 70, 28, kIdApply);
+                          BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, 322, 522, 70, 28, kIdApply);
   AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Ok), BS_DEFPUSHBUTTON | WS_TABSTOP, 400,
-             470, 70, 28, kIdOk);
-  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Cancel), BS_PUSHBUTTON | WS_TABSTOP, 478, 470,
+             522, 70, 28, kIdOk);
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Cancel), BS_PUSHBUTTON | WS_TABSTOP, 478, 522,
              70, 28, kIdCancel);
 
   ShowPage(st, 0);
@@ -1962,6 +1974,7 @@ void ResetPageSettings(DialogState* st, int page) {
       c.renderHighlight = def.renderHighlight;
       c.renderInlineHtml = def.renderInlineHtml;
       c.renderLocalImages = def.renderLocalImages;
+      c.renderTableWrap = def.renderTableWrap;
       c.copyCodeBlock = def.copyCodeBlock;
       c.copyTable = def.copyTable;
       c.tableCopyMode = def.tableCopyMode;
@@ -2113,6 +2126,7 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdRenderHtml:
     case kIdRenderLocal:
     case kIdCopyCode:
+    case kIdTableWrap:
     case kIdFindBtn:
     case kIdOutlineBtn:
     case kIdLineNumbers:
@@ -2405,7 +2419,7 @@ HWND SettingsShow(HWND parent) {
 
   const UINT dpi = parent ? ::GetDpiForWindow(parent) : 96;
   st->dpi = dpi ? dpi : 96;
-  RECT rc = {0, 0, ScaleOf(st, 560), ScaleOf(st, 510)};
+  RECT rc = {0, 0, ScaleOf(st, 560), ScaleOf(st, 558)};
   const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
   ::AdjustWindowRectEx(&rc, style, FALSE, 0);
   const int w = rc.right - rc.left;

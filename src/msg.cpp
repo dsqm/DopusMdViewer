@@ -109,7 +109,8 @@ std::wstring MakeCfg(const Config& config) {
                config.showOutlineButton ? L"1" : L"0",
                config.codeLineNumbers ? L"1" : L"0",
                std::to_wstring(wsMode),
-               config.codeIndentedBlocks ? L"1" : L"0"});
+               config.codeIndentedBlocks ? L"1" : L"0",
+               config.renderTableWrap ? L"1" : L"0"});
 }
 
 std::wstring MakeClear(void) { return L"clear"; }

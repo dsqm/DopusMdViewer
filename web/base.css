@@ -197,6 +197,16 @@ body.dev #doc {
   #print-root .blk--big, #print-root .big-frame { position: static; height: auto; overflow: visible; }
   /* 打印时不能跳过离屏的块：跳过的那部分不会进纸面 */
   #print-root .bt-table { content-visibility: visible; }
+  /* 打印始终按折行排版，忽略屏幕上的横向滚动模式；列数再多也允许低于两汉字下限，
+     优先保证整表落在纸内 */
+  #print-root .mdv-cb--table { width: auto; max-width: 100%; }
+  #print-root .mdv-cb__scroll { overflow: visible; }
+  #print-root table { width: auto; max-width: 100%; }
+  #print-root th, #print-root td {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
   .mdv-copy { display: none !important; }
 }
 
@@ -607,25 +617,43 @@ blockquote > *:last-child { margin-bottom: 0; }
 }
 
 /* ---------------- 表格 ----------------
-   表格按自己的列数占宽：行宽（--fx-measure）是给正文读的，表格比正文宽时不该被栏宽
-   压着折行，所以 .blk--table 不受行宽限制（applyFx 注入的同名规则把它放开）。
-   table 设 width:100% 让各列按内容比例铺开——放得下就一个字符都不折，放不下时
-   由外层 .mdv-cb--table 横向滚动。display:table 是必需的：display:block 会让表格
-   退化成「块里的匿名表」，宽度算不准（表格被压到容器宽、列宽分配不对）。 */
+   表格和正文共享同一条阅读边界：自然宽度由内容决定，上限是块的内容宽，左边缘
+   与正文文字对齐。长内容默认允许在任何字符处断开（overflow-wrap: anywhere），
+   表格始终压在正文栏内；关掉「长内容自动换行」后由 body.mdv-table-nowrap 切成
+   单行，包装层在正文栏内横向滚动。
+   每列最小宽度 = 两个汉字 + 现有左右内边距，列不会退化成细条。 */
 
-.mdv-cb--table { overflow-x: auto; }
+.mdv-cb--table {
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* 横向滚动放在内层：复制按钮要留在不滚动、不随表格移出视野的一层 */
+.mdv-cb__scroll { overflow-x: auto; }
 
 table {
   margin: var(--md-space-block) 0;
   border-collapse: collapse;
   border-spacing: 0;
-  width: 100%;
+  width: auto;
   max-width: 100%;
 }
 
 th, td {
   padding: 0.4em 0.85em;
   border: 1px solid var(--md-border);
+  /* 长 URL、长哈希这类不可断内容也允许在任意字符处断开 */
+  overflow-wrap: anywhere;
+  min-width: calc(2em + 1.7em);
+}
+
+/* 关闭自动换行：单元格保持单行，表格按自然宽展开，超出的部分交给包装层滚动 */
+body.mdv-table-nowrap .mdv-cb--table { width: 100%; }
+body.mdv-table-nowrap .mdv-cb--table table { width: max-content; max-width: none; }
+body.mdv-table-nowrap .mdv-cb--table th,
+body.mdv-table-nowrap .mdv-cb--table td {
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 
 th {
@@ -641,10 +669,14 @@ tbody tr:nth-child(2n) { background: var(--md-table-zebra); }
    每块 content-visibility:auto —— 浏览器只为视口附近那一块做布局，这是
    两万行表格能把首帧从 1.8 s 压到 0.14 s 的原因。 */
 
+/* 列宽由 JS 按内容量出来、写进 colgroup；包装层按表格实际宽度收缩（折行模式），
+   横向滚动模式占满正文栏，让复制按钮停在可见区域右上角。 */
 .mdv-cb--bigtable {
-  width: auto;
+  width: fit-content;
   max-width: 100%;
 }
+
+body.mdv-table-nowrap .mdv-cb--bigtable { width: 100%; }
 
 .mdv-cb--bigtable .bt-host { overflow-x: auto; }
 
@@ -656,6 +688,10 @@ tbody tr:nth-child(2n) { background: var(--md-table-zebra); }
   overflow: visible;
   content-visibility: auto;
 }
+
+/* 巨型表的列宽由 colgroup 固定，单元格最小宽不再参与布局 */
+.bt-table th, .bt-table td { min-width: 0; }
+.mdv-cb--table.mdv-cb--bigtable tr:first-child > :last-child { min-width: 0; }
 
 /* 相邻两块之间只留一条边框（上面一块的最后一行已经画了下边框） */
 .bt-table + .bt-table > tbody > tr:first-child > * { border-top: 0; }
@@ -828,16 +864,18 @@ pre.mermaid-src {
 }
 
 .mdv-cb > pre,
-.mdv-cb > table { margin: 0; }
+.mdv-cb > table,
+.mdv-cb__scroll > table { margin: 0; }
 
-/* 表格铺满所在块（块本身已不受行宽限制），复制按钮就贴着表格右上角 */
-.mdv-cb--table {
-  width: auto;
-  max-width: 100%;
+/* 折行模式：包装层收缩到表格实际宽度，复制按钮就贴着表格右上角；
+   横向滚动模式：包装层占满正文栏，按钮固定在可见区域右上角（见上面的规则） */
+
+/* 按钮压在上角，给最后一列表头留出位置，免得盖住表头文字；
+   最小列宽要把这块让位空间一起算进去 */
+.mdv-cb--table tr:first-child > :last-child {
+  padding-right: 2.4em;
+  min-width: calc(2em + 3.25em);
 }
-
-/* 按钮压在上角，给最后一列表头留出位置，免得盖住表头文字 */
-.mdv-cb--table tr:first-child > :last-child { padding-right: 2.4em; }
 
 .mdv-copy {
   position: absolute;

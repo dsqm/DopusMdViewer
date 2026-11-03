@@ -59,6 +59,8 @@ enum class Str : int {
   RenderCopyCode,
   RenderCopyTable,
   RenderCopyFormat,
+  TableGroup,
+  RenderTableAutoWrap,
   RenderFindButton,
   RenderOutlineButton,
   RenderLineNumbers,
