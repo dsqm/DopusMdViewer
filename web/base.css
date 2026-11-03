@@ -491,17 +491,29 @@ code .mdv-wt {
   position: relative;
 }
 
+/* 垂直按字身居中：伪元素的盒子取一个字号高（不跟正文 1.65 的行高走），
+   再把它整个上移半个盒高，盒心就落在字身的正中。若沿用正文行高，半行距会把
+   字形往下推约 3.7px（16px 字号），点与箭头看着就偏低。 */
 code .mdv-ws::before,
 code .mdv-wt::before {
   content: none;
   position: absolute;
   left: 0;
-  top: 0;
+  top: 50%;
+  line-height: 1;
+  transform: translateY(-50%);
   color: var(--md-fg-muted);
   opacity: 0.55;
   /* 标记不该被拖选、不该吃点击：拖过头时选中的仍是源码 */
   user-select: none;
   pointer-events: none;
+}
+
+/* 制表符的箭头画在整格正中：一个 tab 字符就跨到下一个制表位，宽达数格，
+   箭头贴左会看着像上一个字符后面多出来的记号。这里只覆盖制表符，空格仍贴格左。 */
+code .mdv-wt::before {
+  left: 50%;
+  transform: translate(-50%, -50%);
 }
 
 /* 常显：全部档全亮；边界档只亮贴着行首/行尾/连续两个以上的空白。
