@@ -1202,3 +1202,21 @@ pre.mermaid-src {
   width: 18px;
   height: 18px;
 }
+
+/* 网络图尚未真正加载：待确认 / 被拒 / 加载失败都退回 1x1 透明 GIF，
+   由这里的虚线框和图标顶上。图标走 SVG 背景，不写文本节点，复制与查找
+   都不受影响；配色取 --md-*，四套皮肤自动适配。 */
+img.mdv-net-ph {
+  box-sizing: border-box;
+  min-width: min(14em, 100%);
+  min-height: 4.5em;
+  max-width: 100%;
+  vertical-align: middle;
+  border: 1px dashed var(--md-border);
+  border-radius: var(--md-radius);
+  background-color: var(--md-bg-alt);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%238b949e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Ccircle cx='8.5' cy='8.5' r='1.5'/%3E%3Cpath d='m21 15-5-5L5 21'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 28px 28px;
+}

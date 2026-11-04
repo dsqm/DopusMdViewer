@@ -570,7 +570,12 @@ md.renderer.rules.image = (tokens, idx, options, env, self) => {
     const a = imagePolicy(t.attrs[at][1])
     if (a.src) t.attrs[at][1] = a.src
     else t.attrs.splice(at, 1)
-    if (a.mdvSrc) t.attrPush(['data-mdv-src', a.mdvSrc])
+    if (a.mdvSrc) {
+      t.attrPush(['data-mdv-src', a.mdvSrc])
+      const ci = t.attrIndex('class')
+      if (ci >= 0) t.attrs[ci][1] += ' mdv-net-ph'
+      else t.attrPush(['class', 'mdv-net-ph'])
+    }
     if (a.title) t.attrPush(['title', a.title])
   }
   // alt 交给默认规则填（它会按 markdown-it 的规则转义）
@@ -649,7 +654,10 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     const a = imagePolicy(src)
     if (a.src) node.setAttribute('src', a.src)
     else node.removeAttribute('src')
-    if (a.mdvSrc) node.setAttribute('data-mdv-src', a.mdvSrc)
+    if (a.mdvSrc) {
+      node.setAttribute('data-mdv-src', a.mdvSrc)
+      node.classList.add('mdv-net-ph')
+    }
     if (a.title) node.setAttribute('title', a.title)
     return
   }
@@ -1391,17 +1399,34 @@ function processNetImages(root) {
   for (const img of imgs) {
     if (img.dataset.mdvNet === '1') continue
     img.dataset.mdvNet = '1'
+    img.classList.add('mdv-net-ph')
+
+    // 三种「图没到」的状态都退回同一张 1x1 透明 GIF，让 CSS 的占位框露出来。
+    // 图标与边框只走背景，不写文本节点：复制与查找都不受影响。
+    const showPlaceholder = (tip) => {
+      img.src = TRANSPARENT_IMG
+      img.classList.add('mdv-net-ph')
+      img.title = tip
+    }
+    const isRealSrc = () => img.getAttribute('src') === img.dataset.mdvSrc
+    img.addEventListener('error', () => {
+      if (img.isConnected && isRealSrc()) showPlaceholder('网络图片加载失败')
+    })
+    img.addEventListener('load', () => {
+      if (!isRealSrc()) return
+      img.classList.remove('mdv-net-ph')
+      if (img.title === '网络图片加载失败' || img.title === '网络图片未加载') {
+        img.removeAttribute('title')
+      }
+    })
+
     // 键用 host 而不是 origin：同一个域名换个协议/端口不该再问一次（弹窗上显示的也是它）
     let host = ''
     try { host = new URL(img.dataset.mdvSrc).host } catch { continue }
     ensureNetConsent(host).then((allow) => {
       if (!img.isConnected) return
-      if (allow) {
-        img.src = img.dataset.mdvSrc
-      } else {
-        img.removeAttribute('src')
-        img.title = '网络图片未加载'
-      }
+      if (allow) img.src = img.dataset.mdvSrc
+      else showPlaceholder('网络图片未加载')
     })
   }
 }
@@ -3070,8 +3095,8 @@ function imgAction(attrs, button) {
   let kind = null
   let url = ''
   if (attrs.mdvNet && attrs.mdvSrc) {
-    // 远程图只有「确认后真正加载」这一种状态可动手：确认时 src 才会被换成
-    // data-mdv-src；等待确认时是透明占位、被拒时根本没有 src，都到不了这里
+    // 远程图只有「确认后真正加载」这一种状态可动手：src 被换成 data-mdv-src
+    // 才算到位；等待确认、被拒、加载失败都是 1x1 透明占位，都到不了这里
     if (src !== attrs.mdvSrc) return { act: null, kind: null, url: '' }
     kind = 'remote'
     url = attrs.mdvSrc
