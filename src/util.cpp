@@ -608,6 +608,43 @@ const wchar_t* UtilLeafName(const wchar_t* path) {
   return leaf;
 }
 
+std::wstring UtilProcessSessionId(void) {
+  // 进程创建时间取一次就固定：同一进程内所有调用必须给出同一个值，否则页面会把
+  // 自己的记忆当成上一轮的清掉。
+  static std::wstring cached;
+  if (!cached.empty()) return cached;
+
+  FILETIME created = {};
+  FILETIME exited = {};
+  FILETIME kernel = {};
+  FILETIME user = {};
+  ULONGLONG ticks = 0;
+  if (::GetProcessTimes(::GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+    ticks = (static_cast<ULONGLONG>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
+  }
+  wchar_t szBuf[64];
+  ::StringCchPrintfW(szBuf, ARRAYSIZE(szBuf), L"%lu-%llX", ::GetCurrentProcessId(), ticks);
+  cached = szBuf;
+  return cached;
+}
+
+std::wstring UtilMakeDocKey(const wchar_t* path, uint64_t size, uint64_t writeTicks) {
+  if (!path || !path[0]) return std::wstring();
+  std::wstring key(path);
+  // 大小写不敏感：同一个文件经不同大小写的路径进来要算同一篇
+  ::CharLowerBuffW(&key[0], static_cast<DWORD>(key.size()));
+  // '|' 是控制帧的分隔符，键里出现一个就会把 index 帧拆错（后半截字段全错位）。
+  // 合法文件名里没有 '|'，这里只是不让脏路径把整帧打穿。
+  for (wchar_t& ch : key) {
+    if (ch == L'|') ch = L'_';
+  }
+
+  wchar_t szTail[64];
+  ::StringCchPrintfW(szTail, ARRAYSIZE(szTail), L"*%llu*%llu", size, writeTicks);
+  key += szTail;
+  return key;
+}
+
 std::wstring UtilFileVersion(const std::wstring& path) {
   if (path.empty()) return std::wstring();
 

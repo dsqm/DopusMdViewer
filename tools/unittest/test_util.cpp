@@ -252,8 +252,7 @@ TEST(util, webview_base_follows_config) {
   CHECK_EQ_STR(UtilWebView2BaseSource(L""), L"default");
 }
 
-TEST(util, webview_base_usb_config_still_wins) {
-  UtilSetUsbMode(true);
+TEST(util, webview_base_usb_config_still_wins) {  UtilSetUsbMode(true);
   CHECK(UtilIsUsbMode());
   // U 盘模式也允许手填：填了就用填的，不走自动选路
   CHECK_EQ_STR(UtilWebView2BaseDir(L"C:\\custom-cache"), L"C:\\custom-cache");
@@ -275,4 +274,30 @@ TEST(util, webview_base_usb_auto_chain) {
   CHECK_EQ_STR(UtilWebView2SettingsDir(L""), settings.c_str());
 
   UtilSetUsbMode(false);  // 别污染后面的用例
+}
+
+TEST(util, make_doc_key) {
+  // 小写路径 + '*' + 字节数 + '*' + 写入时间：前端按 '*' 拆成三段做判定
+  CHECK_EQ_STR(UtilMakeDocKey(L"C:\\Docs\\A.MD", 4096, 133000000000000000ULL),
+               L"c:\\docs\\a.md*4096*133000000000000000");
+  // 同一文件换个大小写写法必须是同一个键
+  CHECK_EQ_STR(UtilMakeDocKey(L"c:\\docs\\a.md", 4096, 133000000000000000ULL),
+               UtilMakeDocKey(L"C:\\DOCS\\A.MD", 4096, 133000000000000000ULL).c_str());
+  // 内容变了（大小或时间任一变）就是另一篇
+  CHECK(UtilMakeDocKey(L"C:\\docs\\a.md", 4097, 133000000000000000ULL) !=
+        UtilMakeDocKey(L"C:\\docs\\a.md", 4096, 133000000000000000ULL));
+  CHECK(UtilMakeDocKey(L"C:\\docs\\a.md", 4096, 133000000000000001ULL) !=
+        UtilMakeDocKey(L"C:\\docs\\a.md", 4096, 133000000000000000ULL));
+  // 键里绝不能出现帧分隔符
+  CHECK(UtilMakeDocKey(L"C:\\a|b.md", 1, 2).find(L'|') == std::wstring::npos);
+  CHECK_EQ_STR(UtilMakeDocKey(L"", 1, 2), L"");
+  CHECK_EQ_STR(UtilMakeDocKey(nullptr, 1, 2), L"");
+}
+
+TEST(util, process_session_id) {
+  const std::wstring a = UtilProcessSessionId();
+  CHECK(!a.empty());
+  // 同一进程内必须恒定：页面拿它判断磁盘上的记忆是不是上一轮的
+  CHECK_EQ_STR(UtilProcessSessionId(), a.c_str());
+  CHECK(a.find(L'-') != std::wstring::npos);
 }

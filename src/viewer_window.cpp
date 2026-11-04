@@ -40,6 +40,9 @@ struct ViewerState {
   HANDLE hAbortEvent;  // 宿主给的加载中止事件，只记录不轮询（见 SETABORTEVENT 分支）
   wchar_t szFile[MAX_PATH * 2];
   ULONGLONG ullFileSize;
+  // 页面判定「还是不是同一篇文档」用：小写路径 + 字节数 + 最后写入时间。
+  // 打开时算一次就固定，之后同一次加载里推几次 index 都是同一个值。
+  std::wstring docKey;
   uint32_t prefixBlocks;
   uint32_t estBlocks;
   uint32_t lastVisible;  // 最后一个非隐藏块（脚注区挂它后面）
@@ -310,9 +313,11 @@ void PushIndex(ViewerState* st) {
   const bool ok = WebHostPost(
       st->hwndSelf,
       msg::MakeIndex(kDocBase, st->prefixBlocks, st->estBlocks, st->ullFileSize, st->encoding,
-                     st->lastVisible, st->docComplete));
+                     st->lastVisible, st->docComplete, st->docKey, UtilProcessSessionId()));
   LogLine(L"VIEWER: 推送索引 %u/%u 块（末可见块 %u）-> %s", st->prefixBlocks, st->estBlocks,
           st->lastVisible, ok ? L"成功" : L"失败");
+  // 网络图答复按文档键记，换一版就会重问：键写进日志，才看得出"为什么又问了"
+  LogLine(L"VIEWER: 文档键 %s", st->docKey.c_str());
   // 索引先到（页面会重置状态），巨型块表随后到，按块号生效
   PushBigTable(st);
 }
@@ -1390,9 +1395,17 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
 
   WIN32_FILE_ATTRIBUTE_DATA fad;
   st->ullFileSize = 0;
+  bool haveInfo = false;
   if (::GetFileAttributesExW(pszPath, GetFileExInfoStandard, &fad)) {
     st->ullFileSize = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+    haveInfo = true;
   }
+  // 文档键在这里定：再晚就会被索引就绪时的 fileSize 覆盖，键就不再稳定了。
+  st->docKey = haveInfo
+                   ? UtilMakeDocKey(pszPath, st->ullFileSize,
+                                    (static_cast<ULONGLONG>(fad.ftLastWriteTime.dwHighDateTime) << 32) |
+                                        fad.ftLastWriteTime.dwLowDateTime)
+                   : UtilMakeDocKey(pszPath, 0, 0);
 
   LARGE_INTEGER tLoad;
   ::QueryPerformanceCounter(&tLoad);
@@ -1429,6 +1442,7 @@ void HandleClear(ViewerState* st) {
   LogLine(L"VIEWER: CLEAR");
   st->szFile[0] = L'\0';
   st->ullFileSize = 0;
+  st->docKey.clear();
   st->docOpened = false;
   st->encOverride = 0;
   st->indexFullPending = false;
@@ -1778,6 +1792,7 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->hAbortEvent = nullptr;
   st->szFile[0] = L'\0';
   st->ullFileSize = 0;
+  st->docKey.clear();
   st->prefixBlocks = 0;
   st->estBlocks = 0;
   st->lastVisible = 0;

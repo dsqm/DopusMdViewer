@@ -83,10 +83,11 @@ TEST(msg, make_misc) {
   // docerror 的文本是最后一个字段：竖线原样保留
   CHECK_EQ_STR(msg::MakeDocError(L"a|b"), L"docerror|a|b");
 
-  // index 帧的 8 个字段
-  CHECK_EQ_STR(msg::MakeIndex(L"C:\\doc", 10, 20, 4096, 0, 18, true),
-               L"index|C:\\doc|10|20|4096|0|18|1");
-  CHECK_EQ_STR(msg::MakeIndex(L"", 0, 0, 0, 3, 0, false), L"index||0|0|0|3|0|0");
+  // index 帧的 10 个字段：最后两个是文档键与会话 id（网络图记忆用）
+  CHECK_EQ_STR(msg::MakeIndex(L"C:\\doc", 10, 20, 4096, 0, 18, true, L"c:\\a.md*1*2", L"99-ABC"),
+               L"index|C:\\doc|10|20|4096|0|18|1|c:\\a.md*1*2|99-ABC");
+  CHECK_EQ_STR(msg::MakeIndex(L"", 0, 0, 0, 3, 0, false, L"", L""),
+               L"index||0|0|0|3|0|0||");
 }
 
 TEST(msg, split_type) {

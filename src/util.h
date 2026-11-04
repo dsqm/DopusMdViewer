@@ -110,6 +110,15 @@ std::wstring UtilParentDir(const std::wstring& path);
 // 文件名部分。
 const wchar_t* UtilLeafName(const wchar_t* path);
 
+// 本进程的会话标识："<pid>-<进程创建时间的 FILETIME tick>"。同一次启动恒定，
+// DO 重启即变。页面拿它判断磁盘上的记忆是不是上一轮的，用于「只到 DO 关闭为止」。
+std::wstring UtilProcessSessionId(void);
+
+// 文档键：小写路径 + '*' + 字节数 + '*' + 最后写入时间的 tick。
+// 拿它判定「还是不是同一篇文档」，文件被重新保存就会变。'*' 在 Windows 文件名里非法，
+// 可以当分隔符；'|' 不行，那是帧分隔符，键里的 '|' 一律改成 '_'。
+std::wstring UtilMakeDocKey(const wchar_t* path, uint64_t size, uint64_t writeTicks);
+
 // 本 DLL 的版本资源（"1.2.3"）；读不到返回空串。
 std::wstring UtilModuleVersion(void);
 

@@ -585,20 +585,32 @@ md.renderer.rules.image = (tokens, idx, options, env, self) => {
 const TRANSPARENT_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
 
 // 网络图片的确认状态。键是 URL.host（域名 + 非默认端口，不含协议）。
-// 两个档位的答复都只在本篇文档内有效，换文件全部重问：
+// 答复按「文档 + 主机」记：同一篇里重复出现不再问，换到别的文档要重新问，
+// 切回原来的文档仍然记得。文档由 index 帧的文档键标识（小写路径+字节数+写入时间），
+// 会话由 sessionId 标识——两者任一不符就是上一轮 DO 留下的，整份作废。
+//
 //   allowed / denied —— "每主机"档按主机记的答复；
-//   docDecided       —— "每文档"档的整篇答复（一篇只有一个，不看主机）。
-// 不跨文档、不跨引擎：换文件时 resetNetConsent 一起清。
+//   decided         —— "每文档"档的整篇答复（一篇只有一个，不看主机）。
+//
+// 记忆落在 localStorage：页面被回收重建（关光预览窗格后空闲释放、渲染进程崩溃、
+// 插件重载）之后仍然在，只有 DO 重启换了 sessionId 才清空。
 const NET = {
   mode: 1,             // 0 不询问 / 1 每主机一次 / 2 每文档一次
-  allowed: new Set(),
-  denied: new Set(),
-  docDecided: null,
+  session: '',         // 宿主给的会话 id；空 = 还没收到 index
+  docs: null,          // Map<文档哈希, {allowed, denied, decided, used}>，懒加载
+  key: '',             // 当前文档的哈希键
+  cur: null,           // docs.get(key) 的引用
+  used: 0,             // 最近使用序，淘汰靠它
   queue: [],
   current: null,
   panel: null,
   title: null,
 }
+
+const NET_STORE_KEY = 'mdvNetConsent'
+const NET_STORE_VER = 1
+// 一格只有几个主机名，但会话再长也该有上界：超了按最近使用淘汰，那篇文档再开就重问
+const NET_MAX_DOCS = 64
 
 function isRemoteUrl(raw) {
   return /^(?:https?:)?\/\//i.test(raw || '')
@@ -1308,16 +1320,115 @@ function hideNetPrompt() {
   if (NET.panel) NET.panel.hidden = true
 }
 
+// 落盘前再哈希一次：磁盘上不留本地路径与文件名，排查靠日志里那行「文档键」。
+// 页内比较用的也是这个哈希，所以磁盘与内存是同一套键。
+function netHash(text) {
+  let h = 0xcbf29ce484222325n
+  for (let i = 0; i < text.length; i++) {
+    h ^= BigInt(text.charCodeAt(i))
+    h = (h * 0x100000001b3n) & 0xffffffffffffffffn
+  }
+  return h.toString(16).padStart(16, '0')
+}
+
+// 从 localStorage 读回记忆。会话 id 不符、版本不符、解析失败都当成"没有"——
+// 宁可从零开始问，也不要拿上一轮 DO 的答复放行。
+function netStoreLoad() {
+  const docs = new Map()
+  NET.used = 0
+  if (!NET.session) return docs
+  let raw = null
+  try { raw = window.localStorage.getItem(NET_STORE_KEY) } catch { return docs }
+  if (!raw) return docs
+  let obj = null
+  try { obj = JSON.parse(raw) } catch { return docs }
+  if (!obj || obj.v !== NET_STORE_VER || obj.sid !== NET.session || !obj.docs) return docs
+  for (const [k, rec] of Object.entries(obj.docs)) {
+    if (!rec) continue
+    const used = Number(rec.t) || 0
+    if (used > NET.used) NET.used = used
+    docs.set(k, {
+      allowed: new Set(Array.isArray(rec.a) ? rec.a : []),
+      denied: new Set(Array.isArray(rec.d) ? rec.d : []),
+      decided: rec.x === 0 || rec.x === 1 ? rec.x === 1 : null,
+      used,
+    })
+  }
+  return docs
+}
+
+function netStoreSave() {
+  if (!NET.session || !NET.docs) return
+  if (NET.docs.size > NET_MAX_DOCS) {
+    const order = [...NET.docs.entries()].sort((a, b) => a[1].used - b[1].used)
+    for (const [k] of order.slice(0, NET.docs.size - NET_MAX_DOCS)) NET.docs.delete(k)
+  }
+  const docs = {}
+  for (const [k, rec] of NET.docs) {
+    docs[k] = {
+      a: [...rec.allowed],
+      d: [...rec.denied],
+      x: rec.decided === null ? null : (rec.decided ? 1 : 0),
+      t: rec.used,
+    }
+  }
+  try {
+    window.localStorage.setItem(NET_STORE_KEY,
+      JSON.stringify({ v: NET_STORE_VER, sid: NET.session, docs }))
+  } catch {
+    // 存储被禁用或写满：记忆退化成只在本页有效，放行逻辑不受影响
+  }
+}
+
+// 当前文档那一格；没有就建。文档键为空（设置页预览这类场景）用固定格兜住。
+function netEntry() {
+  if (!NET.docs) NET.docs = netStoreLoad()
+  if (!NET.key) NET.key = 'none'
+  let rec = NET.docs.get(NET.key)
+  if (!rec) {
+    rec = { allowed: new Set(), denied: new Set(), decided: null, used: 0 }
+    NET.docs.set(NET.key, rec)
+  }
+  rec.used = ++NET.used
+  NET.cur = rec
+  return rec
+}
+
+// index 到达：切到这篇文档的答复。换文档本身不清记忆（切回来还要用），
+// 只有会话变了才整份作废。
+function netOpenDoc(docKey, session) {
+  if (session !== NET.session) {
+    NET.session = session || ''
+    NET.docs = null  // 上一轮 DO 留下的，读都不用读
+    NET.key = ''
+    NET.cur = null
+  }
+  NET.key = docKey ? netHash(docKey) : ''
+  NET.cur = null
+  netEntry()
+}
+
+// 打印视图与页内共用一套判定：只查，不建格子
+function netAllowedNow(host) {
+  if (NET.mode === 0) return true
+  const rec = NET.cur
+  if (!rec) return false
+  if (NET.mode === 2) return rec.decided === true
+  return rec.allowed.has(host)
+}
+
 function ensureNetConsent(host) {
   if (NET.mode === 0) return Promise.resolve(true)
+  const rec = netEntry()
   if (NET.mode === 2) {
-    if (NET.docDecided !== null) return Promise.resolve(NET.docDecided)
+    if (rec.decided !== null) return Promise.resolve(rec.decided)
   } else {
-    if (NET.allowed.has(host)) return Promise.resolve(true)
-    if (NET.denied.has(host)) return Promise.resolve(false)
+    if (rec.allowed.has(host)) return Promise.resolve(true)
+    if (rec.denied.has(host)) return Promise.resolve(false)
   }
   return new Promise((resolve) => {
-    NET.queue.push({ host, resolve })
+    // 入队时把格子一起带上：弹窗期间换了文档，答复仍要记在当初那篇名下
+    NET.queue.push({ host, rec, resolve })
     pumpNetConsent()
   })
 }
@@ -1332,17 +1443,17 @@ function pumpNetConsent() {
       item.resolve(true)
       continue
     }
-    if (NET.mode === 2 && NET.docDecided !== null) {
+    if (NET.mode === 2 && item.rec.decided !== null) {
       NET.queue.shift()
-      item.resolve(NET.docDecided)
+      item.resolve(item.rec.decided)
       continue
     }
-    if (NET.mode === 1 && NET.allowed.has(item.host)) {
+    if (NET.mode === 1 && item.rec.allowed.has(item.host)) {
       NET.queue.shift()
       item.resolve(true)
       continue
     }
-    if (NET.mode === 1 && NET.denied.has(item.host)) {
+    if (NET.mode === 1 && item.rec.denied.has(item.host)) {
       NET.queue.shift()
       item.resolve(false)
       continue
@@ -1359,11 +1470,13 @@ function decideNetConsent(allow) {
   if (!item) return
   NET.current = null
   if (NET.mode === 2) {
-    NET.docDecided = allow
+    item.rec.decided = allow
   } else if (NET.mode === 1) {
-    if (allow) NET.allowed.add(item.host)
-    else NET.denied.add(item.host)
+    if (allow) item.rec.allowed.add(item.host)
+    else item.rec.denied.add(item.host)
   }
+  item.rec.used = ++NET.used
+  netStoreSave()
   hideNetPrompt()
   item.resolve(allow)
   pumpNetConsent()
@@ -1381,16 +1494,13 @@ function setNetMode(mode) {
   pumpNetConsent()
 }
 
-function resetNetConsent() {
-  // 换文档：在排队的问答作废，两个档位的记忆一起清——答复只对本篇文档有效，
-  // 下一篇文档里同一个主机要重新问。
+function dropNetPrompts() {
+  // 换文档：在排队的问答作废（答了也不是这篇的），记忆本身留着——切回来还要用。
+  // 真正的失效只有两种：换了会话（DO 重启）、或这一篇被 64 篇的上限淘汰掉。
   for (const item of NET.queue) item.resolve(false)
   if (NET.current) NET.current.resolve(false)
   NET.queue = []
   NET.current = null
-  NET.docDecided = null
-  NET.allowed.clear()
-  NET.denied.clear()
   hideNetPrompt()
 }
 
@@ -2358,10 +2468,10 @@ function resetVirtual() {
   SEL.all = false
   onSelUp()
   cleanupPrint()
-  resetNetConsent()
+  dropNetPrompts()
 }
 
-function applyIndex(base, prefix, est, fileSize, enc, lastVisible, complete) {
+function applyIndex(base, prefix, est, fileSize, enc, lastVisible, complete, docKey, session) {
   resetVirtual()
   bindDom()
   document.body.classList.add('virtual')
@@ -2369,6 +2479,8 @@ function applyIndex(base, prefix, est, fileSize, enc, lastVisible, complete) {
 
   state.docBase = base || state.docBase
   state.generation = ++renderGeneration
+  // 网络图答复按这篇文档记：必须在下面渲染块之前切好，processNetImages 要查它
+  netOpenDoc(docKey, session)
 
   V.active = true
   V.docId++
@@ -5149,14 +5261,12 @@ function cleanupPrint() {
 }
 
 // 已允许的远程图直接放行；不在这里发起新的网络图确认。
+// 键必须和记录时一致（host）：拿 origin 去查永远查不到，打印出来就全是占位框。
 function allowPrintImages(root) {
   for (const img of root.querySelectorAll('img[data-mdv-src]')) {
-    let origin = ''
-    try { origin = new URL(img.dataset.mdvSrc).origin } catch { continue }
-    const allowed = NET.mode === 0 ||
-      (NET.mode === 1 && NET.allowed.has(origin)) ||
-      (NET.mode === 2 && NET.docDecided === true)
-    if (allowed) img.src = img.dataset.mdvSrc
+    let host = ''
+    try { host = new URL(img.dataset.mdvSrc).host } catch { continue }
+    if (netAllowedNow(host)) img.src = img.dataset.mdvSrc
   }
 }
 
@@ -5313,7 +5423,9 @@ function onHostMessage(event) {
       parseInt(f[3], 10) || 0,
       parseInt(f[4], 10) || 0,
       parseInt(f[5], 10) || 0,
-      f[6] === '1')
+      f[6] === '1',
+      f[7] || '',   // 文档键：路径*大小*写入时间，网络图答复按它记
+      f[8] || '')   // 会话 id：换了它说明 DO 重启过，旧记忆整份作废
     return
   }
 
