@@ -103,8 +103,10 @@ enum class Str : int {
   WebViewDefault,
   WebViewClear,
   WebViewCacheInfo,  // 两个 %s：当前大小、自动清理上限
-  WebViewUsbInfo,    // 两个 %s：实际父目录、当前大小
-  WebViewUsbHelp,    // 一个 %s：实际父目录
+  WebViewUsbTemp,    // 两个 %s：自动落点、当前大小
+  WebViewUsbData,    // 两个 %s：自动落点、当前大小
+  WebViewUsbLocal,   // 两个 %s：自动落点、当前大小
+  WebViewUsbHelp,    // 无参：U 盘模式的选路说明
   WebViewDirHelp,    // 三个 %s：默认目录、实际目录、清理上限
   WebViewClearConfirm,
   WebViewClearCloseFirst,

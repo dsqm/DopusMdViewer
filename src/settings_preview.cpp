@@ -173,8 +173,8 @@ SettingsPreview* SettingsPreviewCreate(HWND parent, const RECT& rc) {
   }
 
   // 用户数据目录独立：同一份目录不能被两个 Environment 同时用。位置与查看器缓存
-  // 同一个父目录（U 盘模式下一起落到 %TEMP%），设置里改了缓存位置这里也跟着走。
-  std::wstring dataDir = UtilWebView2SettingsDir(ConfigSnapshot().webviewBaseDir);
+  // 同一个父目录（U 盘模式下按同一套选路），设置里改了缓存位置这里也跟着走。
+  std::wstring dataDir = UtilWebView2SettingsDir(ConfigWebViewBaseDir(ConfigSnapshot()));
   if (dataDir.empty()) {
     ::DestroyWindow(s->hwnd);
     s->hwnd = nullptr;

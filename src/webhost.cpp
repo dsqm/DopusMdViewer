@@ -171,7 +171,7 @@ std::wstring WebDir() {
 
 std::wstring UserDataDir() {
   const Config cfg = ConfigSnapshot();
-  const std::wstring dir = UtilWebView2UserDataDir(cfg.webviewBaseDir);
+  const std::wstring dir = UtilWebView2UserDataDir(ConfigWebViewBaseDir(cfg));
   if (dir.empty()) return std::wstring();
   if (UtilEnsureDir(dir)) return dir;
 

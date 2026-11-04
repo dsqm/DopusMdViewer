@@ -68,6 +68,9 @@ struct Config {
   bool enableLog;
   // WebView2 缓存的父目录；空 = %LOCALAPPDATA%\DopusMdViewer。实际目录是 <此项>\WebView2。
   std::wstring webviewBaseDir;
+  // U 盘版专用的缓存父目录，与普通模式分开存：同一台机器上插拔 U 盘时两套设置
+  // 互不覆盖。空 = 自动选路（%TEMP% → 数据目录 → 本机）。
+  std::wstring webviewBaseDirUsb;
   // 页面里的本地文件链接交给 Opus 独立查看器（dopusrt /show）打开，而不是系统
   // 默认程序。默认开；目录链接不受影响（仍走系统），Opus 查看器不支持的类型也回退。
   bool openLinksInOpusViewer;
@@ -111,6 +114,9 @@ bool ConfigPrewarm(void);
 
 // 预热关闭时的空闲释放分钟数；0 = 不释放。
 int ConfigIdleReleaseMinutes(void);
+
+// 当前模式下该用哪个缓存父目录：U 盘版读 webviewBaseDirUsb，普通版读 webviewBaseDir。
+const std::wstring& ConfigWebViewBaseDir(const Config& config);
 
 // ConfigSave 失败时的现场：给设置页拼弹窗用，不落库。
 struct ConfigSaveFailure {

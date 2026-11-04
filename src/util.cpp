@@ -247,16 +247,90 @@ void UtilSetUsbMode(bool usb) { ::InterlockedExchange(&g_usbMode, usb ? 1 : 0); 
 
 bool UtilIsUsbMode(void) { return ::InterlockedCompareExchange(&g_usbMode, 0, 0) != 0; }
 
-std::wstring UtilWebView2BaseDir(const std::wstring& configuredBase) {
-  // U 盘模式：缓存固定放本机临时目录——不在 U 盘上反复随机写，也不在宿主机用户
-  // 目录里留痕；这种模式下配置项不生效（设置页置灰并说明实际位置）。
-  if (UtilIsUsbMode()) {
-    const std::wstring temp = UtilTempWebView2BaseDir();
-    if (!temp.empty()) return temp;
+namespace {
+
+// 网络盘直接排除：WebView2 明确说不要把用户数据放 network drive（慢、可能崩、可能丢）。
+bool IsRemotePath(const std::wstring& path) {
+  if (path.size() < 3 || path[1] != L':') return false;
+  const wchar_t root[4] = {path[0], path[1], path[2], L'\0'};
+  return ::GetDriveTypeW(root) == DRIVE_REMOTE;
+}
+
+// 能不能真拿来当 WebView2 的用户数据目录：建得出来 + 写得进去。
+// 只查存在性是靠不住的——配额满、ACL 只给读、磁盘只读都会在 WebView2 启动时才炸。
+bool IsUsableCacheBase(const std::wstring& dir) {
+  if (dir.empty() || IsRemotePath(dir)) return false;
+  if (!UtilEnsureDir(dir)) return false;
+
+  wchar_t name[64];
+  if (FAILED(::StringCchPrintfW(name, ARRAYSIZE(name), L".mdv-probe-%llu",
+                                static_cast<unsigned long long>(::GetTickCount64())))) {
+    return false;
   }
-  std::wstring base = UtilNormalizeLocalDir(configuredBase);
+  const std::wstring probe = UtilJoin(dir, name);
+  HANDLE h = ::CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  ::CloseHandle(h);
+  return true;
+}
+
+// 自动选路：TEMP → 数据目录（U 盘）→ 本机 LOCALAPPDATA。进程内只探一次。
+SRWLOCK g_cacheBaseLock = SRWLOCK_INIT;
+bool g_cacheBaseReady = false;
+wchar_t g_cacheBase[MAX_PATH] = L"";
+wchar_t g_cacheBaseSource[8] = L"";
+
+// 调用方必须已持有 g_cacheBaseLock（独占）。
+void ResolveCacheBaseLocked() {
+  if (g_cacheBaseReady) return;
+
+  g_cacheBase[0] = L'\0';
+  g_cacheBaseSource[0] = L'\0';
+
+  const std::wstring temp = UtilTempWebView2BaseDir();
+  if (IsUsableCacheBase(temp)) {
+    ::StringCchCopyW(g_cacheBase, ARRAYSIZE(g_cacheBase), temp.c_str());
+    ::StringCchCopyW(g_cacheBaseSource, ARRAYSIZE(g_cacheBaseSource), L"temp");
+  } else if (IsUsableCacheBase(UtilDataDir())) {
+    ::StringCchCopyW(g_cacheBase, ARRAYSIZE(g_cacheBase), UtilDataDir().c_str());
+    ::StringCchCopyW(g_cacheBaseSource, ARRAYSIZE(g_cacheBaseSource), L"data");
+  } else {
+    const std::wstring local = UtilNormalizeLocalDir(UtilDefaultWebView2BaseDir());
+    if (!local.empty()) {
+      ::StringCchCopyW(g_cacheBase, ARRAYSIZE(g_cacheBase), local.c_str());
+      ::StringCchCopyW(g_cacheBaseSource, ARRAYSIZE(g_cacheBaseSource), L"local");
+    }
+  }
+  g_cacheBaseReady = true;
+}
+
+}  // namespace
+
+std::wstring UtilWebView2BaseDir(const std::wstring& configuredBase) {
+  // 用户指定优先（两种模式都一样）：设置页落盘前已经校验过可写。
+  const std::wstring base = UtilNormalizeLocalDir(configuredBase);
   if (!base.empty()) return base;
-  return UtilNormalizeLocalDir(UtilDefaultWebView2BaseDir());
+
+  // 非 U 盘：沿用本机缓存。
+  if (!UtilIsUsbMode()) return UtilNormalizeLocalDir(UtilDefaultWebView2BaseDir());
+
+  ::AcquireSRWLockExclusive(&g_cacheBaseLock);
+  ResolveCacheBaseLocked();
+  const std::wstring out(g_cacheBase);
+  ::ReleaseSRWLockExclusive(&g_cacheBaseLock);
+  return out;
+}
+
+std::wstring UtilWebView2BaseSource(const std::wstring& configuredBase) {
+  if (!UtilNormalizeLocalDir(configuredBase).empty()) return L"config";
+  if (!UtilIsUsbMode()) return L"default";
+
+  ::AcquireSRWLockExclusive(&g_cacheBaseLock);
+  ResolveCacheBaseLocked();
+  const std::wstring out(g_cacheBaseSource);
+  ::ReleaseSRWLockExclusive(&g_cacheBaseLock);
+  return out;
 }
 
 std::wstring UtilWebView2UserDataDir(const std::wstring& configuredBase) {

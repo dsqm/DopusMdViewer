@@ -106,11 +106,13 @@ const wchar_t* const kZh[kCount] = {
     /* WebViewDefault   */ L"恢复默认目录",
     /* WebViewClear     */ L"清理缓存",
     /* WebViewCacheInfo */ L"缓存 %s；超过 %s 自动清理；修改后重启 Opus 生效",
-    /* WebViewUsbInfo   */
-    L"U 盘模式：缓存固定在本机临时目录 %s（不随 U 盘走，系统可能自行清理）；当前 %s",
+    /* WebViewUsbTemp   */ L"U 盘模式：缓存在系统临时目录 %s；当前 %s",
+    /* WebViewUsbData   */ L"U 盘模式：临时目录不可写，缓存改到 %s；当前 %s",
+    /* WebViewUsbLocal  */ L"U 盘模式：临时目录与 U 盘都不可写，缓存改到本机 %s；当前 %s",
     /* WebViewUsbHelp   */
-    L"U 盘模式：缓存固定为 %s，下面的位置设置不生效（改不了是故意的——U 盘上反复随机写"
-    L"既慢又伤盘，宿主机用户目录里也不该留痕）。",
+    L"U 盘模式：缓存默认放本机临时目录，不在 U 盘上反复随机写，也不在宿主机用户目录里留痕。\r\n"
+    L"临时目录不可写（或被重定向到网络盘）时自动改用 U 盘上的数据目录，再不行才落到本机用户目录。\r\n"
+    L"这里留空 = 自动；手填一个位置则优先用它。缓存可再生，随时可以清理。",
     /* WebViewDirHelp */
     L"留空时使用默认位置：\r\n%s\r\n\r\n"
     L"实际 WebView2 目录 = 所选位置 + \\WebView2：\r\n%s\r\n\r\n"

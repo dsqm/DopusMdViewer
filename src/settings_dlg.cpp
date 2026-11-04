@@ -334,6 +334,7 @@ void ShowPage(DialogState* st, int page);
 bool ApplySettings(DialogState* st);
 void RefreshWebViewCacheInfo(DialogState* st);
 void UpdateWebViewUsbState(DialogState* st);
+std::wstring& ActiveWebViewBaseRef(Config* cfg);
 void AddFontNameToChain(DialogState* st, const std::wstring& name);
 void SetDirty(DialogState* st, bool dirty);
 bool FamilyInstalled(DialogState* st, const std::wstring& name);
@@ -1346,7 +1347,7 @@ void LoadUiFromStaged(DialogState* st) {
   ::CheckRadioButton(st->hwnd, kIdSlotUi, kIdSlotMono, kIdSlotUi + st->slot);
   RefreshChainList(st);
 
-  ::SetWindowTextW(st->hWebViewDir, st->staged.webviewBaseDir.c_str());
+  ::SetWindowTextW(st->hWebViewDir, ConfigWebViewBaseDir(st->staged).c_str());
   UpdateWebViewUsbState(st);  // U 盘模式下要把这行改写成固定落点
   if (st->page == 3) RefreshWebViewCacheInfo(st);
 }
@@ -1405,7 +1406,7 @@ void ReadUiIntoStaged(DialogState* st) {
     const int sel = static_cast<int>(::SendMessageW(st->hLinkMode, CB_GETCURSEL, 0, 0));
     st->staged.openLinksInOpusViewer = (sel != 1);  // 0 = Opus 查看器，1 = 系统默认程序
   }
-  st->staged.webviewBaseDir = UtilTrim(ReadText(st->hWebViewDir));
+  ActiveWebViewBaseRef(&st->staged) = UtilTrim(ReadText(st->hWebViewDir));
   st->staged.prewarm = ::IsDlgButtonChecked(st->hwnd, kIdPrewarm) == BST_CHECKED;
   const UINT idle = ::GetDlgItemInt(st->hwnd, kIdIdle, &ok, FALSE);
   if (ok && idle <= 1440) st->staged.idleReleaseMinutes = static_cast<int>(idle);
@@ -1465,9 +1466,9 @@ void ShowSaveFailed(HWND owner, const ConfigSaveFailure& fail) {
 bool ApplySettings(DialogState* st) {
   ReadUiIntoStaged(st);
   const Config saved = ConfigSnapshot();
-  if (st->staged.webviewBaseDir != saved.webviewBaseDir) {
+  if (ActiveWebViewBaseRef(&st->staged) != ConfigWebViewBaseDir(saved)) {
     std::wstring error;
-    if (!ValidateWebViewDir(st->staged.webviewBaseDir, &error)) {
+    if (!ValidateWebViewDir(ActiveWebViewBaseRef(&st->staged), &error)) {
       ::MessageBoxW(st->hwnd, error.c_str(), loc::T(loc::Str::WebViewCache),
                     MB_OK | MB_ICONERROR);
       return false;
@@ -1514,6 +1515,12 @@ std::wstring ReadText(HWND hwnd) {
 
 std::wstring WebViewBaseFromUi(DialogState* st) {
   return UtilTrim(ReadText(st->hWebViewDir));
+}
+
+// 「缓存位置」这一行改的是当前模式对应的那个键：U 盘版与普通版各存一份，
+// 同一台机器插拔 U 盘时互不覆盖。读用 ConfigWebViewBaseDir，写用这个。
+std::wstring& ActiveWebViewBaseRef(Config* cfg) {
+  return UtilIsUsbMode() ? cfg->webviewBaseDirUsb : cfg->webviewBaseDir;
 }
 
 bool ResolveWebViewDir(const std::wstring& raw, std::wstring* actual) {
@@ -1566,10 +1573,16 @@ void RefreshWebViewCacheInfo(DialogState* st) {
   const std::wstring size = UtilFormatSize(bytes);
   wchar_t text[512];
   if (UtilIsUsbMode()) {
-    // U 盘模式：路径不可改，直接把实际落点写出来。
+    // U 盘模式：路径可以是手填的，也可以是自动选的；两种情况都把落点和缘由说清楚。
     const std::wstring base = UtilWebView2BaseDir(raw);
-    ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(loc::Str::WebViewUsbInfo), base.c_str(),
-                       size.c_str());
+    const std::wstring source = UtilWebView2BaseSource(raw);
+    loc::Str fmt = loc::Str::WebViewUsbTemp;
+    if (source == L"data") {
+      fmt = loc::Str::WebViewUsbData;
+    } else if (source == L"local") {
+      fmt = loc::Str::WebViewUsbLocal;
+    }
+    ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(fmt), base.c_str(), size.c_str());
   } else {
     const std::wstring limit = UtilFormatSize(kWebViewCacheAutoCleanBytes);
     ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(loc::Str::WebViewCacheInfo), size.c_str(),
@@ -1578,17 +1591,17 @@ void RefreshWebViewCacheInfo(DialogState* st) {
   ::SetWindowTextW(st->hWebViewInfo, text);
 }
 
-// U 盘模式下缓存位置是固定的：输入框、浏览、恢复默认一起置灰，并把实际落点写进
-// 输入框与说明行——否则用户改了也不生效，比直接置灰更让人困惑。
+// U 盘模式下位置照样能手填；留空时走自动选路（%TEMP% → 数据目录 → 本机），
+// 这里把「自动会落到哪」写进输入框的提示条，免得用户以为留空是没设置。
 void UpdateWebViewUsbState(DialogState* st) {
   if (!st->hWebViewDir) return;
+  if (!UtilIsUsbMode()) return;
 
-  const bool usb = UtilIsUsbMode();
-  ::EnableWindow(st->hWebViewDir, !usb);
-  if (HWND browse = ::GetDlgItem(st->hwnd, kIdWebViewBrowse)) ::EnableWindow(browse, !usb);
-  if (HWND def = ::GetDlgItem(st->hwnd, kIdWebViewDefault)) ::EnableWindow(def, !usb);
-
-  if (usb) ::SetWindowTextW(st->hWebViewDir, UtilWebView2BaseDir(L"").c_str());
+  const std::wstring autoBase = UtilWebView2BaseDir(L"");
+  if (!autoBase.empty()) {
+    ::SendMessageW(st->hWebViewDir, EM_SETCUEBANNER, TRUE,
+                   reinterpret_cast<LPARAM>(autoBase.c_str()));
+  }
 }
 
 void BrowseWebViewDir(DialogState* st) {
@@ -1701,13 +1714,10 @@ void ShowWebViewHelp(DialogState* st) {
   ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(loc::Str::WebViewDirHelp),
                      defaultShown.c_str(), shown.c_str(), limit.c_str());
 
-  // U 盘模式下下面那些「留空用默认 / 所选位置」的说法都不成立，先说清实际落点。
+  // U 盘模式下先解释选路规则，再说具体位置。
   std::wstring body = text;
   if (UtilIsUsbMode()) {
-    wchar_t head[512];
-    ::StringCchPrintfW(head, ARRAYSIZE(head), loc::T(loc::Str::WebViewUsbHelp),
-                       UtilWebView2BaseDir(L"").c_str());
-    body = std::wstring(head) + L"\r\n\r\n" + body;
+    body = std::wstring(loc::T(loc::Str::WebViewUsbHelp)) + L"\r\n\r\n" + body;
   }
   const std::wstring copy = valid ? actual : std::wstring();
   ShowTextHelp(st->hwnd, loc::T(loc::Str::WebViewCache), body.c_str(), copy.c_str(),
@@ -2174,6 +2184,7 @@ void ResetPageSettings(DialogState* st, int page) {
       c.prewarm = def.prewarm;
       c.idleReleaseMinutes = def.idleReleaseMinutes;
       c.webviewBaseDir = def.webviewBaseDir;
+      c.webviewBaseDirUsb = def.webviewBaseDirUsb;
       break;
     default:
       return;

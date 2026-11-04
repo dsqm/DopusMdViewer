@@ -241,24 +241,38 @@ TEST(util, webview_base_follows_config) {
   UtilSetUsbMode(false);
   CHECK(!UtilIsUsbMode());
   CHECK_EQ_STR(UtilWebView2BaseDir(L"C:\\custom-cache"), L"C:\\custom-cache");
+  CHECK_EQ_STR(UtilWebView2BaseSource(L"C:\\custom-cache"), L"config");
   CHECK_EQ_STR(UtilWebView2UserDataDir(L"C:\\custom-cache"), L"C:\\custom-cache\\WebView2");
   CHECK_EQ_STR(UtilWebView2SettingsDir(L"C:\\custom-cache"),
                L"C:\\custom-cache\\WebView2-Settings");
+
+  // 非 U 盘、留空：本机默认目录
+  const std::wstring autoBase = UtilWebView2BaseDir(L"");
+  CHECK(!autoBase.empty());
+  CHECK_EQ_STR(UtilWebView2BaseSource(L""), L"default");
 }
 
-TEST(util, webview_base_usb_mode_ignores_config) {
+TEST(util, webview_base_usb_config_still_wins) {
   UtilSetUsbMode(true);
   CHECK(UtilIsUsbMode());
+  // U 盘模式也允许手填：填了就用填的，不走自动选路
+  CHECK_EQ_STR(UtilWebView2BaseDir(L"C:\\custom-cache"), L"C:\\custom-cache");
+  CHECK_EQ_STR(UtilWebView2BaseSource(L"C:\\custom-cache"), L"config");
+  UtilSetUsbMode(false);
+}
 
-  const std::wstring base = UtilWebView2BaseDir(L"C:\\custom-cache");
+TEST(util, webview_base_usb_auto_chain) {
+  UtilSetUsbMode(true);
+
+  const std::wstring base = UtilWebView2BaseDir(L"");
+  const std::wstring source = UtilWebView2BaseSource(L"");
   CHECK(!base.empty());
-  // U 盘模式固定落到临时目录：配置值必须被忽略，两个子目录同根
-  CHECK(base.find(L"custom-cache") == std::wstring::npos);
-  CHECK(base.size() > 13 && base.compare(base.size() - 13, 13, L"DopusMdViewer") == 0);
-  const std::wstring usbCache = base + L"\\WebView2";
-  const std::wstring usbSettings = base + L"\\WebView2-Settings";
-  CHECK_EQ_STR(UtilWebView2UserDataDir(L"C:\\custom-cache"), usbCache.c_str());
-  CHECK_EQ_STR(UtilWebView2SettingsDir(L"C:\\custom-cache"), usbSettings.c_str());
+  // 自动选路只可能是这三档；两个子目录必须同根
+  CHECK(source == L"temp" || source == L"data" || source == L"local");
+  const std::wstring cache = base + L"\\WebView2";
+  const std::wstring settings = base + L"\\WebView2-Settings";
+  CHECK_EQ_STR(UtilWebView2UserDataDir(L""), cache.c_str());
+  CHECK_EQ_STR(UtilWebView2SettingsDir(L""), settings.c_str());
 
   UtilSetUsbMode(false);  // 别污染后面的用例
 }

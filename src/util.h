@@ -56,9 +56,12 @@ std::wstring UtilNormalizeLocalDir(const std::wstring& text);
 // WebView2 用户数据的默认父目录：%LOCALAPPDATA%\DopusMdViewer。
 std::wstring UtilDefaultWebView2BaseDir(void);
 
-// 实际使用的父目录：U 盘模式固定 %TEMP%\DopusMdViewer（忽略配置），
-// 否则用配置值，配置为空或非法时用默认父目录；完全不可用时返回空串。
+// 实际使用的父目录：用户指定值优先；留空时 U 盘模式按「%TEMP% → 数据目录 →
+// 本机 %LOCALAPPDATA%」逐个实测可写性（网络盘直接跳过），非 U 盘用本机默认。
 std::wstring UtilWebView2BaseDir(const std::wstring& configuredBase);
+
+// 上一行选了哪一级：config / temp / data / local / default（给日志与设置页提示用）。
+std::wstring UtilWebView2BaseSource(const std::wstring& configuredBase);
 
 // 查看器的用户数据目录：<父目录>\WebView2。
 std::wstring UtilWebView2UserDataDir(const std::wstring& configuredBase);

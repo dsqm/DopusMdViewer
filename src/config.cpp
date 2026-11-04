@@ -59,6 +59,7 @@ void SetDefaults(Config* c) {
   c->showOutlineButton = true;
   c->enableLog = false;
   c->webviewBaseDir.clear();
+  c->webviewBaseDirUsb.clear();
   c->openLinksInOpusViewer = true;
   c->viewerExts.clear();
   c->prewarm = false;
@@ -129,6 +130,10 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
 
   if (root.contains("webviewBaseDir") && root["webviewBaseDir"].is_string()) {
     c->webviewBaseDir = Utf8ToWide(root["webviewBaseDir"].get<std::string>());
+  }
+
+  if (root.contains("webviewBaseDirUsb") && root["webviewBaseDirUsb"].is_string()) {
+    c->webviewBaseDirUsb = Utf8ToWide(root["webviewBaseDirUsb"].get<std::string>());
   }
 
   if (root.contains("openLinksInOpusViewer") && root["openLinksInOpusViewer"].is_boolean()) {
@@ -353,6 +358,10 @@ int ConfigIdleReleaseMinutes(void) {
   return g_config.idleReleaseMinutes;
 }
 
+const std::wstring& ConfigWebViewBaseDir(const Config& config) {
+  return UtilIsUsbMode() ? config.webviewBaseDirUsb : config.webviewBaseDir;
+}
+
 Config ConfigDefaults(void) {
   Config c;
   SetDefaults(&c);
@@ -432,6 +441,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   root["allowOutsideImages"] = c.allowParentImages || c.allowAbsoluteImages;
   root["enableLog"] = c.enableLog;
   root["webviewBaseDir"] = WideToUtf8(c.webviewBaseDir);
+  root["webviewBaseDirUsb"] = WideToUtf8(c.webviewBaseDirUsb);
   root["openLinksInOpusViewer"] = c.openLinksInOpusViewer;
   root["viewerExts"] = WideToUtf8(c.viewerExts);
   root["prewarm"] = c.prewarm;
