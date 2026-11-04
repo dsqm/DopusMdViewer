@@ -132,9 +132,10 @@ const wchar_t* const kZh[kCount] = {
 
     /* CopyVersionInfo  */ L"复制版本信息",
     /* PrewarmHelp */
-    L"作用：Opus 启动时就在后台把预览引擎和页面拉起来。之后打开第一个 Markdown 文件不用等"
-    L"引擎初始化，首屏一般能快 0.3～1 秒。\r\n\r\n"
-    L"代价：常驻一个预览进程（约 30～60 MB），即使从不看 Markdown 它也在后台待着。\r\n\r\n"
+    L"作用：Opus 启动后在后台把预览引擎和页面建好并一直留着。打开第一个 Markdown 文件"
+    L"不必再等 Environment/controller 创建与页面加载。\r\n\r\n"
+    L"代价：常驻一个渲染进程（约 80 MB），即使从不看 Markdown 也在后台待着；开启过"
+    L"预热后插件模块会留到 Opus 进程退出才卸载。\r\n\r\n"
     L"适合：经常用预览窗格看文档、机器内存充裕。\r\n"
     L"不适合：很少看 Markdown，或在内存吃紧的机器上。关掉后由下面「空闲释放」在不用时回收。",
     /* ResetPage        */ L"重置本页",

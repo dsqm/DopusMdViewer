@@ -9,11 +9,12 @@
 //     Opus 的查看器窗口通过 SetParent 借用。归还必须在 WM_DESTROY 做：
 //     DestroyWindow 会连子窗口一起销毁，等到 WM_NCDESTROY 宿主已经没了。
 //  3. 宿主线程与进程同寿命：关掉窗口再打开只是 SetParent 加一次推送，不必再付
-//     浏览器进程冷启动的两三秒。预热开着时 controller 一直留着；关掉预热则按
-//     idleReleaseMinutes 空闲回收（ReleaseInstance，下次借用走冷路径）。代价是
-//     **同一时刻只有一个查看器有画面**：其它查看器借用会抢走宿主，归还时按借用
-//     历史交回上一个还活着的查看器（WM_MDV_HOST_LOST / WM_MDV_RECLAIM），不这样
-//     做关掉一个窗口就会留下另一片空白。
+//     浏览器进程冷启动的两三秒。预热开着时自持一份 DLL 引用，Uninit 不再收掉
+//     线程，controller 也一直保持可用；关掉预热则按 idleReleaseMinutes 空闲回收
+//     （ReleaseInstance，下次借用走冷路径）。代价是**同一时刻只有一个查看器有
+//     画面**：其它查看器借用会抢走宿主，归还时按借用历史交回上一个还活着的
+//     查看器（WM_MDV_HOST_LOST / WM_MDV_RECLAIM），不这样做关掉一个窗口就会
+//     留下另一片空白。
 //  4. 虚拟主机映射出来的响应由 WebView2 自己合成，加不了响应头；而**映射过的请求
 //     也不会进 WebResourceRequested**（实测：通配过滤器 + ALL 上下文一次都不触发）。
 //     所以 CSP 只能写在 shell.html 的 meta 里。
@@ -112,6 +113,7 @@ struct Host {
   bool ready = false;
   bool borrowed = false;
   bool prewarmEnabled = false;
+  bool prewarmTimerArmed = false;  // 预热定时器已在等：重复 InitEx 不许把它往后推
   bool everSawViewer = false;  // 预热后是否真的被查看器借过
   bool sawDopusWindow = false;
   bool suspended = false;
@@ -147,6 +149,12 @@ int g_historyCount = 0;
 
 // 跨线程读取的标志与句柄。
 volatile LONG g_readyFlag = 0;
+
+// 预热常驻时自持的 DLL 引用。Opus 会在插件仍加载时频繁成对调 Init/Uninit，
+// 而 DLL 一旦卸载，宿主线程/搜索线程就会执行已卸载的代码。自持一份引用让
+// FreeLibrary 只减一次计数，卸载推迟到进程结束；这份引用不配对释放，关掉预热
+// 后也留着，避免在收尾与重建之间出现竞态。
+HMODULE g_pin = nullptr;
 volatile LONG g_hasThread = 0;
 // 宿主线程/搜索线程/缓存清理线程的句柄与失败标志：Uninit 收尾要等三条线程都
 // 真正退出后 Opus 才能 FreeLibrary，否则线程还在执行已卸载的代码。
@@ -680,6 +688,7 @@ void ReleaseInstance() {
     ::KillTimer(g_host.host, kTimerPrewarm);
     ::KillTimer(g_host.host, kTimerIdle);
   }
+  g_host.prewarmTimerArmed = false;
   ReleaseController();
   g_host.env.Reset();
   g_host.docFolder.clear();
@@ -944,6 +953,12 @@ void CreateController() {
                                          RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW |
                                              RDW_ERASE);
                           SetMemoryLevel(false);
+                        } else if (g_host.prewarmEnabled) {
+                          // 预热实例要一直保持可用：挂起后首次借用得唤醒渲染器、
+                          // 重新布局并重推文档，省下的冷启动时间会全部还回去。
+                          SetMemoryLevel(false);
+                          ResumeIfSuspended();
+                          if (g_host.controller) g_host.controller->put_IsVisible(TRUE);
                         } else {
                           SetMemoryLevel(true);
                           SuspendIdle();
@@ -1174,8 +1189,13 @@ void UnborrowHost(HWND viewer) {
   ::SetParent(g_host.host, nullptr);
   SetChildStyle(false);
   ::SetWindowPos(g_host.host, nullptr, 0, 0, 1, 1, SWP_NOZORDER | SWP_FRAMECHANGED);
-  SetMemoryLevel(true);
-  SuspendIdle();
+  if (g_host.prewarmEnabled) {
+    // 预热开着时 controller 一直留着，归还也不挂起：换窗口只需重新 SetParent。
+    SetMemoryLevel(false);
+  } else {
+    SetMemoryLevel(true);
+    SuspendIdle();
+  }
 
   HWND next = HistoryFirstLive(viewer);
   if (!next) ArmIdleTimer();
@@ -1194,7 +1214,9 @@ void StartPrewarm() {
 void SchedulePrewarm(UINT delayMs) {
   if (!g_host.host || !g_host.prewarmEnabled) return;
   if (g_host.controller || g_host.creating || g_host.borrower) return;
+  if (g_host.prewarmTimerArmed) return;
   ::SetTimer(g_host.host, kTimerPrewarm, delayMs, nullptr);
+  g_host.prewarmTimerArmed = true;
 }
 
 // 每 2 秒看一次：本进程还有没有 DO 的可见顶层窗口。连续两次都没有才释放。
@@ -1228,6 +1250,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
   switch (uMsg) {
     case kCmdEnsure:
       if (g_host.host) ::KillTimer(g_host.host, kTimerPrewarm);
+      g_host.prewarmTimerArmed = false;
       EnsureEnvironment();
       return 0;
 
@@ -1237,11 +1260,22 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       if (minutes < 0) minutes = 0;
       if (minutes > 1440) minutes = 1440;
       g_host.idleReleaseMinutes = minutes;
-      ::KillTimer(hwnd, kTimerPrewarm);
       ::KillTimer(hwnd, kTimerIdle);
       if (g_host.prewarmEnabled) {
-        SchedulePrewarm(kPrewarmDelayMs);
+        if (g_host.controller || g_host.env || g_host.creating) {
+          // 实例已在建或已就绪：只把可能挂着的实例唤醒，不重排定时器。
+          ResumeIfSuspended();
+          SetMemoryLevel(false);
+          if (g_host.controller) g_host.controller->put_IsVisible(TRUE);
+          EnsureEnvironment();  // env 在但 controller 没建成时补一次
+          LogLine(L"WEBHOST: 预热开启，已有实例保持活跃");
+        } else {
+          // Opus 刷新插件列表会反复送同一条命令；已在等的定时器不许被一直往后推。
+          SchedulePrewarm(kPrewarmDelayMs);
+        }
       } else {
+        ::KillTimer(hwnd, kTimerPrewarm);
+        g_host.prewarmTimerArmed = false;
         ArmIdleTimer();
       }
       return 1;
@@ -1250,6 +1284,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     case WM_TIMER:
       if (wParam == kTimerPrewarm) {
         ::KillTimer(hwnd, kTimerPrewarm);
+        g_host.prewarmTimerArmed = false;
         StartPrewarm();
         return 0;
       }
@@ -1581,6 +1616,20 @@ bool WebHostEnsure(void) { return SendCommand(kCmdEnsure, 0, 0); }
 void WebHostPrewarm(bool enabled, int idleReleaseMinutes) {
   if (idleReleaseMinutes < 0) idleReleaseMinutes = 0;
   if (idleReleaseMinutes > 1440) idleReleaseMinutes = 1440;
+
+  // 预热常驻时插件不能在这些线程还活着的时候被 FreeLibrary。自持一份引用，
+  // 让 Opus 的 FreeLibrary 只是减一次计数；引用与进程同寿命，不配对释放。
+  if (enabled && !g_pin) {
+    HMODULE self = nullptr;
+    if (::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                             reinterpret_cast<LPCWSTR>(&HostThreadProc), &self)) {
+      g_pin = self;
+      LogLine(L"WEBHOST: 预热常驻，本模块自持一份引用，Uninit 不再收掉宿主线程");
+    } else {
+      LogLine(L"WEBHOST: 自持引用失败 err=%lu，Uninit 仍按原路径收尾", ::GetLastError());
+    }
+  }
+
   ::InterlockedExchange(&g_cfgPrewarm, enabled ? 1 : 0);
   ::InterlockedExchange(&g_cfgIdleMinutes, idleReleaseMinutes);
   // 关闭预热时如果宿主线程还没建起来，配置留在上面，等线程起来再套用。
@@ -1589,6 +1638,8 @@ void WebHostPrewarm(bool enabled, int idleReleaseMinutes) {
 }
 
 bool WebHostIsReady(void) { return ::InterlockedCompareExchange(&g_readyFlag, 0, 0) != 0; }
+
+bool WebHostIsPinned(void) { return g_pin != nullptr; }
 
 bool WebHostClearUserData(const std::wstring& userDataDir) {
   if (!UtilIsWebView2UserDataDir(userDataDir)) return false;

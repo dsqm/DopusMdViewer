@@ -170,8 +170,12 @@ extern "C" void DVP_Uninit(void) {
   // Opus 卸载插件后可能 FreeLibrary：宿主/搜索线程还在跑就会执行已卸载的代码。
   // 但实测 Opus 在插件仍加载时也会频繁成对调 Init/Uninit（跨进程、甚至 init=0），
   // 还有查看器活着时绝不能收——收掉等于把正在显示的预览连锅端。
-  if (live > 0) {
-    LogLine(L"DVP_Uninit: 仍有 %ld 个查看器存活，保留预览引擎不收尾", live);
+  // 预热常驻时本模块自持一份引用，FreeLibrary 不会真的卸载代码，线程可以留下；
+  // 否则每次"刷新插件列表"的 Uninit 都会把刚预热好的实例连锅端掉。
+  const bool pinned = ConfigPrewarm() && WebHostIsPinned();
+  if (live > 0 || pinned) {
+    LogLine(L"DVP_Uninit: %s，保留预览引擎不收尾",
+            live > 0 ? L"仍有查看器存活" : L"预热常驻（本模块自持引用）");
   } else {
     WebHostShutdown();
   }

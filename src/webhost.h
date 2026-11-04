@@ -44,7 +44,11 @@ bool WebHostEnsure(void);
 
 // 启动时预热：延迟一段时间后在宿主线程上建好 Environment/controller 并导航 shell；
 // 预热关闭时，空闲 idleReleaseMinutes 分钟（0 = 不释放）回收实例。
+// 预热开启会让本模块自持一份 DLL 引用，使 Uninit 不再收掉宿主线程。
 void WebHostPrewarm(bool enabled, int idleReleaseMinutes);
+
+// 预热是否已自持 DLL 引用。Uninit 据此决定能否安全地留下宿主/搜索线程。
+bool WebHostIsPinned(void);
 
 // 页面是否已发过 ready（未就绪时 Post 会失败，调用方要先缓存内容）。
 bool WebHostIsReady(void);
@@ -93,5 +97,6 @@ std::wstring WebHostRuntimeInfo(void);
 bool WebHostHostExists(void);
 
 // 插件 Uninit 时收尾：停掉宿主线程与搜索线程并等待退出（进程内不能留下
-// 指向本 DLL 的线程，Opus 随时可能 FreeLibrary）。
+// 指向本 DLL 的线程，Opus 随时可能 FreeLibrary）。预热常驻且已自持引用时
+// Uninit 不调用本函数，线程随进程结束。
 void WebHostShutdown(void);
