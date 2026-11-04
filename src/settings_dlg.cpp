@@ -1571,19 +1571,20 @@ void RefreshWebViewCacheInfo(DialogState* st) {
   }
 
   const std::wstring size = UtilFormatSize(bytes);
+  // 这一行只有一个行高，写长了会被裁掉：路径在输入框里，这里只说大小与缘由，
+  // 并且把大小放最前面——真被截断时也不会把数字切没。
+  const std::wstring source = UtilIsUsbMode() ? UtilWebView2BaseSource(raw) : std::wstring();
   wchar_t text[512];
-  if (UtilIsUsbMode()) {
-    // U 盘模式：路径可以是手填的，也可以是自动选的；两种情况都把落点和缘由说清楚。
-    const std::wstring base = UtilWebView2BaseDir(raw);
-    const std::wstring source = UtilWebView2BaseSource(raw);
+  if (source == L"temp" || source == L"data" || source == L"local") {
     loc::Str fmt = loc::Str::WebViewUsbTemp;
     if (source == L"data") {
       fmt = loc::Str::WebViewUsbData;
     } else if (source == L"local") {
       fmt = loc::Str::WebViewUsbLocal;
     }
-    ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(fmt), base.c_str(), size.c_str());
+    ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(fmt), size.c_str());
   } else {
+    // 非 U 盘，或 U 盘模式下手填了位置：和普通模式同一句
     const std::wstring limit = UtilFormatSize(kWebViewCacheAutoCleanBytes);
     ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(loc::Str::WebViewCacheInfo), size.c_str(),
                        limit.c_str());
@@ -2120,7 +2121,9 @@ void BuildUi(DialogState* st) {
              y + 34, 110, 26, kIdWebViewDefault);
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::WebViewClear), BS_PUSHBUTTON | WS_TABSTOP, 350,
              y + 34, 100, 26, kIdWebViewClear);
-  st->hWebViewInfo = AddControl(st, 3, L"STATIC", L"", SS_LEFT, 114, y + 66, 434, 20, 0);
+  // 提示行与左侧标签对齐并占满整行：从按钮下面起（x=114）只有 434 单位，
+  // 168 dpi 下约 760px，稍长一点的文案就会换行被单行控件裁掉。
+  st->hWebViewInfo = AddControl(st, 3, L"STATIC", L"", SS_LEFT, 16, y + 66, 532, 20, 0);
 
   // 底部按钮：两个重置在左（本页在前、全部在后），右侧是 应用/确定/取消
   AddControl(st, -1, L"BUTTON", loc::T(loc::Str::ResetPage), BS_PUSHBUTTON | WS_TABSTOP, 16, 522,
