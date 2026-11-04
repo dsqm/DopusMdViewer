@@ -383,6 +383,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   if (c.font.measureEm != 0) c.font.measureEm = ClampInt(c.font.measureEm, 8, 200, 40);
   c.idleReleaseMinutes = ClampInt(c.idleReleaseMinutes, 0, 1440, 3);
   if (c.tableCopyMode != 1) c.tableCopyMode = 0;
+  c.codeWsRange = ClampInt(c.codeWsRange, 1, 3, 2);
 
   const wchar_t* path = ConfigPath();
   if (!g_loaded) ConfigLoad();

@@ -985,6 +985,12 @@ void InvokeOpenWithHandler(IAssocHandler* handler, const std::wstring& path, HWN
     hrBind = item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&pdo));
     item->Release();
   }
+  if (!pdo) {
+    LogLine(L"VIEWER: 打开方式兜底取不到数据对象 path=\"%s\" item=0x%08lX bind=0x%08lX",
+            path.c_str(), static_cast<unsigned long>(hrItem),
+            static_cast<unsigned long>(hrBind));
+    return;
+  }
   const HRESULT hr = handler->Invoke(pdo);
   LogLine(L"VIEWER: 打开方式执行 \"%s\" path=\"%s\" name=\"%s\" item=0x%08lX "
           L"bind=0x%08lX pdo=%d invoke=0x%08lX",
@@ -1680,6 +1686,9 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
     if (st) {
       // 从这一刻起 st 归窗口管：创建失败也会走 WM_NCDESTROY，由它释放。
       if (st->pClaimed) *st->pClaimed = true;
+      // 认领凭据只用一次。st 此后随时可能被 WM_NCDESTROY 释放，调用方不能再
+      // 经它回写栈上的 claimed，否则创建失败时就是一次释放后写入。
+      st->pClaimed = nullptr;
       st->hwndSelf = hwnd;
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
       // 与下面的 WM_NCDESTROY 配对：创建失败时 Opus 会紧接着销毁窗口，
@@ -1794,13 +1803,13 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   const int cy = rc.bottom - rc.top;
 
   // 创建成功与否都以 WM_NCCREATE 是否认领 st 为准：认领过就由 WM_NCDESTROY 释放，
-  // 这里再 delete 一次就是双重释放。
+  // 这里再 delete 一次就是双重释放。pClaimed 已在认领时清掉，返回后不能再碰 st——
+  // 失败路径上它可能已被 WM_NCDESTROY 释放。
   bool claimed = false;
   st->pClaimed = &claimed;
 
   HWND hwnd = ::CreateWindowExW(0, kClassName, kTitle, WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
                                 rc.left, rc.top, cx, cy, hWndParent, nullptr, g_hInstance, st);
-  st->pClaimed = nullptr;
   if (!hwnd) {
     LogLine(L"VIEWER: CreateWindowExW 失败 err=%lu", ::GetLastError());
     if (!claimed) delete st;  // 连 WM_NCCREATE 都没走到：st 从未交给窗口

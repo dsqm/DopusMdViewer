@@ -74,25 +74,31 @@ ULONGLONG FileSizeOf(const wchar_t* pszPath) {
   return (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
 }
 
-// 日志里写清"现在跑的是哪个 DLL、什么时候链接的"。换 DLL 之后先看这一行，
-// 就不用猜 Opus 到底加载了哪一份。
+// 日志里写清"现在跑的是哪个 DLL、是哪次构建"。版本取 VERSIONINFO，与设置页的
+// 「版本」同源；文件时间只是辅助线索，复制/安装会改写它，不能当构建版本用。
 void LogModuleStamp() {
   wchar_t szPath[MAX_PATH * 2];
   const DWORD n = ::GetModuleFileNameW(g_hInstance, szPath, ARRAYSIZE(szPath));
   if (n == 0 || n >= ARRAYSIZE(szPath)) return;
 
+  const std::wstring ver = UtilModuleVersion();
+  const wchar_t* text = ver.empty() ? L"未知" : ver.c_str();
+
   WIN32_FILE_ATTRIBUTE_DATA fad;
   if (!::GetFileAttributesExW(szPath, GetFileExInfoStandard, &fad)) {
-    LogLine(L"DLL: %s（读不到文件信息）", szPath);
+    LogLine(L"DLL: %s 版本 %s（读不到文件信息）", szPath, text);
     return;
   }
 
   SYSTEMTIME st = {};
-  if (!::FileTimeToSystemTime(&fad.ftLastWriteTime, &st)) return;
+  if (!::FileTimeToSystemTime(&fad.ftLastWriteTime, &st)) {
+    LogLine(L"DLL: %s 版本 %s（文件时间无效）", szPath, text);
+    return;
+  }
 
   const ULONGLONG size = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
-  LogLine(L"DLL: %s 构建于 %04u-%02u-%02u %02u:%02u:%02u UTC，%llu 字节", szPath, st.wYear,
-          st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, size);
+  LogLine(L"DLL: %s 版本 %s，文件时间 %04u-%02u-%02u %02u:%02u:%02u UTC，%llu 字节",
+          szPath, text, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, size);
 }
 
 }  // namespace

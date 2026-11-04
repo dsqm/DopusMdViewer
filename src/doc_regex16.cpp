@@ -242,7 +242,9 @@ bool RegexScanUtf16(const std::wstring& path, uint64_t startOffset, bool bigEndi
     bool validated = false;
     bool canceled = false;
     while (start < chunkUnits) {
-      if ((out->total & 0xFFF) == 0 && cancel && cancel->load(std::memory_order_relaxed)) {
+      // 每次匹配前都查取消（同 8 位实现）：只在命中数为 4096 倍数时查，
+      // 稀疏命中或长时间回溯的扫描整段都不可中断。
+      if (cancel && cancel->load(std::memory_order_relaxed)) {
         canceled = true;
         break;
       }
@@ -406,7 +408,9 @@ bool RegexScanLegacy(const std::wstring& path, uint64_t startOffset, uint32_t co
     PCRE2_SIZE start = 0;
     bool canceled = false;
     while (start < subjectUnits) {
-      if ((out->total & 0xFFF) == 0 && cancel && cancel->load(std::memory_order_relaxed)) {
+      // 每次匹配前都查取消（同 8 位实现）：只在命中数为 4096 倍数时查，
+      // 稀疏命中或长时间回溯的扫描整段都不可中断。
+      if (cancel && cancel->load(std::memory_order_relaxed)) {
         canceled = true;
         break;
       }

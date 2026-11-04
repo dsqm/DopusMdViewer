@@ -118,6 +118,11 @@ rem robocopy 返回 0-7 都算成功（1 表示有文件被复制），只有 >=
 robocopy "%PROJ%web" "%PROJ%bin\DopusMdViewer" /MIR /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 goto :fail
 
+rem 产物身份：只跑 cl /c 不会更新 DLL，装机前先对一眼文件时间与大小
+for %%f in ("%PROJ%bin\DopusMdViewer.dll") do echo   DLL 文件时间 %%~tf，大小 %%~zf 字节
+echo   版本号由 tools\gen-version.ps1 写入 build\obj\version.rc.inc；
+echo   装机后用设置窗口高级页的「版本」与日志首行 DLL: 交叉核对。
+
 popd
 echo.
 echo [OK] %PROJ%bin\DopusMdViewer.dll

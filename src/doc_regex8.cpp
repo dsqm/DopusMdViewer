@@ -126,7 +126,9 @@ bool RegexScanUtf8(const std::wstring& path, uint64_t startOffset, const std::st
     bool validated = false;
     bool canceled = false;
     while (start < chunkRel) {
-      if ((out->total & 0xFFF) == 0 && cancel && cancel->load(std::memory_order_relaxed)) {
+      // 每次匹配前都查取消。只在命中数为 4096 倍数时查，会让稀疏命中或长时间
+      // 回溯的扫描整段不可中断；relaxed load 的开销相对一次 pcre2_match 可忽略。
+      if (cancel && cancel->load(std::memory_order_relaxed)) {
         canceled = true;
         break;
       }

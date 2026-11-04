@@ -8,11 +8,12 @@
 //  2. controller 的父窗口一旦销毁就永久失效，所以它只认插件自持的宿主窗口，
 //     Opus 的查看器窗口通过 SetParent 借用。归还必须在 WM_DESTROY 做：
 //     DestroyWindow 会连子窗口一起销毁，等到 WM_NCDESTROY 宿主已经没了。
-//  3. 宿主线程与进程同寿命，controller 不按空闲回收——这样关掉窗口再打开只是
-//     一次 SetParent 加一次推送，不必再付浏览器进程冷启动的两三秒。代价是**同一
-//     时刻只有一个查看器有画面**：其它查看器借用会抢走宿主，归还时按借用历史交回
-//     上一个还活着的查看器（WM_MDV_HOST_LOST / WM_MDV_RECLAIM），不这样做关掉一个
-//     窗口就会留下另一片空白。
+//  3. 宿主线程与进程同寿命：关掉窗口再打开只是 SetParent 加一次推送，不必再付
+//     浏览器进程冷启动的两三秒。预热开着时 controller 一直留着；关掉预热则按
+//     idleReleaseMinutes 空闲回收（ReleaseInstance，下次借用走冷路径）。代价是
+//     **同一时刻只有一个查看器有画面**：其它查看器借用会抢走宿主，归还时按借用
+//     历史交回上一个还活着的查看器（WM_MDV_HOST_LOST / WM_MDV_RECLAIM），不这样
+//     做关掉一个窗口就会留下另一片空白。
 //  4. 虚拟主机映射出来的响应由 WebView2 自己合成，加不了响应头；而**映射过的请求
 //     也不会进 WebResourceRequested**（实测：通配过滤器 + ALL 上下文一次都不触发）。
 //     所以 CSP 只能写在 shell.html 的 meta 里。
@@ -147,10 +148,11 @@ int g_historyCount = 0;
 // 跨线程读取的标志与句柄。
 volatile LONG g_readyFlag = 0;
 volatile LONG g_hasThread = 0;
-// 宿主线程/搜索线程句柄与失败标志：Uninit 收尾要等线程真正退出后 Opus 才能
-// FreeLibrary，否则线程还在执行已卸载的代码。
+// 宿主线程/搜索线程/缓存清理线程的句柄与失败标志：Uninit 收尾要等三条线程都
+// 真正退出后 Opus 才能 FreeLibrary，否则线程还在执行已卸载的代码。
 HANDLE g_hHostThread = nullptr;
 HANDLE g_hSearchThread = nullptr;
+HANDLE g_hCleanThread = nullptr;
 HANDLE g_readyEvent = nullptr;
 volatile LONG g_threadFailed = 0;
 // 预热配置在宿主线程还没建起来时也要记住（预热关闭时 InitEx 不会建线程）。
@@ -234,7 +236,9 @@ void StartCacheCleanAsync() {
   std::wstring* param = new (std::nothrow) std::wstring(userData);
   HANDLE h = param ? ::CreateThread(nullptr, 0, CacheCleanThreadProc, param, 0, nullptr) : nullptr;
   if (h) {
-    ::CloseHandle(h);  // 一次性任务，靠 kCmdCleanupDone 回宿主线程
+    // 句柄留到 Uninit：清理线程跑的是本模块代码，结束时还会写 g_cleanupBusy，
+    // 随手 CloseHandle 就没有东西可以在卸载前 join 它。
+    g_hCleanThread = h;
   } else {
     delete param;
     ::InterlockedExchange(&g_cleanupBusy, 0);
@@ -1721,6 +1725,19 @@ void WebHostShutdown(void) {
       g_hSearchThread = nullptr;
     } else {
       LogLine(L"WEBHOST: 搜索线程 5 秒内没退出，保留句柄与标志，下次卸载再等");
+      clean = false;
+    }
+  }
+  // 缓存清理线程同样跑在 DLL 代码里，投递失败时还会自己写 g_cleanupBusy。
+  // 宿主窗口已销毁，kCmdCleanupDone 可能永远送不到，join 之后顺手解锁，
+  // 免得下次建环境时永远卡在 g_cleanupBusy 上。
+  if (g_hCleanThread) {
+    if (::WaitForSingleObject(g_hCleanThread, 5000) == WAIT_OBJECT_0) {
+      ::CloseHandle(g_hCleanThread);
+      g_hCleanThread = nullptr;
+      ::InterlockedExchange(&g_cleanupBusy, 0);
+    } else {
+      LogLine(L"WEBHOST: 缓存清理线程 5 秒内没退出，保留句柄与标志，下次卸载再等");
       clean = false;
     }
   }

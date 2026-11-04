@@ -318,7 +318,7 @@ python tools\build_unittests.py run
 | `util` | 路径字符串函数、目录文件往返、解码链、Opus 查看器扩展名白名单 |
 | `localize` | 每个 Str id 非空、格式串占位符个数 |
 
-前端回归另有统一入口（5 个脚本）：
+前端回归另有统一入口（6 个脚本）：
 
 ```
 cd webbuild
@@ -370,8 +370,10 @@ dopusrt 就返回，不等它：dopusrt 把文件转交给 Opus 后自己就退�
 3. **完全重启 Opus**——Opus 只在启动时扫描 `Viewers\`。替换时旧 DLL 会被改名移出
    （Windows 允许改名已映射的映像），但正在跑的进程不会换成新映像。
 
-确认跑的是新版本：设置窗口 → 高级页 →「版本」与 `bin\DopusMdViewer.dll` 的构建时刻一致。
-版本对不上就是旧映像（Opus 只在启动时扫描 `Viewers\`），后面几条都不作数。
+确认跑的是新版本：设置窗口 → 高级页 →「版本」、`bin\DopusMdViewer.dll` 属性页的
+「文件版本」、日志首行 `DLL: …` 报出的版本，三处一致（都取构建时生成的 VERSIONINFO；
+日志里的文件时间只是辅助线索，复制/安装会改写它）。对不上就是旧映像
+（Opus 只在启动时扫描 `Viewers\`），后面几条都不作数。
 
 ### 逐条
 

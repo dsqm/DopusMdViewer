@@ -73,8 +73,9 @@ bool ServeOutline(const std::wstring& uri, std::string* body, int* status);
 // 总量上限 8 MB（超出就截断，定义极多的文档会丢尾部引用）。
 bool ServeDefs(const std::wstring& uri, std::string* body, int* status);
 
-// 响应 https://mdblocks.localhost/__asset?p=<相对路径>：读当前文档目录下的图片等资源。
-// 只允许文档目录内的相对路径，任何绝对路径、盘符或 .. 段都拒绝。
+// 响应 https://mdblocks.localhost/__asset?p=<路径>：读图片等资源。
+// 默认只认文档目录内的相对路径；目录外图片的两个开关打开后，绝对路径、盘符与
+// .. 段按 AssetUrlToPath 的同一套规则放行（仍只认图片扩展名）。
 bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
                 std::wstring* contentType);
 

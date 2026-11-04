@@ -1,5 +1,5 @@
-// config.h - 插件自己的 config.json（不走 Opus 的配置存储，因此也不导出
-// DVP_USBSafe）。
+// config.h - 插件自己的 config.json（不走 Opus 的配置存储）。
+// U 盘模式下配置与缓存走独立目录，DVP_USBSafe 仍按 Opus 的接口导出。
 //
 // 只有 config.cpp 允许 include nlohmann/json；其余模块只看到这个纯 std 结构。
 

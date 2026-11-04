@@ -2283,6 +2283,10 @@ function resetVirtual() {
   V.docId++
   V.active = false
   syncTools()
+  // 选区点亮的挂起 rAF 与 lit 集合属于上一份文档，换文档时一并作废。
+  if (WS.raf) cancelAnimationFrame(WS.raf)
+  WS.raf = 0
+  wsClearLit()
   if (V.pumpRaf) cancelAnimationFrame(V.pumpRaf)
   if (V.placeRaf) cancelAnimationFrame(V.placeRaf)
   if (V.raf) cancelAnimationFrame(V.raf)
@@ -5034,11 +5038,15 @@ function initMermaid(api) {
 }
 
 // mermaid 会把 %%{init}%% 的 themeVariables 原样写进 SVG 的 <style>：
-// url(...) 能借 CSP 的 img-src 免网络图片确认发起远程请求，一律剥掉。
+// 远程 url(...) 能借 CSP 的 img-src 免网络图片确认发起请求，只剥这一类。
+// SVG 内部的 url(#marker)/url(#grad) 是箭头与渐变引用，换成 none 会把它们吃掉。
+const stripRemoteCssUrl = css =>
+  css.replace(/url\s*\(\s*['"]?(?:https?:)?\/\/[^)'"]*['"]?\s*\)/gi, 'none')
+
 function stripSvgStyleUrls(svg) {
   return svg
-    .replace(/<style([\s\S]*?)<\/style>/gi, (m, body) => '<style>' + body.replace(/url\s*\([^)]*\)/gi, 'none') + '</style>')
-    .replace(/style\s*=\s*"([^"]*)"/gi, (m, css) => 'style="' + css.replace(/url\s*\([^)]*\)/gi, 'none') + '"')
+    .replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (m, body) => '<style>' + stripRemoteCssUrl(body) + '</style>')
+    .replace(/style\s*=\s*"([^"]*)"/gi, (m, css) => 'style="' + stripRemoteCssUrl(css) + '"')
 }
 
 async function renderMermaidBlocks(root, generation) {
