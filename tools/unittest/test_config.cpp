@@ -43,6 +43,7 @@ TEST(config, defaults) {
   CHECK_EQ_INT(c.tableCopyMode, 0);
   CHECK(c.showFindButton && c.showOutlineButton);
   CHECK(!c.enableLog);
+  CHECK(c.openLinksInOpusViewer);  // 链接默认交给 Opus 查看器
   CHECK(c.webviewBaseDir.empty());
   CHECK(!c.prewarm);
   CHECK_EQ_INT(c.idleReleaseMinutes, 3);
@@ -84,6 +85,7 @@ TEST(config, save_roundtrip) {
   c.tableCopyMode = 1;
   c.showFindButton = false;
   c.enableLog = false;  // 不产生日志文件
+  c.openLinksInOpusViewer = false;
   c.webviewBaseDir = L"D:\\cache";
   c.prewarm = true;
   c.idleReleaseMinutes = 30;
@@ -110,6 +112,7 @@ TEST(config, save_roundtrip) {
   CHECK(JsonHas(bytes, "\"codeWhitespace\": false"));
   CHECK(JsonHas(bytes, "\"tableCopyFormat\": \"markdown\""));
   CHECK(JsonHas(bytes, "\"webviewBaseDir\": \"D:\\\\cache\""));
+  CHECK(JsonHas(bytes, "\"openLinksInOpusViewer\": false"));
   CHECK(JsonHas(bytes, "\"prewarm\": true"));
   CHECK(JsonHas(bytes, "\"idleReleaseMinutes\": 30"));
   CHECK(JsonHas(bytes, "\"version\": 1"));

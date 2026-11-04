@@ -65,6 +65,9 @@ struct Config {
   bool enableLog;
   // WebView2 缓存的父目录；空 = %LOCALAPPDATA%\DopusMdViewer。实际目录是 <此项>\WebView2。
   std::wstring webviewBaseDir;
+  // 页面里的本地文件链接交给 Opus 独立查看器（dopusrt /show）打开，而不是系统
+  // 默认程序。默认开；目录链接不受影响（仍走系统），Opus 查看器不支持的类型也回退。
+  bool openLinksInOpusViewer;
   // 启动后在后台预热 WebView2（Opus 窗口关闭时释放）。默认关闭。
   bool prewarm;
   // 预热关闭时，最后一次预览结束后空闲多少分钟释放 WebView2；0 = 不释放。

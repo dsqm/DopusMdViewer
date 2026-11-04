@@ -415,6 +415,7 @@ constexpr UINT kImgMenuBase = 0x6F00;
 
 enum ImageMenuItem : UINT {
   kImgZoom = 0,       // 放大查看：zoom| 发回页面开遮罩
+  kImgOpenInOpus,     // 在 Opus 查看器中打开：dopusrt /show（只有本地图才有）
   kImgOpenWithOther,  // 选择其他应用…：系统的 OpenWith 对话框（可勾「始终」）
   kImgHandlerFirst,   // 子菜单里系统枚举出的处理器从这里起号
 };
@@ -1040,6 +1041,11 @@ void ShowOwnContextMenu(ViewerState* st) {
   } imgRelease{&imgHandlers};
   if (imgRemote || imgLocal) {
     ::AppendMenuW(menu, MF_STRING, kImgMenuBase + kImgZoom, L"放大查看");
+    // Opus 自己的查看器：只对本地图给（远程图没有磁盘路径）。dopusrt 找不到
+    // 就不出这一项，免得点了没反应。
+    if (imgLocal && !UtilOpusViewerExe().empty()) {
+      ::AppendMenuW(menu, MF_STRING, kImgMenuBase + kImgOpenInOpus, L"在 Opus 查看器中打开");
+    }
     if (imgLocal) {
       // 枚举器只认扩展名：从磁盘路径取「.png」这种（目录名带点不受影响，取的是
       // 最后一段里的点）；没有扩展名的文件无从注册处理器，不建这个子菜单
@@ -1112,6 +1118,13 @@ void ShowOwnContextMenu(ViewerState* st) {
 
   if (cmd == kImgMenuBase + kImgZoom) {
     if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"zoom|");
+    return;
+  }
+  if (cmd == kImgMenuBase + kImgOpenInOpus) {
+    if (!UtilOpusViewerShow(imgPath)) {
+      LogLine(L"VIEWER: Opus 查看器打不开图片 %s", imgPath.c_str());
+      SetStatus(st, L"打不开：Opus 查看器不可用");
+    }
     return;
   }
   if (cmd == kImgMenuBase + kImgOpenWithOther) {
@@ -1272,6 +1285,18 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
         return;
       }
       LogLine(L"VIEWER: 打开相对链接 %s", target.c_str());
+      // 本地文件优先交给 Opus 独立查看器（dopusrt /show）：图片、md、文本都能在
+      // Opus 里看，和双击资源管理器里同一类文件的行为一致。目录不算——查看器只显示
+      // 文件，目录仍走系统（Opus 替换资源管理器时就是 Opus 文件窗口）。
+      if (UtilFileExists(target)) {
+        const Config cfg = ConfigSnapshot();
+        const wchar_t* ext = ::PathFindExtensionW(target.c_str());
+        if (cfg.openLinksInOpusViewer && UtilOpusViewerHandlesExt(ext) &&
+            UtilOpusViewerShow(target)) {
+          LogLine(L"VIEWER: 相对链接交给 Opus 查看器 %s", target.c_str());
+          return;
+        }
+      }
       ::ShellExecuteW(nullptr, L"open", target.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
       return;
     }

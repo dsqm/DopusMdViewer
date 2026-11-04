@@ -1,6 +1,7 @@
 #include "util.h"
 
 #include <strsafe.h>
+#include <string.h>  // _wcsicmp：扩展名白名单的大小写不敏感比较
 #include <winver.h>
 
 #include <vector>
@@ -450,4 +451,102 @@ std::wstring UtilModuleVersion(void) {
                      HIWORD(info->dwFileVersionMS), LOWORD(info->dwFileVersionMS),
                      HIWORD(info->dwFileVersionLS), LOWORD(info->dwFileVersionLS));
   return text;
+}
+
+// ---- Opus 独立查看器 ----
+// 插件在 Opus 进程里跑，宿主 exe 就是 dopus.exe；dopusrt.exe 与它同目录。
+// Viewer Plugin SDK 没有「让 Opus 打开文件」的接口，官方对外只有 dopusrt 命令行：
+//   dopusrt.exe /show "<file>"   用独立查看器显示文件
+//   dopusrt.exe /vcmd ...        给当前查看器发命令
+// 这里只做前者：起一个 dopusrt 就返回，不等它（它转手给 Opus 就退出了）。
+namespace {
+
+const wchar_t kViewerHostExe[] = L"dopusrt.exe";
+
+// 扩展名白名单：Opus 查看器插件实际覆盖的类型。名单外的（exe、压缩包、无扩展名）
+// 交回系统默认程序——Opus 对它们只会弹「无法显示」。
+const wchar_t* const kViewerExts[] = {
+    // 图片（含 Opus 内置 image 插件与 WebView2 能画的矢量）
+    L".png", L".jpg", L".jpeg", L".jpe", L".gif", L".bmp", L".webp", L".ico", L".tif",
+    L".tiff", L".svg", L".avif", L".heic", L".psd",
+    // 文本与代码
+    L".md", L".markdown", L".txt", L".log", L".json", L".xml", L".csv", L".tsv", L".ini",
+    L".yaml", L".yml", L".html", L".htm", L".css", L".js", L".mjs", L".ts", L".c", L".h",
+    L".cpp", L".hpp", L".cs", L".py", L".rs", L".go", L".java", L".sh", L".bat", L".ps1",
+    L".sql", L".toml", L".cfg", L".conf",
+    // 文档
+    L".pdf",
+};
+
+std::wstring DirOfModule(HMODULE hmod) {
+  wchar_t buf[MAX_PATH * 2];
+  const DWORD n = ::GetModuleFileNameW(hmod, buf, ARRAYSIZE(buf));
+  if (n == 0 || n >= ARRAYSIZE(buf)) return std::wstring();
+  std::wstring path(buf, n);
+  const size_t pos = path.find_last_of(L"\\/");
+  if (pos == std::wstring::npos) return std::wstring();
+  path.resize(pos);
+  return path;
+}
+
+// 候选路径里有 dopusrt.exe 就返回它，否则空串。
+std::wstring ProbeViewerIn(const std::wstring& dir) {
+  if (dir.empty()) return std::wstring();
+  const std::wstring exe = UtilJoin(dir, kViewerHostExe);
+  return UtilFileExists(exe) ? exe : std::wstring();
+}
+
+}  // namespace
+
+std::wstring UtilOpusViewerExe(void) {
+  // 1) 宿主 exe 同目录：插件由 dopus.exe 加载，这条几乎总是命中（含便携版）。
+  std::wstring exe = ProbeViewerIn(DirOfModule(nullptr));
+  if (!exe.empty()) return exe;
+
+  // 2) DLL 的上级目录：DLL 在 <Opus>\Viewers\ 下，父目录就是 Opus 根。
+  const std::wstring moduleDir = UtilModuleDir();
+  if (!moduleDir.empty()) {
+    exe = ProbeViewerIn(UtilParentDir(moduleDir));
+    if (!exe.empty()) return exe;
+  }
+
+  // 3) 安装版默认位置。便携版没有注册表项，只能靠前两条。
+  wchar_t programFiles[MAX_PATH];
+  const DWORD n = ::GetEnvironmentVariableW(L"ProgramFiles", programFiles,
+                                            ARRAYSIZE(programFiles));
+  if (n > 0 && n < ARRAYSIZE(programFiles)) {
+    exe = ProbeViewerIn(UtilJoin(programFiles, L"GPSoftware\\Directory Opus"));
+    if (!exe.empty()) return exe;
+  }
+  return std::wstring();
+}
+
+bool UtilOpusViewerShow(const std::wstring& path) {
+  if (path.empty() || !UtilFileExists(path)) return false;
+  const std::wstring exe = UtilOpusViewerExe();
+  if (exe.empty()) return false;
+
+  // 两个路径都可能带空格（便携版在 Downloads 下，文档名更常见）：一律加引号。
+  std::wstring cmd = L"\"" + exe + L"\" /show \"" + path + L"\"";
+  std::vector<wchar_t> line(cmd.begin(), cmd.end());
+  line.push_back(L'\0');
+
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi = {};
+  if (!::CreateProcessW(exe.c_str(), line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr,
+                        &si, &pi)) {
+    return false;
+  }
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+  return true;
+}
+
+bool UtilOpusViewerHandlesExt(const wchar_t* ext) {
+  if (!ext || ext[0] != L'.') return false;
+  for (const wchar_t* known : kViewerExts) {
+    if (::_wcsicmp(ext, known) == 0) return true;
+  }
+  return false;
 }

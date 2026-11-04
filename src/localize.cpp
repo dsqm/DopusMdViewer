@@ -76,6 +76,7 @@ const wchar_t* const kZh[kCount] = {
     /* OutsideImages    */ L"允许图片引用文档目录外的路径（../ 与绝对路径）",
 
     /* Version          */ L"版本",
+    /* OpenInViewer     */ L"链接用 Opus 查看器打开",
     /* Prewarm          */ L"启动时预热预览引擎（Opus 窗口关闭时释放）",
     /* IdleRelease      */ L"关闭预热后空闲释放",
     /* IdleUnit         */ L"分钟（0 = 不释放）",

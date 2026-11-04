@@ -82,6 +82,7 @@ enum {
   kIdOpenConfig,
   kIdOpenSkins,
   kIdPrewarm,
+  kIdOpenInViewer,
   kIdIdle,
   kIdIdleSpin,
   kIdConfigPath = 3410,
@@ -1235,6 +1236,8 @@ void LoadUiFromStaged(DialogState* st) {
   ::CheckDlgButton(st->hwnd, kIdOutside,
                    st->staged.allowOutsideImages ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdEnableLog, st->staged.enableLog ? BST_CHECKED : BST_UNCHECKED);
+  ::CheckDlgButton(st->hwnd, kIdOpenInViewer,
+                   st->staged.openLinksInOpusViewer ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdPrewarm, st->staged.prewarm ? BST_CHECKED : BST_UNCHECKED);
   ::StringCchPrintfW(buf, ARRAYSIZE(buf), L"%d", st->staged.idleReleaseMinutes);
   ::SetWindowTextW(st->hIdle, buf);
@@ -1295,6 +1298,8 @@ void ReadUiIntoStaged(DialogState* st) {
   }
   st->staged.allowOutsideImages = ::IsDlgButtonChecked(st->hwnd, kIdOutside) == BST_CHECKED;
   st->staged.enableLog = ::IsDlgButtonChecked(st->hwnd, kIdEnableLog) == BST_CHECKED;
+  st->staged.openLinksInOpusViewer =
+      ::IsDlgButtonChecked(st->hwnd, kIdOpenInViewer) == BST_CHECKED;
   st->staged.webviewBaseDir = UtilTrim(ReadText(st->hWebViewDir));
   st->staged.prewarm = ::IsDlgButtonChecked(st->hwnd, kIdPrewarm) == BST_CHECKED;
   const UINT idle = ::GetDlgItemInt(st->hwnd, kIdIdle, &ok, FALSE);
@@ -1834,13 +1839,18 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"STATIC", L"WebView2", SS_LEFT, 16, y + 2, 90, 20, 0);
   AddControl(st, 3, L"STATIC", runtime.c_str(), SS_LEFT, 110, y + 2, 280, 20, kIdWebView);
 
+  // 打开方式决定点击链接的落点，和下面那几个引擎生命周期开关不是一类，放最前面。
+  y = 108;
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenInViewer), BS_AUTOCHECKBOX | WS_TABSTOP,
+             16, y, 300, 24, kIdOpenInViewer);
+
   // 日志与预热都是引擎生命周期的开关：先决定要不要留日志（排查问题时最先看它），
   // 再决定要不要在启动时就预热。
-  y = 108;
+  y = 138;
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::LogEnabled), BS_AUTOCHECKBOX | WS_TABSTOP,
              16, y, 300, 24, kIdEnableLog);
 
-  y = 138;
+  y = 168;
   {
     // 问号紧跟描述。复选框的宽度必须收在文字后面——给宽了它就会盖住右侧的问号
     // （两个都是子窗口，重叠时谁最后重绘谁在上）。
@@ -1852,7 +1862,7 @@ void BuildUi(DialogState* st) {
                kIdPrewarmHelp);
   }
 
-  y = 172;
+  y = 202;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleRelease), SS_LEFT, 16, y + 3, 120, 20, 0);
   st->hIdle = AddControl(st, 3, L"EDIT", L"",
                          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 140, y, 70, 24, kIdIdle,
@@ -1865,13 +1875,13 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleUnit), SS_LEFT, 220, y + 3, 260, 20, 0);
 
   // 按钮宽度按文字给足即可，原来 130/140 留了太多空白
-  y = 210;
+  y = 240;
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenLog), BS_PUSHBUTTON | WS_TABSTOP, 16, y,
              104, 26, kIdOpenLog);
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 128, y,
              104, 26, kIdOpenSkins);
 
-  y = 246;
+  y = 276;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolder), SS_LEFT, 16, y, 200, 20, 0);
   std::wstring dataDir = UtilDataDir();
   if (dataDir.empty()) dataDir = loc::T(loc::Str::NoFolder);
@@ -1989,6 +1999,7 @@ void ResetPageSettings(DialogState* st, int page) {
       break;
     case 3:
       c.enableLog = def.enableLog;
+      c.openLinksInOpusViewer = def.openLinksInOpusViewer;
       c.prewarm = def.prewarm;
       c.idleReleaseMinutes = def.idleReleaseMinutes;
       c.webviewBaseDir = def.webviewBaseDir;

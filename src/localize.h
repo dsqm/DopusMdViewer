@@ -80,6 +80,7 @@ enum class Str : int {
 
   // 高级
   Version,
+  OpenInViewer,
   Prewarm,
   IdleRelease,
   IdleUnit,

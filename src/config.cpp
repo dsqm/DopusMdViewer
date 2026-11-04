@@ -58,6 +58,7 @@ void SetDefaults(Config* c) {
   c->showOutlineButton = true;
   c->enableLog = false;
   c->webviewBaseDir.clear();
+  c->openLinksInOpusViewer = true;
   c->prewarm = false;
   c->idleReleaseMinutes = 3;
 }
@@ -117,6 +118,10 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
 
   if (root.contains("webviewBaseDir") && root["webviewBaseDir"].is_string()) {
     c->webviewBaseDir = Utf8ToWide(root["webviewBaseDir"].get<std::string>());
+  }
+
+  if (root.contains("openLinksInOpusViewer") && root["openLinksInOpusViewer"].is_boolean()) {
+    c->openLinksInOpusViewer = root["openLinksInOpusViewer"].get<bool>();
   }
 
   if (root.contains("prewarm") && root["prewarm"].is_boolean()) {
@@ -401,6 +406,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   root["allowOutsideImages"] = c.allowOutsideImages;
   root["enableLog"] = c.enableLog;
   root["webviewBaseDir"] = WideToUtf8(c.webviewBaseDir);
+  root["openLinksInOpusViewer"] = c.openLinksInOpusViewer;
   root["prewarm"] = c.prewarm;
   root["idleReleaseMinutes"] = c.idleReleaseMinutes;
   nlohmann::json render;
@@ -435,7 +441,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   }
   LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
           L"net=%d outside=%d render=%d%d%d%d%d%d copy=%d%d/%d lines=%d ws=%d/%d ind=%d "
-          L"tools=%d%d log=%d prewarm=%d idle=%d",
+          L"tools=%d%d log=%d opusViewer=%d prewarm=%d idle=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
           c.netImageMode, c.allowOutsideImages ? 1 : 0, c.renderMermaid ? 1 : 0,
           c.renderKatex ? 1 : 0, c.renderHighlight ? 1 : 0, c.renderInlineHtml ? 1 : 0,
@@ -443,7 +449,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
           c.copyCodeBlock ? 1 : 0, c.copyTable ? 1 : 0,
           c.tableCopyMode, c.codeLineNumbers ? 1 : 0, c.codeWsOn ? 1 : 0, c.codeWsRange,
           c.codeIndentedBlocks ? 1 : 0, c.showFindButton ? 1 : 0,
-          c.showOutlineButton ? 1 : 0, c.enableLog ? 1 : 0, c.prewarm ? 1 : 0,
-          c.idleReleaseMinutes);
+          c.showOutlineButton ? 1 : 0, c.enableLog ? 1 : 0, c.openLinksInOpusViewer ? 1 : 0,
+          c.prewarm ? 1 : 0, c.idleReleaseMinutes);
   return true;
 }

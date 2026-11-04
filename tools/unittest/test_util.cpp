@@ -183,3 +183,24 @@ TEST(util, win32_error_text) {
   CHECK(!text.empty());
   CHECK(text.back() != L'\n' && text.back() != L'\r');
 }
+
+TEST(util, opus_viewer_ext) {
+  // 带点、大小写不敏感；名单覆盖图片、文本/代码与 PDF
+  CHECK(UtilOpusViewerHandlesExt(L".png"));
+  CHECK(UtilOpusViewerHandlesExt(L".PNG"));
+  CHECK(UtilOpusViewerHandlesExt(L".md"));
+  CHECK(UtilOpusViewerHandlesExt(L".Markdown"));
+  CHECK(UtilOpusViewerHandlesExt(L".pdf"));
+  // 名单外与非法输入：交回系统默认程序
+  CHECK(!UtilOpusViewerHandlesExt(L".exe"));
+  CHECK(!UtilOpusViewerHandlesExt(L".7z"));
+  CHECK(!UtilOpusViewerHandlesExt(L"png"));  // 没点
+  CHECK(!UtilOpusViewerHandlesExt(L""));
+  CHECK(!UtilOpusViewerHandlesExt(nullptr));
+}
+
+TEST(util, opus_viewer_show_missing_file) {
+  // 不存在的文件不进 CreateProcess：直接 false，调用方回退系统默认程序
+  CHECK(!UtilOpusViewerShow(L""));
+  CHECK(!UtilOpusViewerShow(L"Z://definitely-not-here//x.png"));
+}

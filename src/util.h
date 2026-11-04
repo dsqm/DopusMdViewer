@@ -92,3 +92,19 @@ std::wstring UtilModuleVersion(void);
 
 // 任意可执行文件/模块的版本资源（"1.2.3.4"）；不存在或没有版本资源时返回空串。
 std::wstring UtilFileVersion(const std::wstring& path);
+
+// dopusrt.exe 的完整路径（Opus 对外唯一的"打开查看器"入口）；找不到返回空串。
+// 顺序：宿主 exe 同目录（插件总跑在 dopus.exe 里）→ DLL 的上级目录（Viewers\ 的父目录）
+// → %ProgramFiles%\GPSoftware\Directory Opus。便携版靠前两条命中。
+std::wstring UtilOpusViewerExe(void);
+
+// 用 Opus 独立查看器显示文件：dopusrt.exe /show "<path>"。
+// Viewer Plugin SDK 没有这个能力（DVP_InitEx 只给消息窗口与版本号），Opus 只对外
+// 提供 dopusrt 命令行。找不到 dopusrt、文件不存在或进程起不来时返回 false，
+// 调用方自行回退到系统默认程序。
+bool UtilOpusViewerShow(const std::wstring& path);
+
+// 这个扩展名是否该交给 Opus 查看器。Opus 的查看器插件覆盖图片/文本/PDF 这些；
+// exe、压缩包、未知类型一律 false（交给 Opus 只会换来一个"无法显示"的提示框）。
+// ext 带点，大小写不敏感；空串返回 false。
+bool UtilOpusViewerHandlesExt(const wchar_t* ext);
