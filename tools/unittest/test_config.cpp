@@ -33,7 +33,7 @@ TEST(config, defaults) {
   CHECK(c.font.body.empty());  // 空 = 继承界面
   CHECK(c.font.mono.size() == 4 && c.font.mono[0] == L"Cascadia Mono");
   CHECK_EQ_INT(c.netImageMode, 1);  // 每主机一次
-  CHECK(!c.allowOutsideImages);
+  CHECK(!c.allowParentImages && !c.allowAbsoluteImages);  // 目录外图片默认都关
   CHECK(c.renderMermaid && c.renderKatex && c.renderHighlight && c.renderInlineHtml);
   CHECK(c.renderLocalImages && c.renderTableWrap);
   CHECK(c.copyCodeBlock && c.copyTable);
@@ -78,7 +78,8 @@ TEST(config, save_roundtrip) {
   c.font.ui = {L"Arial", L"Microsoft YaHei UI"};
   c.font.body = {L"Source Han Serif"};  // 非空：落盘成自己的数组
   c.netImageMode = 2;
-  c.allowOutsideImages = true;
+  c.allowParentImages = true;
+  c.allowAbsoluteImages = false;
   c.renderMermaid = false;
   c.renderTableWrap = false;
   c.copyTable = false;
@@ -117,6 +118,10 @@ TEST(config, save_roundtrip) {
   CHECK(JsonHas(bytes, "\"webviewBaseDir\": \"D:\\\\cache\""));
   CHECK(JsonHas(bytes, "\"openLinksInOpusViewer\": false"));
   CHECK(JsonHas(bytes, "\"viewerExts\": \".epub;-.html\""));
+  // 目录外图片拆成两个键，同时留一个旧版能读的总开关
+  CHECK(JsonHas(bytes, "\"allowParentImages\": true"));
+  CHECK(JsonHas(bytes, "\"allowAbsoluteImages\": false"));
+  CHECK(JsonHas(bytes, "\"allowOutsideImages\": true"));
   CHECK(JsonHas(bytes, "\"prewarm\": true"));
   CHECK(JsonHas(bytes, "\"idleReleaseMinutes\": 30"));
   CHECK(JsonHas(bytes, "\"version\": 1"));

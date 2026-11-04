@@ -29,8 +29,11 @@ struct Config {
   //   1 = 每主机一次：一篇里每个主机各问一次，各自记各自的；
   //   2 = 每文档一次：整篇只问一次，一个答复管所有来源。
   int netImageMode;
-  // 图片是否允许引用文档目录之外的路径（../ 与绝对路径）。默认关闭。
-  bool allowOutsideImages;
+  // 文档目录外的图片分两类，各自一个开关（都默认关闭）：
+  //   allowParentImages   —— ../ 上级目录（同一项目的兄弟目录很常见）
+  //   allowAbsoluteImages —— 盘符绝对路径与 UNC（风险更大，通常来自粘贴的路径）
+  bool allowParentImages;
+  bool allowAbsoluteImages;
   // 渲染开关（设置里的“渲染”页）。默认全开。
   bool renderMermaid;
   bool renderKatex;
@@ -97,8 +100,11 @@ Config ConfigSnapshot(void);
 // 网络图片确认粒度（线程安全）。设置对话框改它，查看器线程读它。
 int ConfigNetImageMode(void);
 
-// 是否允许图片引用文档目录外的路径（../ 与绝对路径）。
-bool ConfigAllowOutsideImages(void);
+// 是否允许图片引用上级目录（../）。线程安全。
+bool ConfigAllowParentImages(void);
+
+// 是否允许图片引用绝对路径（盘符与 UNC）。线程安全。
+bool ConfigAllowAbsoluteImages(void);
 
 // 启动时是否预热 WebView2。
 bool ConfigPrewarm(void);

@@ -76,7 +76,8 @@ enum class Str : int {
   NetPerDoc,
   NetPerHost,
   NetNever,
-  OutsideImages,
+  AllowParentImages,
+  AllowAbsoluteImages,
 
   // 高级
   Version,

@@ -1003,6 +1003,38 @@ bool ResolveAssetPath(const std::wstring& folder, const std::wstring& rel,
   return true;
 }
 
+// 路径里有没有 .. 段（只看整段，`a..b` 不算）。
+bool HasParentSegment(const std::wstring& rel) {
+  size_t start = 0;
+  while (start <= rel.size()) {
+    const size_t pos = rel.find_first_of(L"/\\", start);
+    const std::wstring part =
+        rel.substr(start, pos == std::wstring::npos ? std::wstring::npos : pos - start);
+    if (part == L"..") return true;
+    if (pos == std::wstring::npos) break;
+    start = pos + 1;
+  }
+  return false;
+}
+
+// 按设置决定这个图片引用放不放行，放行时把磁盘路径写进 full。
+// 文档目录外的两类各自开关：绝对路径（盘符/UNC）看 allowAbsoluteImages，
+// 带 .. 的相对路径看 allowParentImages；目录内仍走 SafeRelativePath（挡设备名）。
+bool ResolveAssetByPolicy(const std::wstring& folder, const std::wstring& rel,
+                          std::wstring* full) {
+  if (IsAbsolutePath(rel)) {
+    return ConfigAllowAbsoluteImages() && ResolveAssetPath(folder, rel, full);
+  }
+  if (HasParentSegment(rel)) {
+    return ConfigAllowParentImages() && ResolveAssetPath(folder, rel, full);
+  }
+  if (!SafeRelativePath(rel)) return false;
+  *full = folder;
+  if (full->back() != L'\\' && full->back() != L'/') *full += L'\\';
+  for (wchar_t c : rel) *full += (c == L'/') ? L'\\' : c;
+  return true;
+}
+
 // 文档目录内的相对链接：页面按 docBase 解析成 https://mddoc.localhost/<相对路径>，
 // 那只是 WebView2 的虚拟主机，系统不认识。这里还原成磁盘路径再交回查看器。
 bool DocUrlToPath(const std::wstring& url, std::wstring* out) {
@@ -1095,15 +1127,7 @@ bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
   if (!snap || snap->folder.empty()) return true;
 
   std::wstring full;
-  const bool allowOutside = ConfigAllowOutsideImages();
-  if (allowOutside) {
-    if (!ResolveAssetPath(snap->folder, rel, &full)) return true;
-  } else {
-    if (!SafeRelativePath(rel)) return true;
-    full = snap->folder;
-    if (full.back() != L'\\' && full.back() != L'/') full += L'\\';
-    for (wchar_t c : rel) full += (c == L'/') ? L'\\' : c;
-  }
+  if (!ResolveAssetByPolicy(snap->folder, rel, &full)) return true;
   // 只认图片扩展名，两种模式一样：__asset 是页面能触发的读文件通道，
   // 不该顺手把目录里的 .txt / .ini 之类内容也吐出去。
   if (ContentTypeFor(full) == L"application/octet-stream") return true;
@@ -1142,15 +1166,7 @@ bool AssetUrlToPath(const std::wstring& url, std::wstring* out) {
   if (!snap || snap->folder.empty()) return false;
 
   std::wstring full;
-  const bool allowOutside = ConfigAllowOutsideImages();
-  if (allowOutside) {
-    if (!ResolveAssetPath(snap->folder, rel, &full)) return false;
-  } else {
-    if (!SafeRelativePath(rel)) return false;
-    full = snap->folder;
-    if (full.back() != L'\\' && full.back() != L'/') full += L'\\';
-    for (wchar_t c : rel) full += (c == L'/') ? L'\\' : c;
-  }
+  if (!ResolveAssetByPolicy(snap->folder, rel, &full)) return false;
   // 与 ServeAsset 相同：__asset 只认图片扩展名，不把目录里的其它文件交给系统打开
   if (ContentTypeFor(full) == L"application/octet-stream") return false;
 

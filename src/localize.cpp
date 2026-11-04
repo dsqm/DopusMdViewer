@@ -73,7 +73,8 @@ const wchar_t* const kZh[kCount] = {
     /* NetPerDoc        */ L"每文档询问一次（整篇只问一次，答一次管所有来源）",
     /* NetPerHost       */ L"每主机询问一次（本篇内每个主机各问一次）",
     /* NetNever         */ L"不询问，直接加载",
-    /* OutsideImages    */ L"允许图片引用文档目录外的路径（../ 与绝对路径）",
+    /* AllowParentImages */ L"允许 ../ 上级目录图片",
+    /* AllowAbsoluteImages */ L"允许绝对路径图片",
 
     /* Version          */ L"版本",
     /* LinkOpenMode     */ L"文档内链接的打开方式：",

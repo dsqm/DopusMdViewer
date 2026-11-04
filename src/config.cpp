@@ -40,7 +40,8 @@ void SetDefaults(Config* c) {
   c->font.lineHeight = 1.65;
   c->font.measureEm = 40;
   c->netImageMode = 1;  // 每主机一次（DO 运行期间记住）
-  c->allowOutsideImages = false;
+  c->allowParentImages = false;
+  c->allowAbsoluteImages = false;
   c->renderMermaid = true;
   c->renderKatex = true;
   c->renderHighlight = true;
@@ -109,8 +110,17 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
     }
   }
 
+  // 旧版只有一个总开关：两个新键都缺时按它回填，读到了就以新键为准
   if (root.contains("allowOutsideImages") && root["allowOutsideImages"].is_boolean()) {
-    c->allowOutsideImages = root["allowOutsideImages"].get<bool>();
+    const bool legacy = root["allowOutsideImages"].get<bool>();
+    c->allowParentImages = legacy;
+    c->allowAbsoluteImages = legacy;
+  }
+  if (root.contains("allowParentImages") && root["allowParentImages"].is_boolean()) {
+    c->allowParentImages = root["allowParentImages"].get<bool>();
+  }
+  if (root.contains("allowAbsoluteImages") && root["allowAbsoluteImages"].is_boolean()) {
+    c->allowAbsoluteImages = root["allowAbsoluteImages"].get<bool>();
   }
 
   if (root.contains("enableLog") && root["enableLog"].is_boolean()) {
@@ -317,10 +327,16 @@ int ConfigNetImageMode(void) {
   return g_config.netImageMode;
 }
 
-bool ConfigAllowOutsideImages(void) {
+bool ConfigAllowParentImages(void) {
   if (!g_loaded) ConfigLoad();
   std::lock_guard<std::mutex> lock(g_modeMutex);
-  return g_config.allowOutsideImages;
+  return g_config.allowParentImages;
+}
+
+bool ConfigAllowAbsoluteImages(void) {
+  if (!g_loaded) ConfigLoad();
+  std::lock_guard<std::mutex> lock(g_modeMutex);
+  return g_config.allowAbsoluteImages;
 }
 
 bool ConfigPrewarm(void) {
@@ -408,7 +424,10 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   root["font"] = font;
   root["netImageConfirm"] =
       c.netImageMode == 0 ? "off" : (c.netImageMode == 2 ? "doc" : "host");
-  root["allowOutsideImages"] = c.allowOutsideImages;
+  root["allowParentImages"] = c.allowParentImages;
+  root["allowAbsoluteImages"] = c.allowAbsoluteImages;
+  // 旧版插件只认这个总开关，留着它不会读错
+  root["allowOutsideImages"] = c.allowParentImages || c.allowAbsoluteImages;
   root["enableLog"] = c.enableLog;
   root["webviewBaseDir"] = WideToUtf8(c.webviewBaseDir);
   root["openLinksInOpusViewer"] = c.openLinksInOpusViewer;
@@ -449,7 +468,8 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
           L"net=%d outside=%d render=%d%d%d%d%d%d copy=%d%d/%d lines=%d ws=%d/%d ind=%d "
           L"tools=%d%d log=%d opusViewer=%d exts=%d prewarm=%d idle=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
-          c.netImageMode, c.allowOutsideImages ? 1 : 0, c.renderMermaid ? 1 : 0,
+          c.netImageMode, (c.allowParentImages ? 1 : 0) + (c.allowAbsoluteImages ? 2 : 0),
+          c.renderMermaid ? 1 : 0,
           c.renderKatex ? 1 : 0, c.renderHighlight ? 1 : 0, c.renderInlineHtml ? 1 : 0,
           c.renderLocalImages ? 1 : 0, c.renderTableWrap ? 1 : 0,
           c.copyCodeBlock ? 1 : 0, c.copyTable ? 1 : 0,

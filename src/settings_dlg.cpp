@@ -62,7 +62,8 @@ enum {
   kIdNetDoc,
   kIdNetHost,
   kIdNetOff,
-  kIdOutside,
+  kIdOutsideParent,
+  kIdOutsideAbsolute,
   kIdCopyCode = 3310,
   kIdCopyTable,
   kIdCopyFormat,
@@ -158,7 +159,8 @@ struct DialogState {
   HWND hNetDoc = nullptr;
   HWND hNetHost = nullptr;
   HWND hNetOff = nullptr;
-  HWND hOutside = nullptr;
+  HWND hOutsideParent = nullptr;
+  HWND hOutsideAbsolute = nullptr;
   HWND hPrewarm = nullptr;
   HWND hLinkMode = nullptr;
   HWND hViewerExts = nullptr;
@@ -1322,8 +1324,10 @@ void LoadUiFromStaged(DialogState* st) {
   const int netId =
       st->staged.netImageMode == 0 ? kIdNetOff : (st->staged.netImageMode == 2 ? kIdNetDoc : kIdNetHost);
   ::CheckRadioButton(st->hwnd, kIdNetDoc, kIdNetOff, netId);
-  ::CheckDlgButton(st->hwnd, kIdOutside,
-                   st->staged.allowOutsideImages ? BST_CHECKED : BST_UNCHECKED);
+  ::CheckDlgButton(st->hwnd, kIdOutsideParent,
+                   st->staged.allowParentImages ? BST_CHECKED : BST_UNCHECKED);
+  ::CheckDlgButton(st->hwnd, kIdOutsideAbsolute,
+                   st->staged.allowAbsoluteImages ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdEnableLog, st->staged.enableLog ? BST_CHECKED : BST_UNCHECKED);
   if (st->hLinkMode) {
     ::SendMessageW(st->hLinkMode, CB_SETCURSEL, st->staged.openLinksInOpusViewer ? 0 : 1, 0);
@@ -1387,7 +1391,10 @@ void ReadUiIntoStaged(DialogState* st) {
   } else {
     st->staged.netImageMode = 1;
   }
-  st->staged.allowOutsideImages = ::IsDlgButtonChecked(st->hwnd, kIdOutside) == BST_CHECKED;
+  st->staged.allowParentImages =
+      ::IsDlgButtonChecked(st->hwnd, kIdOutsideParent) == BST_CHECKED;
+  st->staged.allowAbsoluteImages =
+      ::IsDlgButtonChecked(st->hwnd, kIdOutsideAbsolute) == BST_CHECKED;
   st->staged.enableLog = ::IsDlgButtonChecked(st->hwnd, kIdEnableLog) == BST_CHECKED;
   if (st->hLinkMode) {
     const int sel = static_cast<int>(::SendMessageW(st->hLinkMode, CB_GETCURSEL, 0, 0));
@@ -1840,10 +1847,14 @@ void BuildUi(DialogState* st) {
   // 紧挨着的是「允许图片引用文档目录外的路径」，读起来像是在解释那条。
   AddControl(st, 2, L"STATIC", loc::T(loc::Str::RenderHtmlHint), SS_LEFT, 28, y + 64, 500, 18,
              0);
-  // 图片的路径策略与「本地图片」是同一件事，放在同一组里
-  st->hOutside = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::OutsideImages),
-                            BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 28, y + 88, 500, 24,
-                            kIdOutside);
+  // 图片的路径策略与「本地图片」是同一件事，放在同一组里。
+  // 目录外分两类，各自一个开关：../ 上级目录常见于兄弟目录引用，绝对路径更少见也更危险。
+  st->hOutsideParent = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::AllowParentImages),
+                                  BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 28, y + 88, 240, 24,
+                                  kIdOutsideParent);
+  st->hOutsideAbsolute = AddControl(st, 2, L"BUTTON", loc::T(loc::Str::AllowAbsoluteImages),
+                                    BS_AUTOCHECKBOX | WS_TABSTOP, 280, y + 88, 224, 24,
+                                    kIdOutsideAbsolute);
 
   // 表格复制按钮与复制格式挪去「表格」组后，这里只剩三个短开关，排成一行
   y = 176;
@@ -2107,7 +2118,8 @@ void ResetPageSettings(DialogState* st, int page) {
       c.codeWsRange = def.codeWsRange;
       c.codeIndentedBlocks = def.codeIndentedBlocks;
       c.netImageMode = def.netImageMode;
-      c.allowOutsideImages = def.allowOutsideImages;
+      c.allowParentImages = def.allowParentImages;
+      c.allowAbsoluteImages = def.allowAbsoluteImages;
       break;
     case 3:
       c.enableLog = def.enableLog;
@@ -2273,7 +2285,8 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdOutlineBtn:
     case kIdLineNumbers:
     case kIdIndentedBlocks:
-    case kIdOutside:
+    case kIdOutsideParent:
+    case kIdOutsideAbsolute:
     case kIdEnableLog:
       if (code == BN_CLICKED) SetDirty(st, true);
       return;
