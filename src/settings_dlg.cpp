@@ -1593,8 +1593,8 @@ void RefreshWebViewCacheInfo(DialogState* st) {
   }
 
   const std::wstring size = UtilFormatSize(bytes);
-  // 这一行只有一个行高，写长了会被裁掉：路径在输入框里，这里只说大小与缘由，
-  // 并且把大小放最前面——真被截断时也不会把数字切没。
+  // 这一行只有一个行高：文案按「整行放得下」写（168 dpi 下约 900px 可用），
+  // 路径不写进来——输入框里已经有，写了反而挤掉真正要看的缘由。
   const std::wstring source = UtilIsUsbMode() ? UtilWebView2BaseSource(raw) : std::wstring();
   wchar_t text[512];
   if (source == L"temp" || source == L"data" || source == L"local") {
