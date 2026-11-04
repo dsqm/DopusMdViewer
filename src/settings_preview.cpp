@@ -29,20 +29,25 @@ namespace {
 const wchar_t kPreviewClass[] = L"DopusMdViewerSettingsPreview";
 
 // 预览页：两行示例，字体与字号都由脚本改，避免每次改字体重建页面。
+// 底色与字色走 CSS 变量：宿主深色时由 __mdvTheme 切到深色一组，页面不会是白块。
 const wchar_t kPreviewHtml[] =
     L"<!doctype html><html><head><meta charset=\"utf-8\"><style>"
-    L"html,body{margin:0;height:100%;background:#fff;color:#1a1a1a;"
+    L":root{--mdv-bg:#fff;--mdv-fg:#1a1a1a;--mdv-dim:#5a5a5a}"
+    L"html.mdv-dark{--mdv-bg:#000;--mdv-fg:#d0d0d0;--mdv-dim:#969696}"
+    L"html,body{margin:0;height:100%;background:var(--mdv-bg);color:var(--mdv-fg);"
     L"font-family:'Segoe UI';overflow:hidden}"
     L"#box{display:flex;flex-direction:column;justify-content:center;height:100%;"
     L"padding:0 10px;box-sizing:border-box}"
     L".l1,.l2{line-height:1.5}"
-    L".l2{color:#5a5a5a}"
+    L".l2{color:var(--mdv-dim)}"
     L"</style></head><body><div id=box>"
     L"<div class=l1 id=a>中文示例：永和九年，岁在癸丑</div>"
     L"<div class=l2 id=b>English sample 0123 — Aa Bb Cc</div>"
     L"</div><script>window.__mdv=function(f,s){document.getElementById('box').style.fontFamily=f;"
     L"document.getElementById('a').style.fontSize=s+'px';"
-    L"document.getElementById('b').style.fontSize=s+'px';}</script></body></html>";
+    L"document.getElementById('b').style.fontSize=s+'px';};"
+    L"window.__mdvTheme=function(d){document.documentElement.classList.toggle('mdv-dark',d);}"
+    L"</script></body></html>";
 
 // 本模块的 HINSTANCE：DLL 里不能用 GetModuleHandle(nullptr)（那是宿主 exe）。
 HMODULE ThisModule() {
@@ -118,9 +123,28 @@ struct PreviewState {
   ComPtr<ICoreWebView2Controller> controller;
   ComPtr<ICoreWebView2> web;
   bool ready = false;
+  bool dark = false;
   std::wstring css = L"'Segoe UI', sans-serif";
   int sizePx = 15;
 };
+
+// WebView2 建起来之前窗口是空的：类背景刷不跟宿主主题走，会先露一块白，
+// 所以自己刷。子类化只挂在这个窗口实例上——窗口类的 lpfnWndProc 仍是
+// DefWindowProcW，DLL 卸载后残留的旧类不会指向已卸载的代码。
+LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_ERASEBKGND) {
+    auto* s = reinterpret_cast<PreviewState*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (s) {
+      RECT rc = {};
+      ::GetClientRect(hwnd, &rc);
+      HBRUSH bg = ::CreateSolidBrush(s->dark ? RGB(0, 0, 0) : RGB(255, 255, 255));
+      ::FillRect(reinterpret_cast<HDC>(wp), &rc, bg);
+      ::DeleteObject(bg);
+      return 1;
+    }
+  }
+  return ::DefWindowProcW(hwnd, msg, wp, lp);
+}
 
 // 窗口还在吗？晚到的异步回调靠它判断要不要继续。
 bool Alive(const std::shared_ptr<PreviewState>& s) {
@@ -132,6 +156,13 @@ void PushFont(const std::shared_ptr<PreviewState>& s) {
   if (!Alive(s) || !s->ready || !s->web) return;
   std::wstring script = L"window.__mdv(" + JsString(s->css) + L"," +
                         std::to_wstring(s->sizePx) + L");";
+  s->web->ExecuteScript(script.c_str(), nullptr);
+}
+
+void PushTheme(const std::shared_ptr<PreviewState>& s) {
+  if (!Alive(s) || !s->ready || !s->web) return;
+  std::wstring script = L"window.__mdvTheme(" + std::wstring(s->dark ? L"true" : L"false") +
+                        L");";
   s->web->ExecuteScript(script.c_str(), nullptr);
 }
 
@@ -154,9 +185,12 @@ SettingsPreview* SettingsPreviewCreate(HWND parent, const RECT& rc) {
     wc.hInstance = ThisModule();
     wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = kPreviewClass;
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    registered = ::RegisterClassExW(&wc) != 0;
-    if (!registered) return nullptr;
+    // 同名旧类可能来自上一次加载的 DLL：它的窗口过程也是 DefWindowProcW，
+    // 直接复用不会指向已卸载的代码。
+    if (!::RegisterClassExW(&wc) && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+      return nullptr;
+    }
+    registered = true;
   }
 
   SettingsPreview* p = new (std::nothrow) SettingsPreview();
@@ -171,6 +205,8 @@ SettingsPreview* SettingsPreviewCreate(HWND parent, const RECT& rc) {
     delete p;
     return nullptr;
   }
+  ::SetWindowLongPtrW(s->hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(s.get()));
+  ::SetWindowLongPtrW(s->hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&PreviewWndProc));
 
   // 用户数据目录独立：同一份目录不能被两个 Environment 同时用。位置与查看器缓存
   // 同一个父目录（U 盘模式下按同一套选路），设置里改了缓存位置这里也跟着走。
@@ -226,6 +262,7 @@ SettingsPreview* SettingsPreviewCreate(HWND parent, const RECT& rc) {
                                 if (!Alive(s)) return S_OK;
                                 s->ready = true;
                                 PushFont(s);
+                                PushTheme(s);
                                 return S_OK;
                               })
                               .Get(),
@@ -262,6 +299,14 @@ void SettingsPreviewSetFont(SettingsPreview* p, const std::vector<std::wstring>&
   p->s->css = BuildCssList(chain);
   p->s->sizePx = sizePx > 0 ? sizePx : 15;
   PushFont(p->s);
+}
+
+void SettingsPreviewSetTheme(SettingsPreview* p, bool dark) {
+  if (!p || !p->s || p->s->dark == dark) return;
+  p->s->dark = dark;
+  PushTheme(p->s);
+  // 页面还没导航完时，先把窗口底色换成同一档，免得加载期间闪一块白。
+  if (p->s->hwnd) ::InvalidateRect(p->s->hwnd, nullptr, TRUE);
 }
 
 void SettingsPreviewDestroy(SettingsPreview* p) {

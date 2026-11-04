@@ -152,6 +152,7 @@ struct DialogState {
   SettingsPreview* preview = nullptr;  // 字体预览用的独立 WebView2 实例
   HWND hPreview = nullptr;
   HWND hPreviewNote = nullptr;
+  bool previewDark = false;  // 已经推给预览页的配色，变了才重推
 
   HWND hRender[5] = {};
   HWND hCopyCode = nullptr;
@@ -203,6 +204,152 @@ int ScaleOf(const DialogState* st, int value) {
 int UnscaleOf(const DialogState* st, int px) {
   const UINT dpi = st->dpi ? st->dpi : 96;
   return ::MulDiv(px, 96, static_cast<int>(dpi));
+}
+
+/* ---------------- 界面配色 ----------------
+   宿主切到深色时，按钮、编辑框、下拉框由主题绘制，字会自动变亮；自绘的页签、
+   列表项、弹出面板与 STATIC 控件不走主题，沿用浅色配色就成了白底黑字。宿主
+   可能是改系统色，也可能是自己刷黑客户区，所以不猜实现：直接量窗口左侧空白
+   列的实际像素，按底色亮度挑一整套配色。浅色与高对比度主题沿用系统色。 */
+
+int ColorLuma(COLORREF c) {
+  return (54 * GetRValue(c) + 183 * GetGValue(c) + 19 * GetBValue(c)) / 256;
+}
+
+// 取样不可用或票数打平时，用标题栏的沉浸式深色标记裁决。
+bool DwmDarkMode(HWND hwnd) {
+  using GetAttrFn = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
+  static GetAttrFn fn = nullptr;
+  static bool tried = false;
+  if (!tried) {
+    tried = true;
+    HMODULE mod = ::GetModuleHandleW(L"dwmapi.dll");
+    if (!mod) mod = ::LoadLibraryW(L"dwmapi.dll");
+    if (mod) fn = reinterpret_cast<GetAttrFn>(
+        ::GetProcAddress(mod, "DwmGetWindowAttribute"));
+  }
+  if (!fn) return false;
+  BOOL dark = FALSE;
+  // 20 是 20H1 起的 DWMWA_USE_IMMERSIVE_DARK_MODE，19 是旧版同义值。
+  HRESULT hr = fn(hwnd, 20, &dark, sizeof(dark));
+  if (FAILED(hr)) {
+    dark = FALSE;
+    hr = fn(hwnd, 19, &dark, sizeof(dark));
+  }
+  return SUCCEEDED(hr) && dark != FALSE;
+}
+
+// 设置窗口与名单对话框的控件都从左侧留白之后起排，x=2 这一列不会被盖住。
+// 三点取多数，避开偶尔落在边框或控件上的一点。
+COLORREF SampleBackground(HWND hwnd) {
+  const COLORREF sys = ::GetSysColor(COLOR_WINDOW);
+  HDC dc = ::GetDC(hwnd);
+  if (!dc) return sys;
+  RECT rc = {};
+  ::GetClientRect(hwnd, &rc);
+  const POINT pts[3] = {{2, 2}, {2, (rc.top + rc.bottom) / 2}, {2, rc.bottom - 3}};
+  int dark = 0;
+  int light = 0;
+  COLORREF darkest = RGB(255, 255, 255);
+  for (const POINT& pt : pts) {
+    const COLORREF c = ::GetPixel(dc, pt.x, pt.y);
+    if (c == CLR_INVALID) continue;
+    if (ColorLuma(c) < 128) {
+      ++dark;
+      if (ColorLuma(c) < ColorLuma(darkest)) darkest = c;
+    } else {
+      ++light;
+    }
+  }
+  ::ReleaseDC(hwnd, dc);
+  if (dark > light) return darkest;
+  // 一点都没取到（窗口还没画过）或票数打平时，按标题栏的深色标记裁决。
+  if ((!dark && !light) || dark == light) {
+    if (DwmDarkMode(hwnd)) return dark ? darkest : RGB(0, 0, 0);
+  }
+  return sys;
+}
+
+struct UiTheme {
+  bool dark;
+  COLORREF surface;       // 列表、编辑框的空白区域
+  COLORREF panel;         // 弹出面板底色
+  COLORREF border;        // 面板边框
+  COLORREF text;
+  COLORREF muted;         // 次要、禁用文字
+  COLORREF warn;
+  COLORREF accent;        // 当前页签下面的强调条
+  COLORREF tabOn;
+  COLORREF tabOff;
+  COLORREF tabTextOn;
+  COLORREF tabTextOff;
+  COLORREF tabBorderOn;
+  COLORREF tabBorderOff;
+};
+
+UiTheme UiThemeFor(HWND hwnd) {
+  const COLORREF back = SampleBackground(hwnd);
+  const int luma = ColorLuma(back);
+  UiTheme t = {};
+  t.dark = luma < 128;
+  if (!t.dark) {
+    t.surface = ::GetSysColor(COLOR_WINDOW);
+    t.panel = RGB(0xec, 0xec, 0xec);
+    t.border = RGB(0xbc, 0xbc, 0xbc);
+    t.text = ::GetSysColor(COLOR_WINDOWTEXT);
+    t.muted = ::GetSysColor(COLOR_GRAYTEXT);
+    t.warn = RGB(192, 0, 0);
+    t.accent = RGB(0x0a, 0x6e, 0xd1);
+    t.tabOn = RGB(255, 255, 255);
+    t.tabOff = RGB(240, 240, 240);
+    t.tabTextOn = RGB(0x1a, 0x1a, 0x1a);
+    t.tabTextOff = RGB(0x4a, 0x4a, 0x4a);
+    t.tabBorderOn = RGB(0x8a, 0x8a, 0x8a);
+    t.tabBorderOff = RGB(0xb8, 0xb8, 0xb8);
+  } else {
+    t.surface = RGB(0x20, 0x20, 0x20);
+    t.panel = RGB(0x18, 0x18, 0x18);
+    t.border = RGB(0x46, 0x46, 0x46);
+    // 系统色也跟着变深就用它给的字色；宿主只刷黑底时系统色仍是浅色，
+    // 得自己挑一组和黑底对比足够的亮字。
+    const COLORREF sysText = ::GetSysColor(COLOR_WINDOWTEXT);
+    const COLORREF sysGray = ::GetSysColor(COLOR_GRAYTEXT);
+    t.text = ColorLuma(sysText) > luma + 64 ? sysText : RGB(0xd0, 0xd0, 0xd0);
+    t.muted = ColorLuma(sysGray) > luma + 48 ? sysGray : RGB(0x96, 0x96, 0x96);
+    t.warn = RGB(0xff, 0x90, 0x90);
+    t.accent = RGB(0x4a, 0xa3, 0xff);
+    t.tabOn = RGB(0x2b, 0x2b, 0x2b);
+    t.tabOff = RGB(0x18, 0x18, 0x18);
+    t.tabTextOn = RGB(0xf0, 0xf0, 0xf0);
+    t.tabTextOff = RGB(0xa0, 0xa0, 0xa0);
+    t.tabBorderOn = RGB(0x50, 0x50, 0x50);
+    t.tabBorderOff = RGB(0x33, 0x33, 0x33);
+  }
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    LogLine(L"SETTINGS: 界面配色 dark=%d back=%06X text=%06X", t.dark ? 1 : 0, back, t.text);
+  }
+  return t;
+}
+
+// WM_CTLCOLORLISTBOX / WM_CTLCOLOREDIT 要返回刷子：按颜色缓存一份，
+// 窗口关掉时由 DropThemeBrush 还掉。
+HBRUSH g_themeBrush = nullptr;
+COLORREF g_themeBrushColor = CLR_INVALID;
+
+HBRUSH ThemeBrush(COLORREF color) {
+  if (g_themeBrush && g_themeBrushColor == color) return g_themeBrush;
+  if (g_themeBrush) ::DeleteObject(g_themeBrush);
+  g_themeBrush = ::CreateSolidBrush(color);
+  g_themeBrushColor = color;
+  return g_themeBrush ? g_themeBrush : ::GetSysColorBrush(COLOR_WINDOW);
+}
+
+void DropThemeBrush(void) {
+  if (g_themeBrush) ::DeleteObject(g_themeBrush);
+  g_themeBrush = nullptr;
+  g_themeBrushColor = CLR_INVALID;
 }
 
 // 用当前 UI 字体量一行文字的宽度（设备像素）。用来把「?」紧贴在描述文字后面。
@@ -347,6 +494,7 @@ void MoveFocus(DialogState* st, int dir);
 void FocusFirst(DialogState* st);
 void ShowPage(DialogState* st, int page);
 bool ApplySettings(DialogState* st);
+void SyncPreviewTheme(DialogState* st, bool dark);
 void RefreshWebViewCacheInfo(DialogState* st);
 void UpdateWebViewUsbState(DialogState* st);
 std::wstring& ActiveWebViewBaseRef(Config* cfg);
@@ -415,6 +563,16 @@ INT_PTR CALLBACK ViewerExtsDlgProc(HWND dlg, UINT uMsg, WPARAM wParam, LPARAM lP
           return TRUE;
       }
       return FALSE;
+
+    // 名单对话框的说明也是 STATIC，深色模式下同样会变成黑字黑底。
+    case WM_CTLCOLORSTATIC: {
+      const UiTheme t = UiThemeFor(dlg);
+      if (!t.dark) return FALSE;
+      HDC hdc = reinterpret_cast<HDC>(wParam);
+      ::SetBkMode(hdc, TRANSPARENT);
+      ::SetTextColor(hdc, t.text);
+      return reinterpret_cast<LRESULT>(::GetStockObject(NULL_BRUSH));
+    }
 
     case WM_CLOSE:
       ::EndDialog(dlg, 0);
@@ -629,19 +787,20 @@ HWND AddControl(DialogState* st, int page, const wchar_t* cls, const wchar_t* te
   return h;
 }
 
-// 页签自绘：当前页白底 + 加粗 + 底部强调色条，其余页浅灰底 + 灰边框。
-// 互斥状态由系统维护（BM_GETCHECK），这里只负责画。
+// 页签自绘：当前页底色更亮 + 加粗 + 底部强调色条，其余页压暗一档。
+// 互斥状态由 st->page 决定，配色跟窗口底色走。
 void DrawTab(DialogState* st, const DRAWITEMSTRUCT* dis) {
   // BS_OWNERDRAW 的按钮不响应 BM_SETCHECK，当前页只能看 st->page
   const bool on = dis->CtlID == static_cast<UINT>(kIdTabAppearance + st->page);
+  const UiTheme t = UiThemeFor(st->hwnd);
   HDC dc = dis->hDC;
   RECT rc = dis->rcItem;
 
-  HBRUSH bg = ::CreateSolidBrush(on ? RGB(255, 255, 255) : RGB(240, 240, 240));
+  HBRUSH bg = ::CreateSolidBrush(on ? t.tabOn : t.tabOff);
   ::FillRect(dc, &rc, bg);
   ::DeleteObject(bg);
 
-  HPEN pen = ::CreatePen(PS_SOLID, 1, on ? RGB(0x8a, 0x8a, 0x8a) : RGB(0xb8, 0xb8, 0xb8));
+  HPEN pen = ::CreatePen(PS_SOLID, 1, on ? t.tabBorderOn : t.tabBorderOff);
   HGDIOBJ oldPen = ::SelectObject(dc, pen);
   HGDIOBJ oldBrush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
   ::Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
@@ -653,7 +812,7 @@ void DrawTab(DialogState* st, const DRAWITEMSTRUCT* dis) {
     RECT bar = rc;
     bar.top = bar.bottom - ScaleOf(st, 2);
     ::InflateRect(&bar, -1, 0);
-    HBRUSH accent = ::CreateSolidBrush(RGB(0x0a, 0x6e, 0xd1));
+    HBRUSH accent = ::CreateSolidBrush(t.accent);
     ::FillRect(dc, &bar, accent);
     ::DeleteObject(accent);
   }
@@ -661,7 +820,7 @@ void DrawTab(DialogState* st, const DRAWITEMSTRUCT* dis) {
   wchar_t text[64] = {};
   ::GetWindowTextW(dis->hwndItem, text, ARRAYSIZE(text));
   ::SetBkMode(dc, TRANSPARENT);
-  ::SetTextColor(dc, on ? RGB(0x1a, 0x1a, 0x1a) : RGB(0x4a, 0x4a, 0x4a));
+  ::SetTextColor(dc, on ? t.tabTextOn : t.tabTextOff);
   HGDIOBJ oldFont = ::SelectObject(dc, (on && st->fontBold) ? st->fontBold : st->font);
   ::DrawTextW(dc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
   ::SelectObject(dc, oldFont);
@@ -677,8 +836,10 @@ void DrawTab(DialogState* st, const DRAWITEMSTRUCT* dis) {
 void DrawChainItem(DialogState* st, const DRAWITEMSTRUCT* dis) {
   if (dis->itemID == static_cast<UINT>(-1)) return;
   const bool sel = (dis->itemState & ODS_SELECTED) != 0;
+  const UiTheme t = UiThemeFor(st->hwnd);
   RECT rc = dis->rcItem;
-  ::FillRect(dis->hDC, &rc, ::GetSysColorBrush(sel ? COLOR_HIGHLIGHT : COLOR_WINDOW));
+  ::FillRect(dis->hDC, &rc,
+             sel ? ::GetSysColorBrush(COLOR_HIGHLIGHT) : ThemeBrush(t.surface));
 
   // 条目文本可能来自 config.json 或面板的「使用「%s」」，长字体名远超 LF_FACESIZE；
   // LB_GETTEXT 不做边界检查，必须按实际长度分配。
@@ -690,8 +851,8 @@ void DrawChainItem(DialogState* st, const DRAWITEMSTRUCT* dis) {
   const std::wstring family(text.data());
   const bool installed = FamilyInstalled(st, family);
   ::SetBkMode(dis->hDC, TRANSPARENT);
-  COLORREF color = ::GetSysColor(sel ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT);
-  if (!installed) color = sel ? RGB(0xd8, 0xd8, 0xd8) : RGB(0x9a, 0x9a, 0x9a);
+  COLORREF color = sel ? ::GetSysColor(COLOR_HIGHLIGHTTEXT) : t.text;
+  if (!installed) color = sel ? RGB(0xd8, 0xd8, 0xd8) : t.muted;
   ::SetTextColor(dis->hDC, color);
   rc.left += ScaleOf(st, 6);
   HGDIOBJ old = ::SelectObject(dis->hDC, st->font);
@@ -779,6 +940,14 @@ bool FamilyInstalled(DialogState* st, const std::wstring& name) {
     if (SameFamily(f, name)) return true;
   }
   return false;
+}
+
+// 预览页是独立的 WebView2，看不到宿主的深色设置，只能由设置窗口显式告知。
+// 页面还没导航完时 SettingsPreview 会自己把状态存下来，就绪后再下发。
+void SyncPreviewTheme(DialogState* st, bool dark) {
+  if (!st || !st->preview || st->previewDark == dark) return;
+  st->previewDark = dark;
+  SettingsPreviewSetTheme(st->preview, dark);
 }
 
 void UpdatePreview(DialogState* st) {
@@ -955,18 +1124,24 @@ void PanelMoveSel(FontPanel* p, int delta) {
   ::SendMessageW(p->list, LB_SETCURSEL, sel, 0);
 }
 
+// 面板是 popup，自己的底色也要跟着换，所以判定看父设置窗口的实际底色。
+UiTheme PanelUiTheme(FontPanel* p, HWND hwnd) {
+  return UiThemeFor(p && p->st && p->st->hwnd ? p->st->hwnd : hwnd);
+}
+
 // 列表项用该字体自己的字形画，一眼分清宋体/黑体/等宽。
 void PanelDrawItem(FontPanel* p, const DRAWITEMSTRUCT* dis) {
   if (dis->itemID == static_cast<UINT>(-1)) return;
+  const UiTheme t = PanelUiTheme(p, dis->hwndItem);
   RECT rc = dis->rcItem;
   const bool sel = (dis->itemState & ODS_SELECTED) != 0;
-  ::FillRect(dis->hDC, &rc, ::GetSysColorBrush(sel ? COLOR_HIGHLIGHT : COLOR_WINDOW));
-  if (dis->itemID == static_cast<UINT>(-1)) return;
+  ::FillRect(dis->hDC, &rc,
+             sel ? ::GetSysColorBrush(COLOR_HIGHLIGHT) : ThemeBrush(t.surface));
 
   wchar_t text[256] = {};
   ::SendMessageW(p->list, LB_GETTEXT, dis->itemID, reinterpret_cast<LPARAM>(text));
   ::SetBkMode(dis->hDC, TRANSPARENT);
-  ::SetTextColor(dis->hDC, ::GetSysColor(sel ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT));
+  ::SetTextColor(dis->hDC, sel ? ::GetSysColor(COLOR_HIGHLIGHTTEXT) : t.text);
   rc.left += ScaleOf(p->st, 8);
 
   const bool pseudo = !p->useInput.empty() && dis->itemID == p->items.size();
@@ -1126,26 +1301,40 @@ LRESULT CALLBACK FontPanelProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
       }
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
 
+    // 筛选框与字体列表由系统控件画，空白区域会露出系统白底；统一刷成主题底色。
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+      const UiTheme t = PanelUiTheme(p, hwnd);
+      HDC hdc = reinterpret_cast<HDC>(wParam);
+      ::SetBkColor(hdc, t.surface);
+      ::SetTextColor(hdc, t.text);
+      return reinterpret_cast<LRESULT>(ThemeBrush(t.surface));
+    }
+
     // 无边框 popup 没有非客户区（WM_NCPAINT 不会来），边框画在客户区最外一圈：
     // 子控件都从 8px 起排，这 1px 不会被盖住。
     case WM_ERASEBKGND: {
+      const UiTheme t = PanelUiTheme(p, hwnd);
       RECT rc = {};
       ::GetClientRect(hwnd, &rc);
-      ::FillRect(reinterpret_cast<HDC>(wParam), &rc, ::GetSysColorBrush(COLOR_WINDOW));
+      HBRUSH bg = ::CreateSolidBrush(t.panel);
+      ::FillRect(reinterpret_cast<HDC>(wParam), &rc, bg);
+      ::DeleteObject(bg);
       return 1;
     }
 
     case WM_PAINT: {
+      const UiTheme t = PanelUiTheme(p, hwnd);
       PAINTSTRUCT ps = {};
       HDC dc = ::BeginPaint(hwnd, &ps);
       RECT rc = {};
       ::GetClientRect(hwnd, &rc);
-      // 底色比页面（白）深一档，靠颜色区分层次，不再铺阴影：
+      // 面板底色比控件底色深一档，靠颜色区分层次，不再铺阴影：
       // 细边框外面再套一圈渐变会看成两道边。
-      HBRUSH bg = ::CreateSolidBrush(RGB(0xec, 0xec, 0xec));
+      HBRUSH bg = ::CreateSolidBrush(t.panel);
       ::FillRect(dc, &rc, bg);
       ::DeleteObject(bg);
-      HBRUSH frame = ::CreateSolidBrush(RGB(0xbc, 0xbc, 0xbc));
+      HBRUSH frame = ::CreateSolidBrush(t.border);
       ::FrameRect(dc, &rc, frame);
       ::DeleteObject(frame);
       ::EndPaint(hwnd, &ps);
@@ -1202,7 +1391,7 @@ void OpenFontPanel(DialogState* st, const RECT& anchor) {
   const UINT dpi = st->dpi ? st->dpi : 96;
   auto scale = [dpi](int v) { return ::MulDiv(v, static_cast<int>(dpi), 96); };
 
-  // 边框自己画（见 WM_NCPAINT）：WS_BORDER 用的是系统窗口边框色，浅到几乎看不见。
+  // 边框自己画（见 WM_PAINT）：WS_BORDER 用的是系统窗口边框色，不跟主题走。
   // 不加 WS_EX_TOOLWINDOW——工具窗口连 CS_DROPSHADOW 也不画。
   HWND h = ::CreateWindowExW(0, kFontPanelClass, L"", WS_POPUP, anchor.left,
                              anchor.bottom + scale(2), scale(330), scale(300), st->hwnd, nullptr,
@@ -1796,8 +1985,8 @@ void BuildUi(DialogState* st) {
     // 四个页签是一个单选组：只给组里第一个 WS_TABSTOP，整组占一个 Tab 站位
     //（Windows 对同组单选按钮也会把其余的清掉，这里写明白就不靠它）。
     // 换页用左右方向键，也照旧能点。
-    // 自绘：单选只负责互斥状态，外观由 DrawTab 画（白底加粗 + 强调色下划线），
-    // BS_PUSHLIKE 那套内阴影在浅色背景上几乎看不出当前页。
+    // 自绘：单选只负责互斥状态，外观由 DrawTab 画（当前页更亮 + 加粗 + 强调色下划线），
+    // BS_PUSHLIKE 那套内阴影在纯色背景上几乎看不出当前页。
     AddControl(st, -1, L"BUTTON", tabs[i].text,
                BS_AUTORADIOBUTTON | BS_OWNERDRAW | (i == 0 ? (WS_TABSTOP | WS_GROUP) : 0),
                12 + i * 90, 10, 84, 26, tabs[i].id);
@@ -2522,12 +2711,18 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     }
 
     case WM_ERASEBKGND: {
-      // 显式刷白：不依赖类背景刷子，静态文本再返回同一个刷子就不会出现灰底板。
+      // 显式刷底色：不依赖类背景刷子，静态文本再返回同一个刷子就不会出现灰底板。
       RECT rc;
       ::GetClientRect(hwnd, &rc);
       ::FillRect(reinterpret_cast<HDC>(wParam), &rc, ::GetSysColorBrush(COLOR_WINDOW));
       return 1;
     }
+
+    // 主题切换时整窗重画一次，自绘控件才会按新底色重新选色。
+    case WM_SETTINGCHANGE:
+      ::InvalidateRect(hwnd, nullptr, TRUE);
+      SyncPreviewTheme(st, UiThemeFor(hwnd).dark);
+      return 0;
 
     case WM_TIMER:
       if (wParam == kCopyHintTimerId) {
@@ -2555,11 +2750,24 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     case WM_CTLCOLORSTATIC: {
       HDC hdc = reinterpret_cast<HDC>(wParam);
       HWND control = reinterpret_cast<HWND>(lParam);
+      const UiTheme t = UiThemeFor(hwnd);
       ::SetBkMode(hdc, TRANSPARENT);
+      ::SetTextColor(hdc, ::IsWindowEnabled(control) ? t.text : t.muted);
       if (st && control == st->hPreviewNote && st->previewMissing) {
-        ::SetTextColor(hdc, RGB(192, 0, 0));
+        ::SetTextColor(hdc, t.warn);
       }
+      // 预览页在独立的 WebView2 里，只有配色变了才重推一次。
+      SyncPreviewTheme(st, t.dark);
       return reinterpret_cast<LRESULT>(::GetSysColorBrush(COLOR_WINDOW));
+    }
+
+    // 回退链是自绘列表，没画到的空白区域仍由系统控件刷；深色下补上主题底色。
+    case WM_CTLCOLORLISTBOX: {
+      const UiTheme t = UiThemeFor(hwnd);
+      HDC hdc = reinterpret_cast<HDC>(wParam);
+      ::SetBkColor(hdc, t.surface);
+      ::SetTextColor(hdc, t.text);
+      return reinterpret_cast<LRESULT>(ThemeBrush(t.surface));
     }
 
     // 拖到另一块缩放不同的显示器：按新 DPI 重排，并把整窗压回工作区内。
@@ -2599,6 +2807,8 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
       return 0;
 
     case WM_NCDESTROY:
+      // 子窗口全销毁完了才还刷子；WM_DESTROY 时它们还可能收到 CTLCOLOR 消息。
+      DropThemeBrush();
       // Opus 的 DVP_Configure 宿主靠这个 WM_QUIT 结束配置流程；
       // SDK 的 RAR / CSV 示例都在 WM_NCDESTROY 里发。
       LogLine(L"SETTINGS: 窗口已销毁，向 Opus 配置循环发 WM_QUIT");

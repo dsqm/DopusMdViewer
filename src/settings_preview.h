@@ -28,4 +28,8 @@ void SettingsPreviewResize(SettingsPreview* p, const RECT& rc);
 // 所以预览里能看到真实的回退结果。
 void SettingsPreviewSetFont(SettingsPreview* p, const std::vector<std::wstring>& chain, int sizePx);
 
+// 预览页跑在独立 WebView2 里，看不到宿主的深色模式，由设置窗口显式告知。
+// 页面尚未导航完成时先记下状态，就绪后自动下发。
+void SettingsPreviewSetTheme(SettingsPreview* p, bool dark);
+
 void SettingsPreviewDestroy(SettingsPreview* p);
