@@ -144,6 +144,24 @@ void UtilUsbExportFiles(std::vector<std::wstring>* out) {
   CollectExportFiles(root, L"DopusMdViewer", out);
 }
 
+namespace {
+
+// Plugin Support API 的导出（SDK 的 "plugin support.h"）：dopus.exe 直接导出，
+// 和 ResolveAliasPath 一样按名取，但这个写进了 SDK 文档。
+using PFN_ISUSBINSTALL = BOOL(WINAPI*)(void);
+
+}  // namespace
+
+int UtilOpusIsUsbInstall(void) {
+  static const auto isUsb =
+      reinterpret_cast<PFN_ISUSBINSTALL>([] {
+        const HMODULE host = ::GetModuleHandleW(nullptr);
+        return host ? ::GetProcAddress(host, "IsUSBInstall") : nullptr;
+      }());
+  if (!isUsb) return -1;  // 取不到：未知，别当成「不是 U 盘」
+  return isUsb() ? 1 : 0;
+}
+
 void UtilDataDirInto(wchar_t* buf, size_t cch) {
   if (!buf || cch == 0) return;
 
@@ -243,9 +261,33 @@ std::wstring UtilTempWebView2BaseDir(void) {
   return UtilJoin(std::wstring(tempPath, n), L"DopusMdViewer");
 }
 
-void UtilSetUsbMode(bool usb) { ::InterlockedExchange(&g_usbMode, usb ? 1 : 0); }
+void UtilSetUsbMode(bool usb) { ::InterlockedExchange(&g_usbMode, usb ? 1 : -1); }
 
-bool UtilIsUsbMode(void) { return ::InterlockedCompareExchange(&g_usbMode, 0, 0) != 0; }
+namespace {
+
+// Opus 程序目录（本 DLL 在 <程序目录>\Viewers\）是否在可移动盘上。
+bool ProgramDirIsRemovable() {
+  const std::wstring dir = UtilParentDir(UtilModuleDir());
+  if (dir.size() < 3 || dir[1] != L':') return false;
+  const wchar_t root[4] = {dir[0], dir[1], dir[2], L'\0'};
+  return ::GetDriveTypeW(root) == DRIVE_REMOVABLE;
+}
+
+}  // namespace
+
+bool UtilIsUsbMode(void) {
+  const LONG cached = ::InterlockedCompareExchange(&g_usbMode, 0, 0);
+  if (cached != 0) return cached > 0;
+
+  // 两条判据取并集：
+  //  1. SDK 的 IsUSBInstall()——Opus 自己说「从 U 盘运行」；
+  //  2. Opus 程序目录在可移动盘上——手工把插件/程序拷到 U 盘时，第 1 条不一定为真。
+  // 只看 Identify 的 VPINITF_USB 不够：那一位 Opus 未必置位，而且 Identify 可能晚于
+  // 第一次需要缓存路径的时刻。
+  const bool usb = (UtilOpusIsUsbInstall() == 1) || ProgramDirIsRemovable();
+  ::InterlockedExchange(&g_usbMode, usb ? 1 : -1);
+  return usb;
+}
 
 namespace {
 

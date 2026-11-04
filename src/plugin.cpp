@@ -142,6 +142,10 @@ extern "C" BOOL DVP_InitEx(LPDVPINITEXDATA pInitExData) {
           static_cast<unsigned long>(::GetCurrentProcessId()));
   LogModuleStamp();
 
+  // 两路判据各记一次：Identify 的 VPINITF_USB 不一定被置位，SDK 的 IsUSBInstall()
+  // 才是随时可问的那条。U 盘版出问题时先看这一行。
+  LogLine(L"OPUS: isUsbInstall=%d usbMode=%d", UtilOpusIsUsbInstall(), UtilIsUsbMode() ? 1 : 0);
+
   // 启动后台预热（可在设置里关掉）。失败只在日志里出现，不影响预览。
   WebHostPrewarm(ConfigPrewarm(), ConfigIdleReleaseMinutes());
   return TRUE;

@@ -34,9 +34,13 @@ std::wstring UtilDataDir(void);
 // 同上，但不碰标准库：日志初始化可能早于 CRT 就绪。
 void UtilDataDirInto(wchar_t* buf, size_t cch);
 
-// U 盘模式：由 DVP_IdentifyW 从 dwInitFlags 的 VPINITF_USB 读到后设一次。
+// U 盘模式：Identify 的 VPINITF_USB 与 SDK 的 IsUSBInstall() 任一为真即为真。
 void UtilSetUsbMode(bool usb);
 bool UtilIsUsbMode(void);
+
+// Plugin Support API 的 IsUSBInstall()：Opus 是否从 U 盘运行。
+// 返回 1 / 0，接口取不到时返回 -1（未知）。
+int UtilOpusIsUsbInstall(void);
 
 // a + "\\" + b；a 允许带或不带尾随反斜杠。
 std::wstring UtilJoin(const std::wstring& a, const wchar_t* b);
