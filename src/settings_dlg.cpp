@@ -110,6 +110,15 @@ struct FontPanel;
 constexpr int kPages = 4;
 // 「复制版本信息」按下后按钮文字短暂变成「已复制」，靠这个计时器改回来。
 constexpr UINT_PTR kCopyHintTimerId = 1;
+// 字体预览区的未缩放矩形：创建与 DPI 重排共用一份。
+constexpr int kPreviewX = 100;
+constexpr int kPreviewY = 332;
+constexpr int kPreviewW = 430;
+constexpr int kPreviewH = 64;
+// 客户区目标尺寸（未缩放单位）与窗口样式：算窗口大小、按工作区裁剪都要用。
+constexpr int kClientW = 560;
+constexpr int kClientH = 558;
+constexpr DWORD kDialogStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
 
 struct DialogState {
   HWND hwnd = nullptr;
@@ -170,6 +179,12 @@ struct DialogState {
   HWND hWebViewInfo = nullptr;
   HWND hApply = nullptr;
   bool dirty = false;
+  // 每个控件的**未缩放**坐标：DPI 变化时按新比例重算，比按当前比例反推更准。
+  struct CtrlGeom {
+    HWND hwnd;
+    int x, y, cx, cy;
+  };
+  std::vector<CtrlGeom> layout;
 };
 
 HWND g_hwnd = nullptr;
@@ -335,6 +350,10 @@ bool ApplySettings(DialogState* st);
 void RefreshWebViewCacheInfo(DialogState* st);
 void UpdateWebViewUsbState(DialogState* st);
 std::wstring& ActiveWebViewBaseRef(Config* cfg);
+RECT WorkAreaFor(HWND wnd);
+UINT FitDpiToWorkArea(UINT dpi, const RECT& work);
+void RelayoutForDpi(DialogState* st, UINT dpi);
+void WindowSizeForDpi(UINT dpi, int* w, int* h);
 void AddFontNameToChain(DialogState* st, const std::wstring& name);
 void SetDirty(DialogState* st, bool dirty);
 bool FamilyInstalled(DialogState* st, const std::wstring& name);
@@ -603,7 +622,10 @@ HWND AddControl(DialogState* st, int page, const wchar_t* cls, const wchar_t* te
       reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), ModuleHandle(), nullptr);
   ApplyFont(h, st->font);
   if (h && page >= 0) st->pageCtrls[page].push_back(h);
-  if (h) SubclassControl(st, h);
+  if (h) {
+    st->layout.push_back({h, x, y, cx, cy});
+    SubclassControl(st, h);
+  }
   return h;
 }
 
@@ -1403,8 +1425,8 @@ void ReadUiIntoStaged(DialogState* st) {
       ::IsDlgButtonChecked(st->hwnd, kIdOutsideAbsolute) == BST_CHECKED;
   st->staged.enableLog = ::IsDlgButtonChecked(st->hwnd, kIdEnableLog) == BST_CHECKED;
   if (st->hLinkMode) {
-    const int sel = static_cast<int>(::SendMessageW(st->hLinkMode, CB_GETCURSEL, 0, 0));
-    st->staged.openLinksInOpusViewer = (sel != 1);  // 0 = Opus 查看器，1 = 系统默认程序
+    const int linkSel = static_cast<int>(::SendMessageW(st->hLinkMode, CB_GETCURSEL, 0, 0));
+    st->staged.openLinksInOpusViewer = (linkSel != 1);  // 0 = Opus 查看器，1 = 系统默认程序
   }
   ActiveWebViewBaseRef(&st->staged) = UtilTrim(ReadText(st->hWebViewDir));
   st->staged.prewarm = ::IsDlgButtonChecked(st->hwnd, kIdPrewarm) == BST_CHECKED;
@@ -1865,10 +1887,15 @@ void BuildUi(DialogState* st) {
   y = 332;
   AddControl(st, 1, L"STATIC", loc::T(loc::Str::Preview), SS_LEFT, 16, y + 3, 70, 20, 0);
   {
-    RECT prc = {ScaleOf(st, 100), ScaleOf(st, y), ScaleOf(st, 530), ScaleOf(st, y + 64)};
+    RECT prc = {ScaleOf(st, kPreviewX), ScaleOf(st, kPreviewY), ScaleOf(st, kPreviewX + kPreviewW),
+                ScaleOf(st, kPreviewY + kPreviewH)};
     st->preview = SettingsPreviewCreate(st->hwnd, prc);
     st->hPreview = SettingsPreviewHwnd(st->preview);
-    if (st->hPreview) st->pageCtrls[1].push_back(st->hPreview);
+    if (st->hPreview) {
+      st->pageCtrls[1].push_back(st->hPreview);
+      // 预览是独立子窗口，不走 AddControl，但要参与 DPI 重排。
+      st->layout.push_back({st->hPreview, kPreviewX, kPreviewY, kPreviewW, kPreviewH});
+    }
   }
   st->hPreviewNote = AddControl(st, 1, L"STATIC", L"", SS_LEFT, 100, y + 70, 430, 20,
                                 kIdPreviewNote);
@@ -2535,6 +2562,27 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
       return reinterpret_cast<LRESULT>(::GetSysColorBrush(COLOR_WINDOW));
     }
 
+    // 拖到另一块缩放不同的显示器：按新 DPI 重排，并把整窗压回工作区内。
+    case WM_DPICHANGED:
+      if (st) {
+        const UINT newDpi = HIWORD(wParam) ? HIWORD(wParam) : LOWORD(wParam);
+        const RECT work = WorkAreaFor(hwnd);
+        RelayoutForDpi(st, FitDpiToWorkArea(newDpi, work));
+
+        int w = 0;
+        int h = 0;
+        WindowSizeForDpi(st->dpi, &w, &h);
+        const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+        int x = suggested ? suggested->left : work.left;
+        int y = suggested ? suggested->top : work.top;
+        if (x + w > work.right) x = work.right - w;
+        if (y + h > work.bottom) y = work.bottom - h;
+        if (x < work.left) x = work.left;
+        if (y < work.top) y = work.top;
+        ::SetWindowPos(hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+      }
+      return 0;
+
     case WM_CLOSE:
       ::DestroyWindow(hwnd);
       return 0;
@@ -2594,10 +2642,18 @@ HMODULE ModuleHandle(void) {
   return mod;
 }
 
-HFONT CreateUiFont(bool bold = false) {
+HFONT CreateUiFontForDpi(UINT dpi, bool bold = false) {
   NONCLIENTMETRICSW ncm = {};
   ncm.cbSize = sizeof(ncm);
-  if (::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+  // SystemParametersInfoForDpi 才给「目标显示器」的度量；老的 SPI 只给主屏的，
+  // 把窗口拖到另一块缩放不同的屏上时字会偏小。
+  BOOL ok = FALSE;
+  if (const auto spiForDpi = reinterpret_cast<BOOL(WINAPI*)(UINT, UINT, PVOID, UINT, UINT)>(
+          ::GetProcAddress(::GetModuleHandleW(L"user32.dll"), "SystemParametersInfoForDpi"))) {
+    ok = spiForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi ? dpi : 96);
+  }
+  if (!ok) ok = ::SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+  if (ok) {
     if (bold) ncm.lfMessageFont.lfWeight = FW_BOLD;
     return ::CreateFontIndirectW(&ncm.lfMessageFont);
   }
@@ -2610,6 +2666,71 @@ HFONT CreateUiFont(bool bold = false) {
     }
   }
   return static_cast<HFONT>(::GetStockObject(DEFAULT_GUI_FONT));
+}
+
+// 按 dpi 算整窗尺寸（含标题栏边框）。
+void WindowSizeForDpi(UINT dpi, int* w, int* h) {
+  RECT rc = {0, 0, ScaleByDpi(dpi, kClientW), ScaleByDpi(dpi, kClientH)};
+  ::AdjustWindowRectEx(&rc, kDialogStyle, FALSE, 0);
+  *w = rc.right - rc.left;
+  *h = rc.bottom - rc.top;
+}
+
+// 窗口所在显示器的工作区（去掉任务栏）。
+RECT WorkAreaFor(HWND wnd) {
+  const HMONITOR mon = ::MonitorFromWindow(wnd ? wnd : ::GetForegroundWindow(),
+                                            MONITOR_DEFAULTTONEAREST);
+  MONITORINFO mi = {};
+  mi.cbSize = sizeof(mi);
+  if (::GetMonitorInfoW(mon, &mi)) return mi.rcWork;
+  RECT fallback = {0, 0, ::GetSystemMetrics(SM_CXSCREEN), ::GetSystemMetrics(SM_CYSCREEN)};
+  return fallback;
+}
+
+// 窗口放不进工作区就把有效 DPI 往下压（最低 96 = 100%）：宁可字小一点，
+// 也不能让底部的「确定/取消」跑到屏幕外——那等于设置窗口没法用。
+UINT FitDpiToWorkArea(UINT dpi, const RECT& work) {
+  const int aw = work.right - work.left;
+  const int ah = work.bottom - work.top;
+  UINT d = dpi ? dpi : 96;
+  for (;;) {
+    int w = 0;
+    int h = 0;
+    WindowSizeForDpi(d, &w, &h);
+    if ((w <= aw && h <= ah) || d <= 96) return d;
+    const UINT next = static_cast<UINT>(d * 9 / 10);
+    d = next < 96 ? 96 : next;
+  }
+}
+
+// DPI 变了：按新比例重排所有控件、换字体。坐标用的是创建时记下的未缩放值，
+// 反复拖屏也不会累积误差。
+void RelayoutForDpi(DialogState* st, UINT dpi) {
+  if (!st || !st->hwnd || !dpi || dpi == st->dpi) return;
+
+  st->dpi = dpi;
+  HFONT oldFont = st->font;
+  HFONT oldBold = st->fontBold;
+  st->font = CreateUiFontForDpi(dpi, false);
+  st->fontBold = CreateUiFontForDpi(dpi, true);
+
+  for (const DialogState::CtrlGeom& g : st->layout) {
+    if (!g.hwnd || !::IsWindow(g.hwnd)) continue;
+    if (st->preview && g.hwnd == st->hPreview) continue;  // 预览单独走 SettingsPreviewResize
+    ::SetWindowPos(g.hwnd, nullptr, ScaleOf(st, g.x), ScaleOf(st, g.y), ScaleOf(st, g.cx),
+                   ScaleOf(st, g.cy), SWP_NOZORDER | SWP_NOACTIVATE);
+    ApplyFont(g.hwnd, st->font);
+  }
+  if (st->preview) {
+    RECT prc = {ScaleOf(st, kPreviewX), ScaleOf(st, kPreviewY), ScaleOf(st, kPreviewX + kPreviewW),
+                ScaleOf(st, kPreviewY + kPreviewH)};
+    SettingsPreviewResize(st->preview, prc);
+  }
+  if (st->hChainList) ::SendMessageW(st->hChainList, LB_SETITEMHEIGHT, 0, ScaleOf(st, 22));
+
+  if (oldFont) ::DeleteObject(oldFont);
+  if (oldBold) ::DeleteObject(oldBold);
+  ::InvalidateRect(st->hwnd, nullptr, TRUE);
 }
 
 }  // namespace
@@ -2628,30 +2749,28 @@ HWND SettingsShow(HWND parent) {
 
   DialogState* st = new (std::nothrow) DialogState();
   if (!st) return nullptr;
-  st->font = CreateUiFont();
-  st->fontBold = CreateUiFont(true);
   st->staged = ConfigSnapshot();
 
-  const UINT dpi = parent ? ::GetDpiForWindow(parent) : 96;
-  st->dpi = dpi ? dpi : 96;
-  RECT rc = {0, 0, ScaleOf(st, 560), ScaleOf(st, 558)};
-  const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
-  ::AdjustWindowRectEx(&rc, style, FALSE, 0);
-  const int w = rc.right - rc.left;
-  const int h = rc.bottom - rc.top;
+  // 先定 DPI 再建字体：字体要按最终使用的 DPI 取度量。窗口放不进工作区时
+  // FitDpiToWorkArea 会把有效 DPI 压下来，字号跟着变小，整窗仍然完整可见。
+  const UINT wantDpi = parent ? ::GetDpiForWindow(parent) : 96;
+  const RECT work = WorkAreaFor(parent);
+  st->dpi = FitDpiToWorkArea(wantDpi ? wantDpi : 96, work);
+  st->font = CreateUiFontForDpi(st->dpi, false);
+  st->fontBold = CreateUiFontForDpi(st->dpi, true);
 
-  int x = 200;
-  int y = 200;
-  if (parent) {
-    RECT pr;
-    if (::GetWindowRect(parent, &pr)) {
-      x = pr.left + ((pr.right - pr.left) - w) / 2;
-      y = pr.top + ((pr.bottom - pr.top) - h) / 2;
-    }
-  }
+  int w = 0;
+  int h = 0;
+  WindowSizeForDpi(st->dpi, &w, &h);
 
-  HWND hwnd = ::CreateWindowExW(0, kClass, loc::T(loc::Str::SettingsTitle), style, x, y, w, h,
-                                parent, nullptr, ModuleHandle(), st);
+  // 居中到工作区（父窗口可能压在屏幕边缘，按父窗口居中会算出屏幕外的坐标）
+  int x = work.left + ((work.right - work.left) - w) / 2;
+  int y = work.top + ((work.bottom - work.top) - h) / 2;
+  if (x < work.left) x = work.left;
+  if (y < work.top) y = work.top;
+
+  HWND hwnd = ::CreateWindowExW(0, kClass, loc::T(loc::Str::SettingsTitle), kDialogStyle, x, y, w,
+                                h, parent, nullptr, ModuleHandle(), st);
   if (!hwnd) {
     if (st->font) ::DeleteObject(st->font);
     if (st->fontBold) ::DeleteObject(st->fontBold);
