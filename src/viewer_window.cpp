@@ -1378,6 +1378,9 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
     ::StringCchCopyW(st->szFile, ARRAYSIZE(st->szFile), pszPath);
   }
   pszPath = st->szFile;
+  // 入口就写一行：Opus 什么时候让我们换文件，是排查「窗格不刷新」的唯一凭据
+  // （外部程序用 Go 定位文件时，Opus 可能一条消息都不发，日志里必须能看出「没收到」）。
+  LogLine(L"VIEWER: LOADW \"%s\" host=%d", pszPath, st->hasHost ? 1 : 0);
 
   WIN32_FILE_ATTRIBUTE_DATA fad;
   st->ullFileSize = 0;
@@ -1593,6 +1596,12 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       // 这个返回值是「加载成功/失败」。返回 FALSE 会让 Opus 立刻 CLEAR 并销毁窗口。
       HandleLoad(st, reinterpret_cast<const wchar_t*>(lParam));
       return TRUE;
+
+    // 只在我们申报了 DVPFIF_CanHandleStreams 时才会来。没申报却收到，说明 Opus
+    // 走了另一条加载路径；记下来，别让它静默变成「窗格空白」。
+    case DVPLUGINMSG_LOADSTREAMW:
+      LogLine(L"VIEWER: 收到 LOADSTREAMW（未实现），按失败返回");
+      return FALSE;
 
     case DVPLUGINMSG_CLEAR:
       HandleClear(st);
