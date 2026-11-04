@@ -3315,9 +3315,12 @@ document.addEventListener('click', (e) => {
 // 之后才注册，stopImmediatePropagation 正好把它停掉）；不可动手的图照旧全局菜单。
 document.addEventListener('contextmenu', (e) => {
   if (IMGZ.open) {
-    // 遮罩里不弹菜单：编码/代码块这些全局项盖在放大视图上没有意义
+    // 遮罩里不弹菜单：编码/代码块这些全局项盖在放大视图上没有意义。
+    // 右键等同于右上角的 ×，整块遮罩任意位置都算；但左键正按着拖拽时忽略，
+    // 免得拖到一半图突然没了。
     e.preventDefault()
     e.stopImmediatePropagation()
+    if (!IMGZ.drag) closeZoomMask()
     return
   }
   const img = e.target && e.target.closest ? e.target.closest('img') : null
