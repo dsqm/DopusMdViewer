@@ -1277,8 +1277,18 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     // 预览器不做导航：页面里已做过二次确认，这里交回系统打开。
     // 文档目录内的相对链接在页面里被解析成 https://mddoc.localhost/...，那是
     // WebView2 的虚拟主机，直接交给 ShellExecuteW 必然打不开，先还原成磁盘路径。
+    LogLine(L"VIEWER: open 帧 %s", rest.c_str());
     std::wstring target;
-    if (docsrc::DocUrlToPath(rest, &target)) {
+    bool resolved = docsrc::DocUrlToPath(rest, &target);
+    if (!resolved) {
+      // 页面只把过了 DOMPurify 的链接改写成虚拟主机地址；纯 Markdown 块不经过它，
+      // 发上来的是原始相对路径。补一次前缀再还原，别把 "a.png" 交给 ShellExecute。
+      const bool relative = rest.find(L"://") == std::wstring::npos &&
+                            !UtilIsLocalAbsolutePath(rest) &&
+                            rest.compare(0, 2, L"\\\\") != 0;
+      if (relative) resolved = docsrc::DocUrlToPath(std::wstring(kDocBase) + rest, &target);
+    }
+    if (resolved) {
       if (!UtilFileExists(target) && !UtilDirExists(target)) {
         LogLine(L"VIEWER: 相对链接指向的文件不存在 %s", target.c_str());
         SetStatus(st, L"打不开链接：文件不存在（%s）", UtilLeafName(target.c_str()));
@@ -1291,8 +1301,13 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
       if (UtilFileExists(target)) {
         const Config cfg = ConfigSnapshot();
         const wchar_t* ext = ::PathFindExtensionW(target.c_str());
-        if (cfg.openLinksInOpusViewer && UtilOpusViewerHandlesExt(ext) &&
-            UtilOpusViewerShow(target)) {
+        const std::wstring viewerExe = UtilOpusViewerExe();
+        const bool wantOpus = cfg.openLinksInOpusViewer;
+        const bool handled = UtilOpusViewerHandlesExt(ext, cfg.viewerExts);
+        const bool shown = wantOpus && handled && UtilOpusViewerShow(target);
+        LogLine(L"VIEWER: 链接 %s ext=\"%s\" cfg=%d handled=%d exe=\"%s\" show=%d", target.c_str(),
+                ext, wantOpus ? 1 : 0, handled ? 1 : 0, viewerExe.c_str(), shown ? 1 : 0);
+        if (shown) {
           LogLine(L"VIEWER: 相对链接交给 Opus 查看器 %s", target.c_str());
           return;
         }
@@ -1301,6 +1316,13 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
       return;
     }
     LogLine(L"VIEWER: 打开外部链接 %s", rest.c_str());
+    // 虚拟主机地址交给系统必然打不开（DNS 里没有 mddoc.localhost）。走到这里说明
+    // 页面把本地链接当成了外部链接，是内部不一致，别再静默丢给 ShellExecute。
+    const size_t baseLen = ::wcslen(kDocBase);
+    if (rest.size() >= baseLen && _wcsnicmp(rest.c_str(), kDocBase, baseLen) == 0) {
+      SetStatus(st, L"打不开链接：本地路径还原失败");
+      return;
+    }
     ::ShellExecuteW(nullptr, L"open", rest.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
   }
 }

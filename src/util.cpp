@@ -464,16 +464,31 @@ namespace {
 const wchar_t kViewerHostExe[] = L"dopusrt.exe";
 
 // 扩展名白名单：Opus 查看器插件实际覆盖的类型。名单外的（exe、压缩包、无扩展名）
-// 交回系统默认程序——Opus 对它们只会弹「无法显示」。
+// 交回系统默认程序——Opus 对它们只会弹「无法显示」。顺序与 Viewers\ 下的插件对应：
+// opuswic/WebP/gifanim（常见图片）、dcrawrap（相机 RAW）、j2k（JPEG 2000）、
+// pcx/targa（旧图像格式）、text（文本与代码）、docs（Office）、movie（视频）、
+// wav/wma（音频）、pdf。
 const wchar_t* const kViewerExts[] = {
-    // 图片（含 Opus 内置 image 插件与 WebView2 能画的矢量）
+    // 常见图片
     L".png", L".jpg", L".jpeg", L".jpe", L".gif", L".bmp", L".webp", L".ico", L".tif",
-    L".tiff", L".svg", L".avif", L".heic", L".psd",
-    // 文本与代码
+    L".tiff", L".svg", L".avif", L".heic", L".psd", L".emf", L".wmf",
+    // 相机 RAW（dcrawrap）
+    L".cr2", L".cr3", L".nef", L".arw", L".dng", L".orf", L".rw2", L".raf", L".srw",
+    L".pef", L".x3f",
+    // JPEG 2000 与旧图像格式
+    L".jp2", L".j2k", L".jpf", L".jpx", L".pcx", L".tga",
+    // 文本与代码（text 插件）
     L".md", L".markdown", L".txt", L".log", L".json", L".xml", L".csv", L".tsv", L".ini",
     L".yaml", L".yml", L".html", L".htm", L".css", L".js", L".mjs", L".ts", L".c", L".h",
     L".cpp", L".hpp", L".cs", L".py", L".rs", L".go", L".java", L".sh", L".bat", L".ps1",
     L".sql", L".toml", L".cfg", L".conf",
+    // Office（docs 插件）
+    L".doc", L".docx", L".xls", L".xlsx", L".ppt", L".pptx", L".odt", L".ods", L".odp",
+    L".rtf",
+    // 视频与音频（movie / wav / wma）
+    L".mp4", L".mkv", L".avi", L".mov", L".wmv", L".webm", L".m4v", L".mpg", L".mpeg",
+    L".flv", L".mp3", L".wav", L".flac", L".ogg", L".m4a", L".wma", L".aac",
+    L".ape", L".opus",
     // 文档
     L".pdf",
 };
@@ -543,10 +558,43 @@ bool UtilOpusViewerShow(const std::wstring& path) {
   return true;
 }
 
-bool UtilOpusViewerHandlesExt(const wchar_t* ext) {
-  if (!ext || ext[0] != L'.') return false;
-  for (const wchar_t* known : kViewerExts) {
-    if (::_wcsicmp(ext, known) == 0) return true;
+std::wstring UtilOpusViewerDefaultExts(void) {
+  static const std::wstring kDefault = [] {
+    std::wstring out;
+    for (const wchar_t* ext : kViewerExts) {
+      if (!out.empty()) out += L';';
+      out += ext;
+    }
+    return out;
+  }();
+  return kDefault;
+}
+
+namespace {
+
+// 名单里是否含这个扩展名。分隔符宽松（分号/逗号/空白），项可带点可不带。
+bool ExtListContains(const std::wstring& list, const wchar_t* ext) {
+  std::wstring token;
+  for (size_t i = 0; i <= list.size(); ++i) {
+    const wchar_t ch = i < list.size() ? list[i] : L';';
+    const bool sep = ch == L';' || ch == L',' || ch == L' ' || ch == L'\t' || ch == L'\r' ||
+                     ch == L'\n';
+    if (!sep) {
+      token += ch;
+      continue;
+    }
+    if (!token.empty()) {
+      if (token[0] != L'.') token.insert(token.begin(), L'.');
+      if (::_wcsicmp(token.c_str(), ext) == 0) return true;
+      token.clear();
+    }
   }
   return false;
+}
+
+}  // namespace
+
+bool UtilOpusViewerHandlesExt(const wchar_t* ext, const std::wstring& list) {
+  if (!ext || ext[0] != L'.') return false;
+  return ExtListContains(list.empty() ? UtilOpusViewerDefaultExts() : list, ext);
 }

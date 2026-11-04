@@ -68,6 +68,9 @@ struct Config {
   // 页面里的本地文件链接交给 Opus 独立查看器（dopusrt /show）打开，而不是系统
   // 默认程序。默认开；目录链接不受影响（仍走系统），Opus 查看器不支持的类型也回退。
   bool openLinksInOpusViewer;
+  // 交给 Opus 查看器的额外扩展名：分号/逗号/空格分隔，可带点可不带；
+  // `-` 前缀表示排除（能把内置名单里的项摘掉）。空 = 只用内置名单。
+  std::wstring viewerExts;
   // 启动后在后台预热 WebView2（Opus 窗口关闭时释放）。默认关闭。
   bool prewarm;
   // 预热关闭时，最后一次预览结束后空闲多少分钟释放 WebView2；0 = 不释放。

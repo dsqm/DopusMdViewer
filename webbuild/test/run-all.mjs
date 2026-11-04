@@ -20,6 +20,7 @@ const TESTS = [
   'highlight-split.mjs',
   'net-consent.mjs',
   'img-zoom.mjs',
+  'link-open.mjs',
 ]
 
 let failed = 0

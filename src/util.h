@@ -104,7 +104,10 @@ std::wstring UtilOpusViewerExe(void);
 // 调用方自行回退到系统默认程序。
 bool UtilOpusViewerShow(const std::wstring& path);
 
-// 这个扩展名是否该交给 Opus 查看器。Opus 的查看器插件覆盖图片/文本/PDF 这些；
-// exe、压缩包、未知类型一律 false（交给 Opus 只会换来一个"无法显示"的提示框）。
-// ext 带点，大小写不敏感；空串返回 false。
-bool UtilOpusViewerHandlesExt(const wchar_t* ext);
+// 内置名单（分号分隔，带点），给设置里的「扩展名名单」当初始值与「恢复默认」用。
+std::wstring UtilOpusViewerDefaultExts(void);
+
+// 这个扩展名是否该交给 Opus 查看器。list 是用户编辑过的完整名单（分号/逗号/空白
+// 分隔，带不带点都认）；**空串表示用内置名单**。名单外的类型交回系统默认程序，
+// 免得 Opus 弹「无法显示」。
+bool UtilOpusViewerHandlesExt(const wchar_t* ext, const std::wstring& list);

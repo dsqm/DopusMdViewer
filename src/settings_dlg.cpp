@@ -82,7 +82,8 @@ enum {
   kIdOpenConfig,
   kIdOpenSkins,
   kIdPrewarm,
-  kIdOpenInViewer,
+  kIdLinkOpenMode,
+  kIdViewerExtsBtn,
   kIdIdle,
   kIdIdleSpin,
   kIdConfigPath = 3410,
@@ -159,6 +160,8 @@ struct DialogState {
   HWND hNetOff = nullptr;
   HWND hOutside = nullptr;
   HWND hPrewarm = nullptr;
+  HWND hLinkMode = nullptr;
+  HWND hViewerExts = nullptr;
   HWND hIdle = nullptr;
   HWND hIdleSpin = nullptr;
   HWND hWebViewDir = nullptr;
@@ -334,6 +337,92 @@ bool FamilyInstalled(DialogState* st, const std::wstring& name);
 bool ValidateWebViewDir(const std::wstring& raw, std::wstring* error);
 std::wstring ReadText(HWND hwnd);
 bool HandleDialogKey(DialogState* st, HWND focus, WPARAM vk);
+bool EditViewerExts(HWND owner, std::wstring* exts, HFONT font);
+
+/* ---------------- 扩展名名单对话框 ----------------
+   名单有几十项，主设置页放不下多行框，单独开一个模态对话框。初值是当前名单；
+   为空时展开内置名单，用户看到的就是全部生效项，直接在上面增删。 */
+
+struct ViewerExtsDialogData {
+  std::wstring text;
+  HFONT font;
+};
+
+INT_PTR CALLBACK ViewerExtsDlgProc(HWND dlg, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  switch (uMsg) {
+    case WM_INITDIALOG: {
+      auto* data = reinterpret_cast<ViewerExtsDialogData*>(lParam);
+      ::SetWindowLongPtrW(dlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
+      ::SetWindowTextW(dlg, loc::T(loc::Str::ViewerExtsTitle));
+      ::SetDlgItemTextW(dlg, IDC_EXTS_HINT, loc::T(loc::Str::ViewerExtsHint));
+      ::SetDlgItemTextW(dlg, IDC_EXTS_TEXT, data ? data->text.c_str() : L"");
+      ::SetDlgItemTextW(dlg, IDC_EXTS_DEFAULT, loc::T(loc::Str::Restore));
+      ::SetDlgItemTextW(dlg, IDOK, loc::T(loc::Str::Ok));
+      ::SetDlgItemTextW(dlg, IDCANCEL, loc::T(loc::Str::Cancel));
+      if (data && data->font) {
+        HWND controls[] = {::GetDlgItem(dlg, IDC_EXTS_HINT), ::GetDlgItem(dlg, IDC_EXTS_TEXT),
+                           ::GetDlgItem(dlg, IDC_EXTS_DEFAULT), ::GetDlgItem(dlg, IDOK),
+                           ::GetDlgItem(dlg, IDCANCEL)};
+        for (HWND h : controls) {
+          if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(data->font), TRUE);
+        }
+      }
+      HWND edit = ::GetDlgItem(dlg, IDC_EXTS_TEXT);
+      if (edit) ::SetFocus(edit);
+      return FALSE;  // 焦点已经自己给
+    }
+
+    case WM_COMMAND:
+      switch (LOWORD(wParam)) {
+        case IDC_EXTS_DEFAULT:
+          if (HIWORD(wParam) == BN_CLICKED) {
+            ::SetDlgItemTextW(dlg, IDC_EXTS_TEXT, UtilOpusViewerDefaultExts().c_str());
+            return TRUE;
+          }
+          return FALSE;
+        case IDOK: {
+          auto* data = reinterpret_cast<ViewerExtsDialogData*>(
+              ::GetWindowLongPtrW(dlg, GWLP_USERDATA));
+          if (data) data->text = ReadText(::GetDlgItem(dlg, IDC_EXTS_TEXT));
+          ::EndDialog(dlg, 1);
+          return TRUE;
+        }
+        case IDCANCEL:
+          ::EndDialog(dlg, 0);
+          return TRUE;
+      }
+      return FALSE;
+
+    case WM_CLOSE:
+      ::EndDialog(dlg, 0);
+      return TRUE;
+
+    default:
+      return FALSE;
+  }
+}
+
+bool EditViewerExts(HWND owner, std::wstring* exts, HFONT font) {
+  if (!exts) return false;
+  ViewerExtsDialogData data;
+  data.text = exts->empty() ? UtilOpusViewerDefaultExts() : *exts;
+  data.font = font;
+  const INT_PTR result = ::DialogBoxParamW(ModuleHandle(), MAKEINTRESOURCEW(IDD_VIEWER_EXTS),
+                                           owner, ViewerExtsDlgProc,
+                                           reinterpret_cast<LPARAM>(&data));
+  if (result == -1) {
+    // 资源缺失时 DialogBoxParam 只返回 -1，不弹任何东西；静默失败最难查
+    LogLine(L"SETTINGS: 扩展名名单对话框打不开 err=%lu", ::GetLastError());
+    ::MessageBoxW(owner, loc::T(loc::Str::ViewerExtsOpenFailed), L"DopusMdViewer",
+                  MB_OK | MB_ICONERROR);
+    return false;
+  }
+  if (result != 1) return false;
+  const std::wstring text = UtilTrim(data.text);
+  // 与内置名单一致就存空串：以后内置名单更新，没改过的用户自动跟着变。
+  *exts = (text == UtilOpusViewerDefaultExts()) ? std::wstring() : text;
+  return true;
+}
 
 DialogState* StateOfParent(HWND hwnd) {
   HWND parent = ::GetParent(hwnd);
@@ -1236,8 +1325,10 @@ void LoadUiFromStaged(DialogState* st) {
   ::CheckDlgButton(st->hwnd, kIdOutside,
                    st->staged.allowOutsideImages ? BST_CHECKED : BST_UNCHECKED);
   ::CheckDlgButton(st->hwnd, kIdEnableLog, st->staged.enableLog ? BST_CHECKED : BST_UNCHECKED);
-  ::CheckDlgButton(st->hwnd, kIdOpenInViewer,
-                   st->staged.openLinksInOpusViewer ? BST_CHECKED : BST_UNCHECKED);
+  if (st->hLinkMode) {
+    ::SendMessageW(st->hLinkMode, CB_SETCURSEL, st->staged.openLinksInOpusViewer ? 0 : 1, 0);
+  }
+  ::EnableWindow(st->hViewerExts, st->staged.openLinksInOpusViewer ? TRUE : FALSE);
   ::CheckDlgButton(st->hwnd, kIdPrewarm, st->staged.prewarm ? BST_CHECKED : BST_UNCHECKED);
   ::StringCchPrintfW(buf, ARRAYSIZE(buf), L"%d", st->staged.idleReleaseMinutes);
   ::SetWindowTextW(st->hIdle, buf);
@@ -1298,8 +1389,10 @@ void ReadUiIntoStaged(DialogState* st) {
   }
   st->staged.allowOutsideImages = ::IsDlgButtonChecked(st->hwnd, kIdOutside) == BST_CHECKED;
   st->staged.enableLog = ::IsDlgButtonChecked(st->hwnd, kIdEnableLog) == BST_CHECKED;
-  st->staged.openLinksInOpusViewer =
-      ::IsDlgButtonChecked(st->hwnd, kIdOpenInViewer) == BST_CHECKED;
+  if (st->hLinkMode) {
+    const int sel = static_cast<int>(::SendMessageW(st->hLinkMode, CB_GETCURSEL, 0, 0));
+    st->staged.openLinksInOpusViewer = (sel != 1);  // 0 = Opus 查看器，1 = 系统默认程序
+  }
   st->staged.webviewBaseDir = UtilTrim(ReadText(st->hWebViewDir));
   st->staged.prewarm = ::IsDlgButtonChecked(st->hwnd, kIdPrewarm) == BST_CHECKED;
   const UINT idle = ::GetDlgItemInt(st->hwnd, kIdIdle, &ok, FALSE);
@@ -1627,9 +1720,12 @@ void BuildUi(DialogState* st) {
   // ---------------- 外观 ----------------
   int y = 54;
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::Skin), SS_LEFT, 16, y + 3, 70, 20, 0);
+  // 下拉框收窄到 280：右侧留给「打开皮肤目录」，找皮肤文件不用再跑去高级页
   st->hSkin = AddControl(st, 0, L"COMBOBOX", L"",
                          CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 100, y,
-                         430, 200, kIdSkin);
+                         280, 200, kIdSkin);
+  AddControl(st, 0, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 390, y,
+             114, 24, kIdOpenSkins);
 
   y = 92;
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::FontSize), SS_LEFT, 16, y + 3, 70, 20, 0);
@@ -1839,18 +1935,18 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"STATIC", L"WebView2", SS_LEFT, 16, y + 2, 90, 20, 0);
   AddControl(st, 3, L"STATIC", runtime.c_str(), SS_LEFT, 110, y + 2, 280, 20, kIdWebView);
 
-  // 打开方式决定点击链接的落点，和下面那几个引擎生命周期开关不是一类，放最前面。
-  y = 108;
-  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenInViewer), BS_AUTOCHECKBOX | WS_TABSTOP,
-             16, y, 300, 24, kIdOpenInViewer);
-
-  // 日志与预热都是引擎生命周期的开关：先决定要不要留日志（排查问题时最先看它），
-  // 再决定要不要在启动时就预热。
-  y = 138;
+  // 排查问题先看日志，所以日志与它的目录放最上面；再往下才是引擎生命周期
+  // （预热、空闲释放）。
+  y = 110;
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::LogEnabled), BS_AUTOCHECKBOX | WS_TABSTOP,
              16, y, 300, 24, kIdEnableLog);
 
-  y = 168;
+  // 日志目录紧贴「记录日志」：开关和它的落点不该隔着三个控件。
+  y = 140;
+  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenLog), BS_PUSHBUTTON | WS_TABSTOP, 16, y,
+             130, 26, kIdOpenLog);
+
+  y = 178;
   {
     // 问号紧跟描述。复选框的宽度必须收在文字后面——给宽了它就会盖住右侧的问号
     // （两个都是子窗口，重叠时谁最后重绘谁在上）。
@@ -1862,7 +1958,7 @@ void BuildUi(DialogState* st) {
                kIdPrewarmHelp);
   }
 
-  y = 202;
+  y = 212;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleRelease), SS_LEFT, 16, y + 3, 120, 20, 0);
   st->hIdle = AddControl(st, 3, L"EDIT", L"",
                          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 140, y, 70, 24, kIdIdle,
@@ -1874,14 +1970,30 @@ void BuildUi(DialogState* st) {
   ::SendMessageW(st->hIdleSpin, UDM_SETRANGE32, 0, 1440);
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleUnit), SS_LEFT, 220, y + 3, 260, 20, 0);
 
-  // 按钮宽度按文字给足即可，原来 130/140 留了太多空白
-  y = 240;
-  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenLog), BS_PUSHBUTTON | WS_TABSTOP, 16, y,
-             104, 26, kIdOpenLog);
-  AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 128, y,
-             104, 26, kIdOpenSkins);
+  // 文档内链接：这是内容行为，和上面的引擎开关、下面的路径各成一组。
+  // 名单有几十项，页面上放不下多行框，用一个按钮开对话框编辑；选了系统默认程序时置灰。
+  y = 252;
+  {
+    // 下拉框而不是勾选框：勾选框只说明「开」是什么，「关」会变成什么得靠猜。
+    const wchar_t* label = loc::T(loc::Str::LinkOpenMode);
+    const int labelW = UnscaleOf(st, TextWidth(st, label)) + 4;
+    AddControl(st, 3, L"STATIC", label, SS_LEFT, 16, y + 4, labelW, 20, 0);
+    const int comboX = 16 + labelW + 6;
+    st->hLinkMode = AddControl(st, 3, L"COMBOBOX", L"",
+                               CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP,
+                               comboX, y, 150, 200, kIdLinkOpenMode);
+    if (st->hLinkMode) {
+      ::SendMessageW(st->hLinkMode, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(loc::T(loc::Str::LinkOpenOpus)));
+      ::SendMessageW(st->hLinkMode, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(loc::T(loc::Str::LinkOpenSystem)));
+    }
+    st->hViewerExts = AddControl(st, 3, L"BUTTON", loc::T(loc::Str::ViewerExts),
+                                 BS_PUSHBUTTON | WS_TABSTOP, comboX + 158, y, 120, 24,
+                                 kIdViewerExtsBtn);
+  }
 
-  y = 276;
+  y = 288;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolder), SS_LEFT, 16, y, 200, 20, 0);
   std::wstring dataDir = UtilDataDir();
   if (dataDir.empty()) dataDir = loc::T(loc::Str::NoFolder);
@@ -2000,6 +2112,7 @@ void ResetPageSettings(DialogState* st, int page) {
     case 3:
       c.enableLog = def.enableLog;
       c.openLinksInOpusViewer = def.openLinksInOpusViewer;
+      c.viewerExts = def.viewerExts;
       c.prewarm = def.prewarm;
       c.idleReleaseMinutes = def.idleReleaseMinutes;
       c.webviewBaseDir = def.webviewBaseDir;
@@ -2082,6 +2195,24 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdMeasure:
     case kIdIdle:
       if (code == EN_CHANGE) SetDirty(st, true);
+      return;
+
+    case kIdLinkOpenMode:
+      if (code == CBN_SELCHANGE) {
+        const int sel = static_cast<int>(::SendMessageW(st->hLinkMode, CB_GETCURSEL, 0, 0));
+        ::EnableWindow(st->hViewerExts, sel != 1);
+        SetDirty(st, true);
+      }
+      return;
+
+    case kIdViewerExtsBtn:
+      if (code == BN_CLICKED) {
+        std::wstring exts = st->staged.viewerExts;
+        if (EditViewerExts(st->hwnd, &exts, st->font)) {
+          st->staged.viewerExts = exts;
+          SetDirty(st, true);
+        }
+      }
       return;
 
     case kIdPrewarm:

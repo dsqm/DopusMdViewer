@@ -76,7 +76,15 @@ const wchar_t* const kZh[kCount] = {
     /* OutsideImages    */ L"允许图片引用文档目录外的路径（../ 与绝对路径）",
 
     /* Version          */ L"版本",
-    /* OpenInViewer     */ L"链接用 Opus 查看器打开",
+    /* LinkOpenMode     */ L"文档内链接的打开方式：",
+    /* LinkOpenOpus     */ L"Opus 查看器",
+    /* LinkOpenSystem   */ L"系统默认程序",
+    /* ViewerExts       */ L"扩展名名单…",
+    /* ViewerExtsTitle  */ L"Opus 查看器扩展名",
+    /* ViewerExtsHint   */
+    L"每行或分号分隔一个扩展名，带不带点都行。留空 = 使用内置名单。\r\n"
+    L"只影响页面里的链接；图片右键的「在 Opus 查看器中打开」不看这份名单。",
+    /* ViewerExtsOpenFailed */ L"打不开「扩展名名单」对话框。",
     /* Prewarm          */ L"启动时预热预览引擎（Opus 窗口关闭时释放）",
     /* IdleRelease      */ L"关闭预热后空闲释放",
     /* IdleUnit         */ L"分钟（0 = 不释放）",

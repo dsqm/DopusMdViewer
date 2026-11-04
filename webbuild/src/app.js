@@ -5381,7 +5381,8 @@ function onHostMessage(event) {
    href 只经 textContent 写入，不参与 HTML 拼接。 */
 const kOpenConfirmDelay = 3
 
-function confirmOpenExternal(href) {
+function confirmOpenExternal(href, target) {
+  const sendTo = target || href
   if (document.querySelector('.mdv-modal-overlay')) return
   const prevFocus = document.activeElement
   const overlay = document.createElement('div')
@@ -5411,7 +5412,7 @@ function confirmOpenExternal(href) {
     timer = 0
     overlay.remove()
     if (prevFocus && prevFocus.isConnected) prevFocus.focus()
-    if (open) postRaw('open|' + href)
+    if (open) postRaw('open|' + sendTo)
   }
 
   timer = setInterval(() => {
@@ -5458,11 +5459,14 @@ document.addEventListener('click', (e) => {
   const a = e.target && e.target.closest ? e.target.closest('a') : null
   if (!a) return
   e.preventDefault()
-  const href = a.getAttribute('data-external') || a.getAttribute('href')
-  if (!href) return
-  if (href.charAt(0) === '#') {
+  // 不能用 data-external：纯 Markdown 块不经过 DOMPurify（sanitizeBlock 对不含 "<"
+  // 的块直接返回），那个属性只在含内联 HTML 的块里有。一律现场解析，绝对地址
+  // 与 mailto: 之类会被 resolveDocUrl 原样返回。
+  const raw = a.getAttribute('href')
+  if (!raw) return
+  if (raw.charAt(0) === '#') {
     if (!V.active) return
-    const frag = href.slice(1)
+    const frag = raw.slice(1)
     // 脚注角标跳到文末脚注区；反向链接没有块号映射，先不处理
     if (/^fn\d/.test(frag)) {
       V.target = Math.max(0, V.totalH - V.vh)
@@ -5481,7 +5485,9 @@ document.addEventListener('click', (e) => {
     }
     return
   }
-  confirmOpenExternal(href)
+  // 确认框里显示用户写的原始地址（相对路径比虚拟主机地址好认），发回宿主的是
+  // 解析成绝对地址的那份：宿主按 https://mddoc.localhost/ 前缀还原磁盘路径。
+  confirmOpenExternal(raw, resolveDocUrl(raw))
 }, true)
 
 /* ---------------- 开发模式（只在 Edge 里用，线上走 postMessage） ---------------- */

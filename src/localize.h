@@ -80,7 +80,13 @@ enum class Str : int {
 
   // 高级
   Version,
-  OpenInViewer,
+  LinkOpenMode,
+  LinkOpenOpus,
+  LinkOpenSystem,
+  ViewerExts,
+  ViewerExtsTitle,
+  ViewerExtsHint,
+  ViewerExtsOpenFailed,
   Prewarm,
   IdleRelease,
   IdleUnit,
