@@ -12,6 +12,7 @@
 #include "config.h"
 #include "settings_dlg.h"
 #include "log.h"
+#include "util.h"
 #include "viewer_window.h"
 #include "webhost.h"
 #include "viewer plugins.h"
@@ -110,8 +111,8 @@ BOOL WINAPI DllMain(HINSTANCE hInstance, DWORD dwReason, LPVOID lpReserved) {
 extern "C" BOOL DVP_Init(void) {
   const LONG n = ::InterlockedIncrement(&g_initCalls);
   ConfigGet();  // 先应用 enableLog，再写第一行日志
-  LogLine(L"=== DVP_Init #%ld (pid=%lu) ===", n,
-          static_cast<unsigned long>(::GetCurrentProcessId()));
+  LogLine(L"=== DVP_Init #%ld (pid=%lu) dll=%s ===", n,
+          static_cast<unsigned long>(::GetCurrentProcessId()), UtilModuleVersion().c_str());
   return TRUE;
 }
 

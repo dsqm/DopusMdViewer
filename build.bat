@@ -109,7 +109,7 @@ echo [7/8] 链接 DLL...
   "/DEF:%PROJ%DopusMdViewer.def" "/OUT:%PROJ%bin\DopusMdViewer.dll" "/IMPLIB:%PROJ%build\obj\DopusMdViewer.lib" ^
   "build\obj\*.obj" "build\obj\resource.res" "build\obj-ced\*.obj" "build\obj-pcre2\8\*.obj" "build\obj-pcre2\16\*.obj" "build\obj-pcre2\common\*.obj" ^
   "%W2LIB%" kernel32.lib user32.lib gdi32.lib ole32.lib oleaut32.lib ^
-  shell32.lib shlwapi.lib advapi32.lib psapi.lib version.lib comctl32.lib
+  shell32.lib shlwapi.lib advapi32.lib psapi.lib version.lib comctl32.lib windowscodecs.lib
 if errorlevel 1 goto :fail
 
 echo.

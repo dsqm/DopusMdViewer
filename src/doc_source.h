@@ -78,6 +78,12 @@ bool ServeDefs(const std::wstring& uri, std::string* body, int* status);
 bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
                 std::wstring* contentType);
 
+// 把 https://mdblocks.localhost/__asset?p=<路径> 还原成磁盘路径，给右键菜单的
+// 「打开方式」用。与 ServeAsset 同一套语义（文档目录内，或设置放行的目录外路径、
+// 只认图片扩展名），但只还原路径、不读内容；路径非法或文件不存在时返回 false，
+// 调用方只出原有全局菜单。
+bool AssetUrlToPath(const std::wstring& url, std::wstring* out);
+
 uint32_t PublishedBlockCount();
 uint32_t LastVisible();
 

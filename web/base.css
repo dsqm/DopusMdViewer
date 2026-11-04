@@ -177,7 +177,7 @@ body.dev #doc {
 @media print {
   html, body { height: auto; overflow: visible; }
   body.virtual { overflow: visible; }
-  #doc, #sb, #tools, #find, #outline, .net-consent { display: none !important; }
+  #doc, #sb, #tools, #find, #outline, #mdv-zoom, .net-consent { display: none !important; }
   #print-root { display: block; }
   #print-root, #print-root * {
     -webkit-print-color-adjust: exact;
@@ -1148,4 +1148,57 @@ pre.mermaid-src {
   color: var(--md-fg-muted);
   cursor: default;
   opacity: 0.6;
+}
+
+/* ---------------- 图片遮罩放大 ----------------
+   左键点图弹出的全屏遮罩：几何由 app.js 算（宽高 + translate 内联样式），
+   这里只管观感。z-index 压过链接确认弹窗（1000），打印时随其余 UI 一起隐藏。 */
+
+#mdv-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.92);
+  cursor: grab;
+}
+
+#mdv-zoom:active { cursor: grabbing; }
+
+/* 正文 img 的 max-width:100% / height:auto 不能带进遮罩：显示尺寸由内联样式定 */
+#mdv-zoom img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  max-width: none;
+  max-height: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 关闭按钮：遮罩永远深色，不跟皮肤变量走，直接用白/黑定色 */
+#mdv-zoom .mdv-zoom-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+}
+
+#mdv-zoom .mdv-zoom-close:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+#mdv-zoom .mdv-zoom-close .mdv-i {
+  width: 18px;
+  height: 18px;
 }

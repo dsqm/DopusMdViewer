@@ -10,10 +10,14 @@
 #include <mutex>
 #include <new>
 #include <vector>
+#include <objbase.h>  // CoInitializeEx / CoTaskMemFree（图片「打开方式」要进 COM STA）
 #include <objidl.h>  // LPSTREAM，"viewer plugins.h" 需要（WIN32_LEAN_AND_MEAN 会藏掉）
 #include <psapi.h>
 #include <shellapi.h>
+#include <shlobj.h>     // SHAssocEnumHandlers / SHOpenWithDialog：图片「打开方式」
+#include <shlwapi.h>    // AssocQueryString：ProgID → 友好应用名
 #include <strsafe.h>
+#include <wincodec.h>   // WIC：UWP 图标引用解析出的 AppList PNG → 菜单位图
 
 #include "config.h"
 #include "doc_source.h"
@@ -48,6 +52,10 @@ struct ViewerState {
   bool webFailed;
   bool hasHost;  // 宿主此刻是否在本窗口（单宿主，被别的窗口借走时没有画面）
   bool hasSelection;  // 页面里此刻有没有非折叠选区，DVPLUGINMSG_TESTSELECTION 靠它回答
+  // 页面最后右键的图片（imgctx 帧）：「打开方式」要还原磁盘路径，「放大查看」
+  // 原样生效。只在弹菜单时读一次，空 = 无图片上下文（全局菜单不带图片动作区）。
+  std::wstring imgCtxUrl;
+  std::wstring imgCtxKind;  // local（已还原出磁盘路径的候选）/ remote（只可放大）
   // CreateWindowExW 期间的一次性凭据：WM_NCCREATE 认领 st 后置 true，此后 st 的
   // 生命周期归窗口管（WM_NCDESTROY 释放）。创建失败时靠它决定谁 delete。
   bool* pClaimed;
@@ -322,6 +330,10 @@ void MaybePushIndexFull(ViewerState* st) {
 void OpenDoc(ViewerState* st) {
   if (!st->hasHost || st->webFailed) return;
 
+  // 换文档后旧图片 URL 的语义不再成立（mdblocks 按当前文档目录解析）
+  st->imgCtxUrl.clear();
+  st->imgCtxKind.clear();
+
   LARGE_INTEGER t0;
   LARGE_INTEGER t1;
   ::QueryPerformanceCounter(&t0);
@@ -396,6 +408,18 @@ enum CodeBlockMenuItem : UINT {
   kCbMenuItemCount,
 };
 
+// ---- 右键菜单：图片动作区 ----
+// 页面右键图片先发 imgctx 帧记下上下文；本地图还原出磁盘路径才有「打开方式」，
+// 远程图只给「放大查看」（插件不把网络图悄悄落盘）。
+constexpr UINT kImgMenuBase = 0x6F00;
+
+enum ImageMenuItem : UINT {
+  kImgZoom = 0,       // 放大查看：zoom| 发回页面开遮罩
+  kImgOpenWithOther,  // 选择其他应用…：系统的 OpenWith 对话框（可勾「始终」）
+  kImgHandlerFirst,   // 子菜单里系统枚举出的处理器从这里起号
+};
+constexpr UINT kImgHandlerMax = 32;  // 枚举上限：推荐处理器一屏绰绰有余
+
 // 右键菜单改全局设置：存盘 + 通知所有查看器重推配置。
 void ApplyCodeBlockMenu(UINT cmd) {
   Config cfg = ConfigSnapshot();
@@ -436,6 +460,538 @@ void ApplyCodeBlockMenu(UINT cmd) {
   ViewerNotifyConfigChanged();
 }
 
+// 「打开方式」短列表的白名单：OpenWithProgids（HKCR 安装注册 + HKCU 用户历史）
+// 里登记的 ProgID 解析出的友好应用名。资源管理器/Opus 的打开方式子菜单就是这个
+// 数据源；无过滤枚举比它多出一片「未知类型兜底」噪音（给任何文件都能塞的那批
+// 记事本/VMware/媒体播放器），必须按这个名字集挡掉。解析不出友好名的 ProgID
+// （如空壳 pngfile）跳过。
+void CollectOpenWithProgids(const std::wstring& ext, std::vector<std::wstring>* names) {
+  const struct {
+    HKEY root;
+    std::wstring path;
+  } sources[2] = {
+      {HKEY_CURRENT_USER,
+       L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\" + ext +
+           L"\\OpenWithProgids"},
+      {HKEY_CLASSES_ROOT, ext + L"\\OpenWithProgids"},
+  };
+  for (const auto& src : sources) {
+    HKEY key = nullptr;
+    if (::RegOpenKeyExW(src.root, src.path.c_str(), 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) {
+      continue;
+    }
+    for (DWORD i = 0;; ++i) {
+      wchar_t progid[256];
+      DWORD cch = 256;
+      if (::RegEnumValueW(key, i, progid, &cch, nullptr, nullptr, nullptr, nullptr) !=
+          ERROR_SUCCESS) {
+        break;
+      }
+      wchar_t friendly[256];
+      DWORD cchFriendly = 256;
+      if (FAILED(::AssocQueryStringW(ASSOCF_NONE, ASSOCSTR_FRIENDLYAPPNAME, progid, L"open",
+                                     friendly, &cchFriendly)) ||
+          cchFriendly == 0) {
+        continue;
+      }
+      const std::wstring name(friendly, cchFriendly - 1);
+      bool dup = false;
+      for (const std::wstring& have : *names) dup = dup || have == name;
+      if (!dup) names->push_back(name);
+    }
+    ::RegCloseKey(key);
+  }
+}
+
+// 类型默认程序的 exe 文件名。资源管理器的打开方式 flyout 永远包含默认程序，但它
+// 可能既不在推荐档、也没进 OpenWithProgids。默认是 UWP 包时解析不出（探针证实
+// ASSOCSTR_EXECUTABLE 对 AppX ProgID 失败），正好——那些由推荐档负责。
+std::wstring DefaultProgramExeLeaf(const std::wstring& ext) {
+  wchar_t exe[MAX_PATH * 2] = {};
+  DWORD cch = ARRAYSIZE(exe);
+  if (FAILED(::AssocQueryStringW(ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE, ext.c_str(),
+                                 nullptr, exe, &cch)) ||
+      !exe[0]) {
+    return std::wstring();
+  }
+  const std::wstring full(exe);
+  const size_t slash = full.find_last_of(L"\\/");
+  const std::wstring leaf = slash == std::wstring::npos ? full : full.substr(slash + 1);
+  return _wcsicmp(leaf.c_str(), L"openwith.exe") == 0 ? std::wstring() : leaf;
+}
+
+// ---- 右键菜单：「打开方式」的程序图标 ----
+// 图标来源与 Pulse 一致：IAssocHandler::GetIconLocation 给出图标引用，UWP 应用是
+// @{包名?ms-resource://…}，用 SHLoadIndirectString 解析成磁盘上的 AppList PNG；
+// 普通程序是「exe,index」，走 SHDefExtractIconW；都解析不出来再拿 exe 的第一个
+// 图标兜底。位图做成 32bpp 预乘 alpha——原生菜单的 MIIM_BITMAP 会按 alpha 叠在
+// 菜单背景上（探针证实），不能直接搬 shell「打开方式」菜单里的位图：那是强调色
+// 实心底的贴图，在菜单里就是一块蓝方块。
+// Opus 自己的菜单图标取自它的图标集（context_menu_icon_set，默认 Windows 11
+// Default Icons 的 small 档），该档按 DPI 分块换位图：100%=22、126–175%=32、
+// 200%=48、300%=64（.dis 里 <dpi><scale> 的表）。自绘菜单按同一组分块取尺寸，
+// 与 Opus 菜单的观感一致；16 DIP 线性放大在 175% 只有 28px，比 Opus 小一档。
+
+struct MenuIcons {
+  IWICImagingFactory* wic = nullptr;
+  std::vector<HBITMAP> owned;  // 菜单销毁后统一 DeleteObject，位图不是菜单的
+
+  bool Init() {
+    return SUCCEEDED(::CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                        IID_PPV_ARGS(&wic)));
+  }
+  HBITMAP Add(HBITMAP bmp) {
+    if (bmp) owned.push_back(bmp);
+    return bmp;
+  }
+  ~MenuIcons() {
+    for (HBITMAP bmp : owned) ::DeleteObject(bmp);
+    if (wic) wic->Release();
+  }
+};
+
+UINT MenuIconEdge(HWND hwnd) {
+  UINT dpi = hwnd ? ::GetDpiForWindow(hwnd) : 96;
+  if (!dpi) dpi = 96;
+  if (dpi <= 120) return 22;   // 100–125%
+  if (dpi <= 168) return 32;   // 126–175%
+  if (dpi <= 240) return 48;   // 176–250%
+  return 64;                   // 251%+
+}
+
+HBITMAP BitmapFromBgra(MenuIcons* icons, UINT w, UINT h, const std::vector<uint8_t>& bgra) {
+  if (!w || !h || bgra.size() < static_cast<size_t>(w) * h * 4u) return nullptr;
+  BITMAPINFO bi = {};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = static_cast<LONG>(w);
+  bi.bmiHeader.biHeight = -static_cast<LONG>(h);
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  void* bits = nullptr;
+  HDC screen = ::GetDC(nullptr);
+  HBITMAP bmp =
+      screen ? ::CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
+  if (screen) ::ReleaseDC(nullptr, screen);
+  if (!bmp || !bits) {
+    if (bmp) ::DeleteObject(bmp);
+    return nullptr;
+  }
+  memcpy(bits, bgra.data(), static_cast<size_t>(w) * h * 4u);
+  return icons->Add(bmp);
+}
+
+// WIC 源统一转成菜单要的预乘 BGRA。
+HBITMAP BitmapFromWicSource(MenuIcons* icons, IWICBitmapSource* src) {
+  if (!icons->wic || !src) return nullptr;
+  IWICFormatConverter* conv = nullptr;
+  if (FAILED(icons->wic->CreateFormatConverter(&conv)) || !conv) return nullptr;
+  HBITMAP bmp = nullptr;
+  if (SUCCEEDED(conv->Initialize(src, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+                                 nullptr, 0.0, WICBitmapPaletteTypeMedianCut))) {
+    UINT w = 0, h = 0;
+    if (SUCCEEDED(conv->GetSize(&w, &h)) && w && h) {
+      std::vector<uint8_t> px(static_cast<size_t>(w) * h * 4u);
+      if (SUCCEEDED(conv->CopyPixels(nullptr, w * 4u, static_cast<UINT>(px.size()), px.data())))
+        bmp = BitmapFromBgra(icons, w, h, px);
+    }
+  }
+  conv->Release();
+  return bmp;
+}
+
+HBITMAP BitmapFromHicon(MenuIcons* icons, HICON icon) {
+  if (!icons->wic || !icon) return nullptr;
+  IWICBitmap* wicBmp = nullptr;
+  HBITMAP bmp = nullptr;
+  if (SUCCEEDED(icons->wic->CreateBitmapFromHICON(icon, &wicBmp)) && wicBmp)
+    bmp = BitmapFromWicSource(icons, wicBmp);
+  if (wicBmp) wicBmp->Release();
+  return bmp;
+}
+
+// UWP 的引用解析出来是磁盘上的 PNG（AppList 图）。这张图自带一圈透明留白：
+// 66px 画布里图形实际只有 42–48px，整张画布缩到 edge 后图形只剩六成多，菜单里
+// 就比 Opus 显示的同款图标小一圈。先按 alpha 量出图形范围、裁掉留白，再把图形
+// 等比缩进 edge×edge 并居中放回透明画布——视觉尺寸才和 Opus 菜单一致。
+HBITMAP BitmapFromImageFile(MenuIcons* icons, const std::wstring& file, UINT edge) {
+  if (!icons->wic) return nullptr;
+  IWICBitmapDecoder* dec = nullptr;
+  IWICBitmapFrameDecode* frame = nullptr;
+  IWICFormatConverter* conv = nullptr;
+  HBITMAP bmp = nullptr;
+  if (SUCCEEDED(icons->wic->CreateDecoderFromFilename(file.c_str(), nullptr, GENERIC_READ,
+                                                      WICDecodeMetadataCacheOnDemand, &dec)) &&
+      dec && SUCCEEDED(dec->GetFrame(0, &frame)) && frame &&
+      SUCCEEDED(icons->wic->CreateFormatConverter(&conv)) && conv &&
+      SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+                                 nullptr, 0.0, WICBitmapPaletteTypeMedianCut))) {
+    UINT sw = 0, sh = 0;
+    conv->GetSize(&sw, &sh);
+    std::vector<uint8_t> px(static_cast<size_t>(sw) * sh * 4u);
+    if (sw && sh &&
+        SUCCEEDED(conv->CopyPixels(nullptr, sw * 4u, static_cast<UINT>(px.size()), px.data()))) {
+      // 图形范围（alpha 非零的外接框）
+      UINT l = sw, t = sh, r = 0, b = 0;
+      for (UINT y = 0; y < sh; ++y) {
+        for (UINT x = 0; x < sw; ++x) {
+          if (!px[(static_cast<size_t>(y) * sw + x) * 4u + 3u]) continue;
+          l = (std::min)(l, x);
+          t = (std::min)(t, y);
+          r = (std::max)(r, x + 1);
+          b = (std::max)(b, y + 1);
+        }
+      }
+      if (r > l && b > t) {
+        const UINT aw = r - l, ah = b - t;
+        const float fit =
+            (std::min)(static_cast<float>(edge) / aw, static_cast<float>(edge) / ah);
+        const UINT tw = (std::max)(1u, static_cast<UINT>(aw * fit + 0.5f));
+        const UINT th = (std::max)(1u, static_cast<UINT>(ah * fit + 0.5f));
+        std::vector<uint8_t> crop(static_cast<size_t>(aw) * ah * 4u);
+        for (UINT y = 0; y < ah; ++y) {
+          memcpy(&crop[static_cast<size_t>(y) * aw * 4u],
+                 &px[(static_cast<size_t>(t + y) * sw + l) * 4u], static_cast<size_t>(aw) * 4u);
+        }
+        IWICBitmap* cropped = nullptr;
+        IWICBitmapScaler* scaler = nullptr;
+        if (SUCCEEDED(icons->wic->CreateBitmapFromMemory(
+                aw, ah, GUID_WICPixelFormat32bppPBGRA, aw * 4u,
+                static_cast<UINT>(crop.size()), crop.data(), &cropped)) &&
+            cropped && SUCCEEDED(icons->wic->CreateBitmapScaler(&scaler)) && scaler &&
+            SUCCEEDED(scaler->Initialize(cropped, tw, th,
+                                         WICBitmapInterpolationModeHighQualityCubic))) {
+          std::vector<uint8_t> scaled(static_cast<size_t>(tw) * th * 4u);
+          if (SUCCEEDED(scaler->CopyPixels(nullptr, tw * 4u, static_cast<UINT>(scaled.size()),
+                                           scaled.data()))) {
+            std::vector<uint8_t> canvas(static_cast<size_t>(edge) * edge * 4u, 0);
+            const UINT ox = (edge - tw) / 2, oy = (edge - th) / 2;
+            for (UINT y = 0; y < th; ++y) {
+              memcpy(&canvas[(static_cast<size_t>(oy + y) * edge + ox) * 4u],
+                     &scaled[static_cast<size_t>(y) * tw * 4u], static_cast<size_t>(tw) * 4u);
+            }
+            bmp = BitmapFromBgra(icons, edge, edge, canvas);
+          }
+        }
+        if (scaler) scaler->Release();
+        if (cropped) cropped->Release();
+      }
+    }
+  }
+  if (conv) conv->Release();
+  if (frame) frame->Release();
+  if (dec) dec->Release();
+  return bmp;
+}
+
+HBITMAP BitmapFromModule(MenuIcons* icons, const std::wstring& file, int index, UINT edge) {
+  HICON icon = nullptr;
+  if (FAILED(::SHDefExtractIconW(file.c_str(), index, 0, &icon, nullptr, MAKELONG(edge, edge))) ||
+      !icon)
+    return nullptr;
+  HBITMAP bmp = BitmapFromHicon(icons, icon);
+  ::DestroyIcon(icon);
+  return bmp;
+}
+
+// 图标引用三种形态：@{包?ms-resource://…}（解析成 PNG）、带环境变量的 exe 路径、
+// 「路径,索引」。PathParseIconLocationW 的索引优先，没有就用 GetIconLocation 另给的。
+HBITMAP BitmapFromIconLocation(MenuIcons* icons, const std::wstring& reference, int index,
+                               UINT edge) {
+  if (reference.empty()) return nullptr;
+  if (reference[0] == L'@') {
+    wchar_t file[MAX_PATH * 4] = {};
+    if (SUCCEEDED(::SHLoadIndirectString(reference.c_str(), file, ARRAYSIZE(file), nullptr)) &&
+        file[0]) {
+      if (HBITMAP bmp = BitmapFromImageFile(icons, file, edge)) return bmp;
+    }
+    return nullptr;
+  }
+  wchar_t buffer[MAX_PATH * 4] = {};
+  if (wcsncpy_s(buffer, reference.c_str(), _TRUNCATE) != 0) return nullptr;
+  const int refIndex = ::PathParseIconLocationW(buffer);
+  ::PathUnquoteSpacesW(buffer);
+  wchar_t expanded[MAX_PATH * 4] = {};
+  const DWORD n = ::ExpandEnvironmentStringsW(buffer, expanded, ARRAYSIZE(expanded));
+  const std::wstring file = n > 0 && n <= ARRAYSIZE(expanded) ? expanded : buffer;
+  if (file.empty()) return nullptr;
+  return BitmapFromModule(icons, file, refIndex != 0 ? refIndex : index, edge);
+}
+
+HBITMAP LoadHandlerIcon(MenuIcons* icons, IAssocHandler* handler, UINT edge) {
+  PWSTR loc = nullptr;
+  int index = 0;
+  if (SUCCEEDED(handler->GetIconLocation(&loc, &index)) && loc) {
+    const std::wstring ref = loc;
+    ::CoTaskMemFree(loc);
+    if (HBITMAP bmp = BitmapFromIconLocation(icons, ref, index, edge)) return bmp;
+  }
+  PWSTR name = nullptr;
+  if (SUCCEEDED(handler->GetName(&name)) && name) {
+    const std::wstring exe = name;
+    ::CoTaskMemFree(name);
+    if (HBITMAP bmp = BitmapFromModule(icons, exe, 0, edge)) return bmp;
+  }
+  return nullptr;
+}
+
+void SetMenuIcon(HMENU menu, UINT pos, HBITMAP icon) {
+  if (!icon) return;
+  MENUITEMINFOW set = {sizeof(set)};
+  set.fMask = MIIM_BITMAP;
+  set.hbmpItem = icon;
+  ::SetMenuItemInfoW(menu, pos, TRUE, &set);
+}
+
+// 「打开方式」子菜单：推荐档（系统推荐，画图/照片这些 UWP 也在其中）全收；
+// 无过滤档按 OpenWithProgids 白名单过滤后补齐其余注册程序（用户用过的编辑器），
+// 类型默认程序的 exe 也放行（flyout 永远含默认程序），按显示名去重。
+// 显示名用 GetUIName（友好名）；GetName 是 exe 路径，只配兜底。
+// SHAssocEnumHandlers 只收扩展名（".png"）：传完整路径它会把整条路径当「扩展名」，
+// 推荐档为空、无过滤档只剩未知类型的兜底列表（经白名单已挡）。
+// 每项顺手按 GetIconLocation 取图标（UWP 走 SHLoadIndirectString 的 PNG），
+// 图标位图由 icons 统一持有到菜单关闭之后。
+// 同步枚举——条目量小，弹菜单前完成没有可感知延迟。命令号 = kImgMenuBase +
+// kImgHandlerFirst + 序号，handler 留在 handlers 里活到菜单关闭之后（Invoke 用）。
+void CollectOpenWithHandlers(const std::wstring& ext, HMENU ow,
+                             std::vector<IAssocHandler*>* handlers, MenuIcons* icons,
+                             UINT iconEdge) {
+  std::vector<std::wstring> allow;
+  CollectOpenWithProgids(ext, &allow);
+  const std::wstring defaultLeaf = DefaultProgramExeLeaf(ext);
+
+  for (const ASSOC_FILTER filter : {ASSOC_FILTER_RECOMMENDED, ASSOC_FILTER_NONE}) {
+    IEnumAssocHandlers* en = nullptr;
+    const HRESULT hr = ::SHAssocEnumHandlers(ext.c_str(), filter, &en);
+    if (FAILED(hr) || !en) {
+      LogLine(L"VIEWER: 打开方式枚举失败 ext=%s filter=%d hr=0x%08lX", ext.c_str(),
+              static_cast<int>(filter), static_cast<unsigned long>(hr));
+      continue;
+    }
+    ULONG fetched = 0;
+    for (;;) {
+      if (handlers->size() >= kImgHandlerMax) break;
+      IAssocHandler* h = nullptr;
+      fetched = 0;
+      if (en->Next(1, &h, &fetched) != S_OK || fetched == 0 || !h) break;
+      PWSTR raw = nullptr;
+      if (FAILED(h->GetUIName(&raw)) || !raw) h->GetName(&raw);
+      if (!raw) {
+        h->Release();  // 两个名字都拿不到的处理器不进菜单
+        continue;
+      }
+      const std::wstring label = raw;
+      ::CoTaskMemFree(raw);
+      // 无过滤档里不在白名单、也不是默认程序的，都是「任何文件都给」的兜底项，挡掉
+      if (filter == ASSOC_FILTER_NONE && !allow.empty()) {
+        bool ok = false;
+        for (const std::wstring& name : allow) ok = ok || name == label;
+        if (!ok && !defaultLeaf.empty()) {
+          PWSTR exeRaw = nullptr;
+          if (SUCCEEDED(h->GetName(&exeRaw)) && exeRaw) {
+            const std::wstring exe = exeRaw;
+            ::CoTaskMemFree(exeRaw);
+            const size_t slash = exe.find_last_of(L"\\/");
+            const std::wstring leaf = slash == std::wstring::npos ? exe : exe.substr(slash + 1);
+            ok = !leaf.empty() && _wcsicmp(leaf.c_str(), defaultLeaf.c_str()) == 0;
+          }
+        }
+        if (!ok) {
+          h->Release();
+          continue;
+        }
+      }
+      // 无过滤档会重复推荐档的程序、同一程序也可能有多个 ProgID，按显示名去重
+      bool dup = false;
+      for (IAssocHandler* prev : *handlers) {
+        PWSTR prevName = nullptr;
+        if (SUCCEEDED(prev->GetUIName(&prevName)) && prevName) {
+          dup = label == prevName;
+          ::CoTaskMemFree(prevName);
+          if (dup) break;
+        }
+      }
+      if (dup) {
+        h->Release();
+        continue;
+      }
+      ::AppendMenuW(ow, MF_STRING,
+                    kImgMenuBase + kImgHandlerFirst + static_cast<UINT>(handlers->size()),
+                    label.c_str());
+      SetMenuIcon(ow, static_cast<UINT>(::GetMenuItemCount(ow)) - 1,
+                  LoadHandlerIcon(icons, h, iconEdge));
+      handlers->push_back(h);
+    }
+    en->Release();
+  }
+  std::wstring menuLabels;
+  for (IAssocHandler* h : *handlers) {
+    PWSTR ui = nullptr;
+    if (SUCCEEDED(h->GetUIName(&ui)) && ui) {
+      if (!menuLabels.empty()) menuLabels += L" | ";
+      menuLabels += ui;
+      ::CoTaskMemFree(ui);
+    }
+  }
+  LogLine(L"VIEWER: 打开方式 ext=%s 白名单 %u 项，菜单 %u 项 [%s]", ext.c_str(),
+          static_cast<unsigned>(allow.size()), static_cast<unsigned>(handlers->size()),
+          menuLabels.c_str());
+}
+
+// ---- 「打开方式」的执行 ----
+// 有序的三条路，前一条成功就停：
+// 1. 资源管理器自己那条「打开方式」菜单项：向文件本身的 IContextMenu 要 verb 为
+//    openas 的子菜单，按显示名对上同一行后 InvokeCommand。
+// 2. 经典程序（GetName 是现成的 exe）：ShellExecuteEx 直接执行 exe + 文件参数，
+//    与注册的 open 命令同形。
+// 3. IAssocHandler::Invoke（文档里填充 Open With 菜单、单选项的调用）兜底。
+//
+// 为什么不能只用 3：个别机器上 handler->Invoke 返回 S_OK 却只弹出系统的「你要用
+// 什么方式打开这个文件」选择框（实测照片与 XnView 都这样，同一时刻资源管理器
+// 和 Opus 自己的打开方式都能直接启动程序），1/2 是绕过这条判断的直连路径。
+// 3 的数据对象必须取 shell 为这个文件建的那份（IShellItem 的 BHID_DataObject）：
+// SHCreateDataObject 拿完整 pidl 当「桌面的子项」传进去只会得到空对象（CF_HDROP /
+// ShellIDList / ShellItemArray 全不支持）——经典程序 Invoke 返回 0x80070483、
+// 静默不开，UWP 激活（照片）会在 windows.storage 里踩空崩溃。
+
+// shell 菜单项动词的编号区间（只在取 openas 子菜单时用一次）。
+constexpr UINT kShellVerbFirst = 0x7100;
+constexpr UINT kShellVerbLast = 0x71FF;
+
+// 走资源管理器同款菜单项。openas 子菜单是 shell 惰性填的，不先把
+// WM_INITMENUPOPUP 喂给 IContextMenu3 就是空的。
+BOOL InvokeShellOpenAsItem(const wchar_t* path, const wchar_t* label, HWND owner) {
+  PIDLIST_ABSOLUTE pidl = nullptr;
+  if (FAILED(::SHParseDisplayName(path, nullptr, &pidl, 0, nullptr)) || !pidl) return FALSE;
+  IShellFolder* folder = nullptr;
+  PCUITEMID_CHILD child = nullptr;
+  IContextMenu* cm = nullptr;
+  if (SUCCEEDED(::SHBindToParent(pidl, IID_PPV_ARGS(&folder), &child)) && folder) {
+    folder->GetUIObjectOf(owner, 1, &child, IID_IContextMenu, nullptr,
+                          reinterpret_cast<void**>(&cm));
+    folder->Release();
+  }
+  ::ILFree(pidl);
+  if (!cm) return FALSE;
+
+  IContextMenu3* cm3 = nullptr;
+  cm->QueryInterface(IID_PPV_ARGS(&cm3));
+  const HMENU root = ::CreatePopupMenu();
+  BOOL done = FALSE;
+  if (root &&
+      SUCCEEDED(cm->QueryContextMenu(root, 0, kShellVerbFirst, kShellVerbLast, CMF_NORMAL))) {
+    HMENU sub = nullptr;
+    UINT subPos = 0;
+    for (UINT i = 0; i < static_cast<UINT>(::GetMenuItemCount(root)); ++i) {
+      MENUITEMINFOW mii = {sizeof(mii)};
+      mii.fMask = MIIM_SUBMENU | MIIM_ID;
+      if (!::GetMenuItemInfoW(root, i, TRUE, &mii) || !mii.hSubMenu) continue;
+      wchar_t verb[64] = {};
+      // GCS_VERBW 按 Unicode 往调用方给的缓冲里写，形参类型还是 LPSTR。
+      if (SUCCEEDED(cm->GetCommandString(mii.wID - kShellVerbFirst, GCS_VERBW, nullptr,
+                                        reinterpret_cast<LPSTR>(verb), 63)) &&
+          _wcsicmp(verb, L"openas") == 0) {
+        sub = mii.hSubMenu;
+        subPos = i;
+        break;
+      }
+    }
+    if (sub) {
+      if (cm3) {
+        LRESULT ignored = 0;
+        cm3->HandleMenuMsg2(WM_INITMENUPOPUP, reinterpret_cast<WPARAM>(sub),
+                            MAKELPARAM(subPos, FALSE), &ignored);
+      }
+      const int count = ::GetMenuItemCount(sub);
+      for (int i = 0; i < count; ++i) {
+        MENUITEMINFOW mii = {sizeof(mii)};
+        wchar_t text[256] = {};
+        mii.fMask = MIIM_ID | MIIM_FTYPE | MIIM_SUBMENU | MIIM_STRING;
+        mii.dwTypeData = text;
+        mii.cch = 255;
+        if (!::GetMenuItemInfoW(sub, static_cast<UINT>(i), TRUE, &mii)) continue;
+        if ((mii.fType & (MFT_SEPARATOR | MFT_OWNERDRAW)) || mii.hSubMenu) continue;
+        if (_wcsicmp(text, label) != 0) continue;
+        CMINVOKECOMMANDINFOEX info = {};
+        info.cbSize = sizeof(info);
+        info.fMask = CMIC_MASK_UNICODE;
+        info.hwnd = owner;
+        info.lpVerb = MAKEINTRESOURCEA(mii.wID - kShellVerbFirst);
+        info.lpVerbW = MAKEINTRESOURCEW(mii.wID - kShellVerbFirst);
+        info.nShow = SW_SHOWNORMAL;
+        done = SUCCEEDED(cm->InvokeCommand(reinterpret_cast<LPCMINVOKECOMMANDINFO>(&info)));
+        break;
+      }
+    }
+  }
+  if (root) ::DestroyMenu(root);
+  if (cm3) cm3->Release();
+  cm->Release();
+  return done;
+}
+
+bool LaunchExeWithFile(const std::wstring& exe, const std::wstring& path, DWORD* errOut) {
+  std::wstring args = L"\"" + path + L"\"";
+  SHELLEXECUTEINFOW sei = {sizeof(sei)};
+  sei.lpFile = exe.c_str();
+  sei.lpParameters = args.c_str();
+  sei.nShow = SW_SHOWNORMAL;
+  const BOOL ok = ::ShellExecuteExW(&sei);
+  *errOut = ok ? ERROR_SUCCESS : ::GetLastError();
+  return ok != FALSE;
+}
+
+void InvokeOpenWithHandler(IAssocHandler* handler, const std::wstring& path, HWND owner) {
+  PWSTR ui = nullptr;
+  std::wstring label;
+  if (SUCCEEDED(handler->GetUIName(&ui)) && ui) {
+    label = ui;
+    ::CoTaskMemFree(ui);
+  }
+  PWSTR rawName = nullptr;
+  std::wstring name;
+  if (SUCCEEDED(handler->GetName(&rawName)) && rawName) {
+    name = rawName;
+    ::CoTaskMemFree(rawName);
+  }
+
+  // 1. 资源管理器同款菜单项
+  if (!label.empty()) {
+    const BOOL ok = InvokeShellOpenAsItem(path.c_str(), label.c_str(), owner);
+    LogLine(L"VIEWER: 打开方式执行 \"%s\" path=\"%s\" shell菜单=%d", label.c_str(), path.c_str(),
+            static_cast<int>(ok));
+    if (ok) return;
+  }
+
+  // 2. 经典程序：直接执行 exe
+  if (name.size() > 4 && _wcsicmp(name.c_str() + name.size() - 4, L".exe") == 0 &&
+      ::GetFileAttributesW(name.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    DWORD err = ERROR_SUCCESS;
+    const bool ok = LaunchExeWithFile(name, path, &err);
+    LogLine(L"VIEWER: 打开方式执行 \"%s\" path=\"%s\" exe=\"%s\" shellExecute=%d err=%lu",
+            label.c_str(), path.c_str(), name.c_str(), ok ? 1 : 0, err);
+    if (ok) return;
+  }
+
+  // 3. 兜底：handler->Invoke
+  IShellItem* item = nullptr;
+  IDataObject* pdo = nullptr;
+  HRESULT hrItem = E_FAIL;
+  HRESULT hrBind = E_FAIL;
+  if (SUCCEEDED(hrItem = ::SHCreateItemFromParsingName(path.c_str(), nullptr,
+                                                        IID_PPV_ARGS(&item))) &&
+      item) {
+    hrBind = item->BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(&pdo));
+    item->Release();
+  }
+  const HRESULT hr = handler->Invoke(pdo);
+  LogLine(L"VIEWER: 打开方式执行 \"%s\" path=\"%s\" name=\"%s\" item=0x%08lX "
+          L"bind=0x%08lX pdo=%d invoke=0x%08lX",
+          label.c_str(), path.c_str(), name.c_str(), static_cast<unsigned long>(hrItem),
+          static_cast<unsigned long>(hrBind), pdo ? 1 : 0, static_cast<unsigned long>(hr));
+  if (pdo) pdo->Release();
+}
+
 // 独立查看器不会把插件条目并进 Opus 自己的菜单（预览窗格会），这里自绘一个。
 constexpr UINT kCtxCopy = 0x6D80;
 constexpr UINT kCtxSelectAll = 0x6D81;
@@ -446,6 +1002,16 @@ constexpr UINT kCtxReload = 0x6D83;
 // 自绘的命令号由 TrackPopupMenu 直接带回，不会像 Opus 自己的菜单那样丢掉
 // （那条路要靠 Opus 把命令转回来，而焦点在 WebView2 子窗口时它认为查看器没焦点）。
 void ShowOwnContextMenu(ViewerState* st) {
+  // 枚举器与 OpenWith 对话框要求线程进 COM STA：查看器窗口建在 Opus 的 UI 线程上，
+  // 那里通常已初始化，重复调用返回 S_FALSE（照样要成对 CoUninitialize）。
+  struct ComGuard {
+    const HRESULT hr;
+    ComGuard() : hr(::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+    ~ComGuard() {
+      if (SUCCEEDED(hr)) ::CoUninitialize();
+    }
+  } com;
+
   HMENU menu = ::CreatePopupMenu();
   HMENU enc = ::CreatePopupMenu();
   HMENU cb = ::CreatePopupMenu();
@@ -457,6 +1023,49 @@ void ShowOwnContextMenu(ViewerState* st) {
     if (ws) ::DestroyMenu(ws);
     return;
   }
+
+  // 图片动作区（只有 imgctx 帧才给）：插在最上面，分隔线隔开全局项。
+  // 本地图与资产读盘同一套路径校验；路径非法或文件没了就只出原有全局菜单。
+  const bool imgRemote = st->imgCtxKind == L"remote";
+  std::wstring imgPath;
+  const bool imgLocal =
+      st->imgCtxKind == L"local" && docsrc::AssetUrlToPath(st->imgCtxUrl, &imgPath);
+  std::vector<IAssocHandler*> imgHandlers;
+  MenuIcons menuIcons;  // 菜单图标位图归它，菜单关闭并 Invoke 完再释放
+  struct HandlerReleaser {  // 菜单选中后还要 Invoke，统一在函数出口释放
+    std::vector<IAssocHandler*>* v;
+    ~HandlerReleaser() {
+      for (IAssocHandler* h : *v) h->Release();
+    }
+  } imgRelease{&imgHandlers};
+  if (imgRemote || imgLocal) {
+    ::AppendMenuW(menu, MF_STRING, kImgMenuBase + kImgZoom, L"放大查看");
+    if (imgLocal) {
+      // 枚举器只认扩展名：从磁盘路径取「.png」这种（目录名带点不受影响，取的是
+      // 最后一段里的点）；没有扩展名的文件无从注册处理器，不建这个子菜单
+      const size_t dot = imgPath.find_last_of(L".\\/");
+      const std::wstring ext =
+          (dot != std::wstring::npos && imgPath[dot] == L'.' && dot + 1 < imgPath.size())
+              ? imgPath.substr(dot)
+              : std::wstring();
+      HMENU ow = ext.empty() ? nullptr : ::CreatePopupMenu();
+      if (ow) {
+        const UINT iconEdge = MenuIconEdge(st->hwndSelf);
+        menuIcons.Init();  // WIC 建不成就只出文字，菜单照常
+        CollectOpenWithHandlers(ext, ow, &imgHandlers, &menuIcons, iconEdge);
+        if (imgHandlers.empty()) {
+          // 扩展名没注册任何推荐处理器：留一条灰项，子菜单不至于只有兜底
+          ::AppendMenuW(ow, MF_STRING | MF_GRAYED, 0, L"（没有已注册的程序）");
+        }
+        ::AppendMenuW(ow, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(ow, MF_STRING, kImgMenuBase + kImgOpenWithOther, L"选择其他应用…");
+        // 「选择其他应用…」在 Explorer 的 flyout 里也没有图标，保持一致
+        ::AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(ow), L"打开方式");
+      }
+    }
+    ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  }
+
   for (size_t i = 0; i < kEncMenuCount; ++i) {
     UINT flags = MF_STRING;
     if (kEncMenu[i].codepage == st->encOverride) flags |= MF_CHECKED;
@@ -501,6 +1110,25 @@ void ShowOwnContextMenu(ViewerState* st) {
   ::DestroyMenu(menu);
   if (!cmd) return;
 
+  if (cmd == kImgMenuBase + kImgZoom) {
+    if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"zoom|");
+    return;
+  }
+  if (cmd == kImgMenuBase + kImgOpenWithOther) {
+    // 系统的 OpenWith 对话框：可勾「始终」，勾了写回该扩展名的默认程序
+    OPENASINFO oi = {};
+    oi.pcszFile = imgPath.c_str();
+    oi.pcszClass = nullptr;
+    oi.oaifInFlags = OAIF_ALLOW_REGISTRATION | OAIF_EXEC;
+    ::SHOpenWithDialog(st->hwndSelf, &oi);
+    return;
+  }
+  if (cmd >= kImgMenuBase + kImgHandlerFirst &&
+      cmd < kImgMenuBase + kImgHandlerFirst + static_cast<UINT>(imgHandlers.size())) {
+    InvokeOpenWithHandler(imgHandlers[cmd - kImgMenuBase - kImgHandlerFirst], imgPath,
+                          st->hwndSelf);
+    return;
+  }
   if (cmd >= kEncMenuBase && cmd < kEncMenuBase + kEncMenuCount) {
     const uint32_t cp = kEncMenu[cmd - kEncMenuBase].codepage;
     if (cp != st->encOverride) {
@@ -599,7 +1227,25 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   }
 
   if (type == L"ctxmenu") {
-    // 两边都自绘菜单：命令号直接回来，不会像 Opus 自己的菜单那样丢掉
+    // 两边都自绘菜单：命令号直接回来，不会像 Opus 自己的菜单那样丢掉。
+    // 全局菜单不带图片动作区：只有 imgctx 帧才允许。
+    st->imgCtxUrl.clear();
+    st->imgCtxKind.clear();
+    ShowOwnContextMenu(st);
+    return;
+  }
+
+  if (type == L"imgctx") {
+    // 页面右键了图片：rest = <图片URL>|<local|remote>。kind 取最后一个字段，
+    // URL 里不会出现裸 |（路径部分页面已 encodeURIComponent）。
+    const size_t cut = rest.rfind(L'|');
+    const std::wstring kind = cut == std::wstring::npos ? std::wstring() : rest.substr(cut + 1);
+    if (kind != L"local" && kind != L"remote") {
+      LogLine(L"VIEWER: imgctx 帧不认识 kind \"%s\"", kind.c_str());
+      return;
+    }
+    st->imgCtxUrl = cut == std::wstring::npos ? rest : rest.substr(0, cut);
+    st->imgCtxKind = kind;
     ShowOwnContextMenu(st);
     return;
   }

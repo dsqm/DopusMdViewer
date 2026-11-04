@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="800" viewBox="0 0 1600 800">
+  <!-- 遮罩放大验收：矢量细节。1:1 时发丝线应当锐利，放大后圆弧无锯齿。 -->
+  <rect width="1600" height="800" fill="#0f1a2b"/>
+  <g fill="none" stroke="#6fd3ff" stroke-width="1">
+    <circle cx="400" cy="400" r="360"/>
+    <circle cx="400" cy="400" r="300"/>
+    <circle cx="400" cy="400" r="240"/>
+    <circle cx="400" cy="400" r="180"/>
+    <circle cx="400" cy="400" r="120"/>
+    <circle cx="400" cy="400" r="60"/>
+  </g>
+  <g fill="none" stroke="#ffd166" stroke-width="1" stroke-dasharray="4 3">
+    <rect x="900" y="100" width="600" height="600"/>
+    <rect x="960" y="160" width="480" height="480"/>
+    <rect x="1020" y="220" width="360" height="360"/>
+    <rect x="1080" y="280" width="240" height="240"/>
+  </g>
+  <g stroke="#ef476f" stroke-width="0.5">
+    <line x1="0" y1="400" x2="1600" y2="400"/>
+    <line x1="400" y1="0" x2="400" y2="800"/>
+    <line x1="1200" y1="0" x2="1200" y2="800"/>
+  </g>
+  <text x="40" y="760" fill="#c8d6e5" font-family="monospace" font-size="28">SVG zoom sample 1600x800</text>
+</svg>

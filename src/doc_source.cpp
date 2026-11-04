@@ -1117,6 +1117,50 @@ bool ServeAsset(const std::wstring& uri, std::string* body, int* status,
   return true;
 }
 
+bool AssetUrlToPath(const std::wstring& url, std::wstring* out) {
+  if (!out) return false;
+  out->clear();
+
+  static const wchar_t kAssetBase[] = L"https://mdblocks.localhost/__asset";
+  const size_t baseLen = sizeof(kAssetBase) / sizeof(kAssetBase[0]) - 1;
+  if (!StartsWithPath(url, kAssetBase, baseLen)) return false;
+
+  const size_t q = url.find(L"?p=");
+  if (q == std::wstring::npos) return false;
+  std::wstring raw = url.substr(q + 3);
+  const size_t amp = raw.find(L'&');
+  if (amp != std::wstring::npos) raw.resize(amp);
+
+  std::wstring rel;
+  if (!PercentDecode(raw, &rel) || rel.empty()) return false;
+
+  std::shared_ptr<const Snapshot> snap;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    snap = g_snap;
+  }
+  if (!snap || snap->folder.empty()) return false;
+
+  std::wstring full;
+  const bool allowOutside = ConfigAllowOutsideImages();
+  if (allowOutside) {
+    if (!ResolveAssetPath(snap->folder, rel, &full)) return false;
+  } else {
+    if (!SafeRelativePath(rel)) return false;
+    full = snap->folder;
+    if (full.back() != L'\\' && full.back() != L'/') full += L'\\';
+    for (wchar_t c : rel) full += (c == L'/') ? L'\\' : c;
+  }
+  // 与 ServeAsset 相同：__asset 只认图片扩展名，不把目录里的其它文件交给系统打开
+  if (ContentTypeFor(full) == L"application/octet-stream") return false;
+
+  const DWORD attr = ::GetFileAttributesW(full.c_str());
+  if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) return false;
+
+  *out = full;
+  return true;
+}
+
 // 响应 https://mdblocks.localhost/__lines：巨型块的行窗口。
 bool ServeLines(const std::wstring& uri, std::string* body, int* status) {
   if (!body || !status) return false;

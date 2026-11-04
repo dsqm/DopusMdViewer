@@ -2270,6 +2270,7 @@ function finishInit() {
 }
 
 function resetVirtual() {
+  closeZoomMask()  // 换文档：遮罩与 imgctx 待办一起作废
   resetFind()
   OUT.seq++
   OUT.items = []
@@ -2513,11 +2514,20 @@ function onKeyDown(e) {
     return
   }
   if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'f' || e.key === 'F')) {
+    if (IMGZ.open) {  // 搜索条会被遮罩盖住，干脆不开
+      e.preventDefault()
+      return
+    }
     e.preventDefault()
     openFind()
     return
   }
   if (e.key === 'Escape') {
+    if (IMGZ.open) {  // 遮罩最先消费 Esc，其次才是搜索条与大纲抽屉
+      e.preventDefault()
+      closeZoomMask()
+      return
+    }
     if (FIND.open) {
       e.preventDefault()
       closeFind()
@@ -3036,6 +3046,288 @@ document.addEventListener('click', (e) => {
   if (!btn) return
   e.preventDefault()
   copyFromButton(btn)
+})
+
+/* ---------------- 图片点击放大 ----------------
+   左键点图开黑底遮罩（滚轮以光标为中心缩放 / 按住拖动平移 / 双击 1:1↔适应 /
+   Esc 或点背景关闭）；右键图发 imgctx|<URL>|<local|remote> 让宿主弹图片动作区，
+   菜单里的「放大查看」再由宿主发 zoom| 回来开遮罩。
+   路由与几何抽成顶层纯函数：回归测试从本文件抠真实实现断言（test/img-zoom.mjs）。 */
+
+// 判定一张图此刻的动作。attrs 是 img 的属性快照：
+//   { inLink, src, mdvSrc, mdvNet } —— mdvNet 标记远程图，mdvSrc 是远程真身
+// button 是 'left' | 'right'。返回 { act, kind, url }：
+//   act='zoom'   开遮罩（左键）
+//   act='imgctx' 发 imgctx 帧（右键）
+//   act=null     这张图此刻不可动手：无 src、未加载的远程图、链接内左键
+function imgAction(attrs, button) {
+  const src = attrs.src || ''
+  if (!src) return { act: null, kind: null, url: '' }
+  let kind = null
+  let url = ''
+  if (attrs.mdvNet && attrs.mdvSrc) {
+    // 远程图只有「确认后真正加载」这一种状态可动手：确认时 src 才会被换成
+    // data-mdv-src；等待确认时是透明占位、被拒时根本没有 src，都到不了这里
+    if (src !== attrs.mdvSrc) return { act: null, kind: null, url: '' }
+    kind = 'remote'
+    url = attrs.mdvSrc
+  } else if (/^https:\/\/mdblocks\.localhost\/__asset(?:[?#]|$)/i.test(src) ||
+             /^(?:data|blob):/i.test(src)) {
+    kind = 'local'
+    url = src
+  } else {
+    return { act: null, kind: null, url: '' }
+  }
+  if (button === 'left') {
+    // 链接里的图片左键仍跟随链接（[![](thumb)](href) 的既有语义），放大走右键
+    if (attrs.inLink) return { act: null, kind: null, url: '' }
+    return { act: 'zoom', kind, url }
+  }
+  return { act: 'imgctx', kind, url }
+}
+
+// ---- 遮罩几何 ----
+// 缩放态一律 { fit, scale, x, y }：fit 是「适应窗口」倍率，scale 当前倍率，
+// x/y 是图片左上角在遮罩里的位置（图比视口大时是负数）。
+
+// contain：完整显示、宽高比不变；小图也放大塞满可用空间（object-fit: contain 口径）。
+function zoomFitScale(natW, natH, availW, availH) {
+  if (!(natW > 0) || !(natH > 0) || !(availW > 0) || !(availH > 0)) return 1
+  return Math.min(availW / natW, availH / natH)
+}
+
+// 允许的倍率范围：fit 与 1:1 都必须可达（大图缩到 fit 还能双击回 1:1，
+// 小图放到 fit 还能缩回 1:1），两端各再留 8 倍余量。
+function zoomScaleBounds(fit) {
+  const f = fit > 0 && isFinite(fit) ? fit : 1
+  return { min: Math.min(f, 1) / 8, max: Math.max(f, 1) * 8 }
+}
+
+// 平移边界：图比视口小的轴固定居中，大的轴图像边缘不许离开视口（不露缝不出界）。
+function zoomClampOffset(x, y, dispW, dispH, vpW, vpH) {
+  return {
+    x: dispW <= vpW ? (vpW - dispW) / 2 : Math.min(Math.max(x, vpW - dispW), 0),
+    y: dispH <= vpH ? (vpH - dispH) / 2 : Math.min(Math.max(y, vpH - dispH), 0),
+  }
+}
+
+// 以光标为中心缩放：光标下的图像点前后不动，再钳倍率与平移边界。
+function zoomWheelZoom(cur, cursor, factor) {
+  const b = zoomScaleBounds(cur.fit)
+  const scale = Math.min(Math.max(cur.scale * factor, b.min), b.max)
+  const px = (cursor.x - cur.x) / cur.scale
+  const py = (cursor.y - cur.y) / cur.scale
+  const c = zoomClampOffset(cursor.x - px * scale, cursor.y - py * scale,
+                            cur.natW * scale, cur.natH * scale, cur.vpW, cur.vpH)
+  return { scale, x: c.x, y: c.y }
+}
+
+// 双击：在 1:1 与适应窗口之间切换，切换后的点仍锚在光标下。
+function zoomToggleZoom(cur, cursor) {
+  const scale = Math.abs(cur.scale - cur.fit) <= Math.abs(cur.scale - 1) ? 1 : cur.fit
+  const px = (cursor.x - cur.x) / cur.scale
+  const py = (cursor.y - cur.y) / cur.scale
+  const c = zoomClampOffset(cursor.x - px * scale, cursor.y - py * scale,
+                            cur.natW * scale, cur.natH * scale, cur.vpW, cur.vpH)
+  return { scale, x: c.x, y: c.y }
+}
+
+// 打开遮罩的初始态：适应窗口 + 居中。
+function zoomInitialState(natW, natH, vpW, vpH) {
+  const fit = zoomFitScale(natW, natH, vpW, vpH)
+  const c = zoomClampOffset((vpW - natW * fit) / 2, (vpH - natH * fit) / 2,
+                            natW * fit, natH * fit, vpW, vpH)
+  return { fit, scale: fit, x: c.x, y: c.y }
+}
+
+// ---- DOM 侧 ----
+
+const IMGZ = {
+  open: false,
+  box: null,
+  img: null,
+  natW: 0, natH: 0,
+  fit: 1, scale: 1, x: 0, y: 0,
+  drag: null,    // pointerdown 起点 { x, y, ox, oy, moved }
+  pending: null, // imgctx 存下的 { url, docId }，等宿主 zoom| 回来开遮罩
+}
+
+function imgSnapshot(img) {
+  return {
+    inLink: !!(img.closest && img.closest('a')),
+    src: img.getAttribute('src') || '',
+    mdvSrc: img.getAttribute('data-mdv-src') || '',
+    mdvNet: img.getAttribute('data-mdv-net') === '1',
+  }
+}
+
+function zoomCur() {
+  return { fit: IMGZ.fit, scale: IMGZ.scale, x: IMGZ.x, y: IMGZ.y,
+           natW: IMGZ.natW, natH: IMGZ.natH,
+           vpW: window.innerWidth, vpH: window.innerHeight }
+}
+
+function applyZoomTransform() {
+  IMGZ.img.style.width = (IMGZ.natW * IMGZ.scale) + 'px'
+  IMGZ.img.style.height = (IMGZ.natH * IMGZ.scale) + 'px'
+  IMGZ.img.style.transform = 'translate(' + IMGZ.x + 'px,' + IMGZ.y + 'px)'
+}
+
+function zoomMaskLoaded() {
+  IMGZ.natW = IMGZ.img.naturalWidth
+  IMGZ.natH = IMGZ.img.naturalHeight
+  const st = zoomInitialState(IMGZ.natW, IMGZ.natH, window.innerWidth, window.innerHeight)
+  IMGZ.fit = st.fit
+  IMGZ.scale = st.scale
+  IMGZ.x = st.x
+  IMGZ.y = st.y
+  applyZoomTransform()
+}
+
+function ensureZoomMask() {
+  if (IMGZ.box) return IMGZ.box
+  const box = document.createElement('div')
+  box.id = 'mdv-zoom'
+  box.hidden = true
+  const img = document.createElement('img')
+  img.draggable = false
+  img.alt = ''
+  img.addEventListener('load', () => {
+    if (IMGZ.open) zoomMaskLoaded()
+  })
+  box.appendChild(img)
+
+  // 右上角关闭按钮：不想摸键盘找 Esc 的路径。pointerdown 拦住，别让按它变成拖动起点
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'mdv-zoom-close'
+  btn.title = '关闭 (Esc)'
+  btn.setAttribute('aria-label', '关闭')
+  btn.innerHTML = '<svg class="mdv-i" aria-hidden="true"><use href="#i-close"></use></svg>'
+  btn.addEventListener('pointerdown', (e) => e.stopPropagation())
+  btn.addEventListener('click', (e) => {
+    e.preventDefault()
+    closeZoomMask()
+  })
+  box.appendChild(btn)
+
+  IMGZ.box = box
+  IMGZ.img = img
+
+  box.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!IMGZ.open || !(IMGZ.natW > 0)) return
+    // deltaMode=1（行）按每行 33px 折算，与文档滚动的 em 折算同数量级
+    const dy = e.deltaMode === 1 ? (e.deltaY || 0) * 33 : (e.deltaY || 0)
+    const st = zoomWheelZoom(zoomCur(), { x: e.clientX, y: e.clientY },
+                             Math.exp(-dy * 0.0015))
+    IMGZ.scale = st.scale
+    IMGZ.x = st.x
+    IMGZ.y = st.y
+    applyZoomTransform()
+  }, { passive: false })
+
+  box.addEventListener('dblclick', (e) => {
+    e.preventDefault()
+    if (!IMGZ.open || !(IMGZ.natW > 0)) return
+    const st = zoomToggleZoom(zoomCur(), { x: e.clientX, y: e.clientY })
+    IMGZ.scale = st.scale
+    IMGZ.x = st.x
+    IMGZ.y = st.y
+    applyZoomTransform()
+  })
+
+  box.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    IMGZ.drag = { x: e.clientX, y: e.clientY, ox: IMGZ.x, oy: IMGZ.y, moved: false }
+  })
+
+  // 拖动/点击的收尾挂 window：按住拖出遮罩、在遮罩外松开也要算数
+  const onDragMove = (e) => {
+    const d = IMGZ.drag
+    if (!d || !IMGZ.open) return
+    const dx = e.clientX - d.x
+    const dy = e.clientY - d.y
+    if (!d.moved && Math.abs(dx) + Math.abs(dy) < 4) return
+    d.moved = true
+    if (!(IMGZ.natW > 0)) return
+    const c = zoomClampOffset(d.ox + dx, d.oy + dy,
+                              IMGZ.natW * IMGZ.scale, IMGZ.natH * IMGZ.scale,
+                              window.innerWidth, window.innerHeight)
+    IMGZ.x = c.x
+    IMGZ.y = c.y
+    applyZoomTransform()
+  }
+  const onDragUp = (e) => {
+    const d = IMGZ.drag
+    IMGZ.drag = null
+    if (!d || !IMGZ.open) return
+    if (d.moved) return  // 拖完松手不算点击
+    if (e.target === IMGZ.img) return  // 点在图片上不关，点背景才关
+    closeZoomMask()
+  }
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', onDragUp)
+  window.addEventListener('pointercancel', onDragUp)
+  document.body.appendChild(box)
+  return box
+}
+
+function openZoomMask(url) {
+  if (!url) return
+  const box = ensureZoomMask()
+  IMGZ.open = true
+  IMGZ.url = url
+  IMGZ.natW = 0
+  IMGZ.natH = 0
+  box.hidden = false
+  IMGZ.img.removeAttribute('src')
+  IMGZ.img.src = url
+  // 缓存命中时 load 可能在赋 src 前就齐活，补一次同步检查
+  if (IMGZ.img.complete && IMGZ.img.naturalWidth > 0) zoomMaskLoaded()
+}
+
+function closeZoomMask() {
+  if (!IMGZ.open) return
+  IMGZ.open = false
+  IMGZ.drag = null
+  IMGZ.pending = null
+  IMGZ.url = ''
+  if (IMGZ.box) IMGZ.box.hidden = true
+  if (IMGZ.img) IMGZ.img.removeAttribute('src')
+}
+
+// 左键：不可动手的图（链接内、未加载远程图、无 src）imgAction 给 null，
+// 落回链接与文本选择的既有行为
+document.addEventListener('click', (e) => {
+  if (IMGZ.open) return  // 遮罩开着时点击归遮罩（背景关闭在 pointerup 里做）
+  const img = e.target && e.target.closest ? e.target.closest('img') : null
+  if (!img || !img.isConnected) return
+  const act = imgAction(imgSnapshot(img), 'left')
+  if (act.act !== 'zoom') return
+  e.preventDefault()
+  openZoomMask(act.url)
+})
+
+// 右键：可动手的图发 imgctx 并拦下全局菜单（ui-ext 的 contextmenu 监听在本文件
+// 之后才注册，stopImmediatePropagation 正好把它停掉）；不可动手的图照旧全局菜单。
+document.addEventListener('contextmenu', (e) => {
+  if (IMGZ.open) {
+    // 遮罩里不弹菜单：编码/代码块这些全局项盖在放大视图上没有意义
+    e.preventDefault()
+    e.stopImmediatePropagation()
+    return
+  }
+  const img = e.target && e.target.closest ? e.target.closest('img') : null
+  if (!img || !img.isConnected) return
+  const act = imgAction(imgSnapshot(img), 'right')
+  if (act.act !== 'imgctx') return
+  e.preventDefault()
+  e.stopImmediatePropagation()
+  IMGZ.pending = { url: act.url, docId: V.docId }
+  postRaw('imgctx|' + act.url + '|' + act.kind)
 })
 
 /* ---------------- 搜索与大纲 ---------------- */
@@ -5019,7 +5311,17 @@ function onHostMessage(event) {
   }
 
   if (type === 'clear') {
+    closeZoomMask()
     resetVirtual()
+    return
+  }
+
+  if (type === 'zoom') {
+    // 宿主右键菜单的「放大查看」：开的是 imgctx 时刻记下的那张图。
+    // 换过文档后 URL 的语义不再成立（mdblocks 按当前文档目录解析），丢掉。
+    const p = IMGZ.pending
+    IMGZ.pending = null
+    if (p && p.url && p.docId === V.docId) openZoomMask(p.url)
     return
   }
 

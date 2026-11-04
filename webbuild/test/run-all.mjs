@@ -19,6 +19,7 @@ const TESTS = [
   'whitespace-mark.mjs',
   'highlight-split.mjs',
   'net-consent.mjs',
+  'img-zoom.mjs',
 ]
 
 let failed = 0
