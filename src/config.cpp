@@ -250,6 +250,8 @@ bool WriteConfigAtomically(const wchar_t* path, const std::string& bytes, DWORD*
 
 const wchar_t* ConfigPath(void) {
   static std::wstring path;
+  // 数据目录可能一开始解析不出来（别名系统未就绪），空结果不能缓存，
+  // 否则整个进程都以为「没有配置」。
   if (path.empty()) {
     const std::wstring dataDir = UtilDataDir();
     if (dataDir.empty()) return L"";

@@ -106,6 +106,11 @@ const wchar_t* const kZh[kCount] = {
     /* WebViewDefault   */ L"恢复默认目录",
     /* WebViewClear     */ L"清理缓存",
     /* WebViewCacheInfo */ L"缓存 %s；超过 %s 自动清理；修改后重启 Opus 生效",
+    /* WebViewUsbInfo   */
+    L"U 盘模式：缓存固定在本机临时目录 %s（不随 U 盘走，系统可能自行清理）；当前 %s",
+    /* WebViewUsbHelp   */
+    L"U 盘模式：缓存固定为 %s，下面的位置设置不生效（改不了是故意的——U 盘上反复随机写"
+    L"既慢又伤盘，宿主机用户目录里也不该留痕）。",
     /* WebViewDirHelp */
     L"留空时使用默认位置：\r\n%s\r\n\r\n"
     L"实际 WebView2 目录 = 所选位置 + \\WebView2：\r\n%s\r\n\r\n"

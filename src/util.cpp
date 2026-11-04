@@ -8,13 +8,23 @@
 
 namespace {
 
-const wchar_t kDataSubDir[] = L"GPSoftware\\Directory Opus\\User Data\\DopusMdViewer";
+// 数据根 = Opus 自己的数据根 + 固定子路径。走 /dopusdata 内置别名而不是
+// %APPDATA%：普通安装两者等价，U 盘版只有别名指向 U 盘，环境变量永远指向宿主机。
+// /DopusMdViewerData 是留给用户的自定义覆盖，优先级最高。
+const wchar_t kDataSubPath[] = L"User Data\\DopusMdViewer";
+const wchar_t kOpusDataAlias[] = L"dopusdata";
 
 // dopus.exe 的未公开导出；本机所有内置 Viewer 也用 GetProcAddress 按名字取它。
 using PFN_RESOLVEALIASPATH = BOOL(WINAPI*)(LPCWSTR, LPWSTR, UINT);
 
-INIT_ONCE g_dataDirOnce = INIT_ONCE_STATIC_INIT;
+// 解析成功一次就固定下来；失败**不缓存**——DVP_Init 可能早于别名系统就绪，
+// 那一刻失败不代表后面也失败，留着下次调用重试比一辈子用错目录强。
+SRWLOCK g_dataLock = SRWLOCK_INIT;
+bool g_dataReady = false;
 wchar_t g_dataDir[MAX_PATH] = L"";
+
+// U 盘模式：DVP_IdentifyW 从 dwInitFlags 的 VPINITF_USB 读到，供缓存目录选择使用。
+volatile LONG g_usbMode = 0;
 
 bool IsAbsoluteFilePath(const wchar_t* path) {
   if (!path || !path[0]) return false;
@@ -25,30 +35,39 @@ bool IsAbsoluteFilePath(const wchar_t* path) {
   return drive && (path[2] == L'\\' || path[2] == L'/');
 }
 
-void BuildDefaultDataDir(wchar_t* buf, size_t cch) {
-  buf[0] = L'\0';
-  wchar_t appData[MAX_PATH];
-  const DWORD n = ::GetEnvironmentVariableW(L"APPDATA", appData, ARRAYSIZE(appData));
-  if (n == 0 || n >= ARRAYSIZE(appData)) return;
-  ::StringCchPrintfW(buf, cch, L"%s\\%s", appData, kDataSubDir);
-}
-
-BOOL CALLBACK InitDataDir(PINIT_ONCE, PVOID, PVOID*) {
+// 用 dopus.exe 的 ResolveAliasPath 解析 "/<name>"。成功返回绝对路径。
+bool ResolveAlias(const wchar_t* name, wchar_t* out, size_t cch) {
   const HMODULE host = ::GetModuleHandleW(nullptr);
   const auto resolve = host ? reinterpret_cast<PFN_RESOLVEALIASPATH>(
                                   ::GetProcAddress(host, "ResolveAliasPath"))
                             : nullptr;
+  if (!resolve) return false;
+
   wchar_t alias[64];
+  if (FAILED(::StringCchPrintfW(alias, ARRAYSIZE(alias), L"/%s", name))) return false;
+
   wchar_t resolved[MAX_PATH];
-  if (resolve &&
-      SUCCEEDED(::StringCchPrintfW(alias, ARRAYSIZE(alias), L"/%s", kDataAliasName)) &&
-      resolve(alias, resolved, static_cast<UINT>(ARRAYSIZE(resolved))) &&
-      IsAbsoluteFilePath(resolved)) {
-    ::StringCchCopyW(g_dataDir, ARRAYSIZE(g_dataDir), resolved);
-    return TRUE;
+  resolved[0] = L'\0';
+  if (!resolve(alias, resolved, static_cast<UINT>(ARRAYSIZE(resolved)))) return false;
+  if (!IsAbsoluteFilePath(resolved)) return false;
+  return SUCCEEDED(::StringCchCopyW(out, cch, resolved));
+}
+
+// 两级：/DopusMdViewerData → /dopusdata\User Data\DopusMdViewer。都失败返回 false。
+bool TryResolveDataDir(wchar_t* out, size_t cch) {
+  // 用户覆盖别名：只要解析出绝对路径就认，目录本身由使用方按需创建。
+  if (ResolveAlias(kDataAliasName, out, cch)) return true;
+
+  wchar_t root[MAX_PATH];
+  if (!ResolveAlias(kOpusDataAlias, root, ARRAYSIZE(root))) return false;
+  // 根必须真实存在：解析出来的路径不存在，多半是别名系统还没就绪，留给下次重试。
+  if (!UtilDirExists(root)) return false;
+
+  wchar_t sub[MAX_PATH];
+  if (FAILED(::StringCchPrintfW(sub, ARRAYSIZE(sub), L"%s\\%s", root, kDataSubPath))) {
+    return false;
   }
-  BuildDefaultDataDir(g_dataDir, ARRAYSIZE(g_dataDir));
-  return TRUE;
+  return SUCCEEDED(::StringCchCopyW(out, cch, sub));
 }
 
 bool TryDecode(const char* data, int size, UINT codePage, DWORD flags, std::wstring* out) {
@@ -90,10 +109,54 @@ std::wstring UtilWebDir(void) {
   return UtilJoin(moduleDir, L"DopusMdViewer");
 }
 
+namespace {
+
+// 递归收集目录下的文件；rel 是相对 Viewers\ 的前缀，空目录直接跳过。
+void CollectExportFiles(const std::wstring& dir, const std::wstring& rel,
+                        std::vector<std::wstring>* out) {
+  WIN32_FIND_DATAW fd = {};
+  HANDLE h = ::FindFirstFileW(UtilJoin(dir, L"*").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return;
+  do {
+    if (fd.cFileName[0] == L'.' &&
+        (fd.cFileName[1] == L'\0' || (fd.cFileName[1] == L'.' && fd.cFileName[2] == L'\0'))) {
+      continue;
+    }
+    const std::wstring child = UtilJoin(dir, fd.cFileName);
+    const std::wstring childRel = UtilJoin(rel, fd.cFileName);
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      CollectExportFiles(child, childRel, out);
+    } else {
+      out->push_back(childRel);
+    }
+  } while (::FindNextFileW(h, &fd));
+  ::FindClose(h);
+}
+
+}  // namespace
+
+void UtilUsbExportFiles(std::vector<std::wstring>* out) {
+  if (!out) return;
+  out->clear();
+  const std::wstring root = UtilWebDir();
+  if (root.empty() || !UtilDirExists(root)) return;
+  // 资源目录与插件同名，正好是相对 Viewers\ 的第一层。
+  CollectExportFiles(root, L"DopusMdViewer", out);
+}
+
 void UtilDataDirInto(wchar_t* buf, size_t cch) {
   if (!buf || cch == 0) return;
-  ::InitOnceExecuteOnce(&g_dataDirOnce, InitDataDir, nullptr, nullptr);
+
+  ::AcquireSRWLockExclusive(&g_dataLock);
+  if (!g_dataReady) {
+    wchar_t resolved[MAX_PATH];
+    if (TryResolveDataDir(resolved, ARRAYSIZE(resolved))) {
+      ::StringCchCopyW(g_dataDir, ARRAYSIZE(g_dataDir), resolved);
+      g_dataReady = true;
+    }
+  }
   ::StringCchCopyW(buf, cch, g_dataDir);
+  ::ReleaseSRWLockExclusive(&g_dataLock);
 }
 
 std::wstring UtilDataDir(void) {
@@ -172,11 +235,40 @@ std::wstring UtilDefaultWebView2BaseDir(void) {
   return UtilDataDir();
 }
 
-std::wstring UtilWebView2UserDataDir(const std::wstring& configuredBase) {
+// %TEMP%\DopusMdViewer。GetTempPathW 自带尾随反斜杠，UtilJoin 会吃掉。
+std::wstring UtilTempWebView2BaseDir(void) {
+  wchar_t tempPath[MAX_PATH];
+  const DWORD n = ::GetTempPathW(ARRAYSIZE(tempPath), tempPath);
+  if (n == 0 || n >= ARRAYSIZE(tempPath)) return std::wstring();
+  return UtilJoin(std::wstring(tempPath, n), L"DopusMdViewer");
+}
+
+void UtilSetUsbMode(bool usb) { ::InterlockedExchange(&g_usbMode, usb ? 1 : 0); }
+
+bool UtilIsUsbMode(void) { return ::InterlockedCompareExchange(&g_usbMode, 0, 0) != 0; }
+
+std::wstring UtilWebView2BaseDir(const std::wstring& configuredBase) {
+  // U 盘模式：缓存固定放本机临时目录——不在 U 盘上反复随机写，也不在宿主机用户
+  // 目录里留痕；这种模式下配置项不生效（设置页置灰并说明实际位置）。
+  if (UtilIsUsbMode()) {
+    const std::wstring temp = UtilTempWebView2BaseDir();
+    if (!temp.empty()) return temp;
+  }
   std::wstring base = UtilNormalizeLocalDir(configuredBase);
-  if (base.empty()) base = UtilNormalizeLocalDir(UtilDefaultWebView2BaseDir());
+  if (!base.empty()) return base;
+  return UtilNormalizeLocalDir(UtilDefaultWebView2BaseDir());
+}
+
+std::wstring UtilWebView2UserDataDir(const std::wstring& configuredBase) {
+  const std::wstring base = UtilWebView2BaseDir(configuredBase);
   if (base.empty()) return std::wstring();
   return UtilJoin(base, L"WebView2");
+}
+
+std::wstring UtilWebView2SettingsDir(const std::wstring& configuredBase) {
+  const std::wstring base = UtilWebView2BaseDir(configuredBase);
+  if (base.empty()) return std::wstring();
+  return UtilJoin(base, L"WebView2-Settings");
 }
 
 bool UtilDirExists(const std::wstring& dir) {

@@ -121,7 +121,7 @@ if errorlevel 8 goto :fail
 popd
 echo.
 echo [OK] %PROJ%bin\DopusMdViewer.dll
-echo 导出表（应为 7 个 DVP_ 函数）：
+echo 导出表（应为 8 个 DVP_ 函数）：
 "%DUMPBIN%" /exports "%PROJ%bin\DopusMdViewer.dll" | findstr /i "DVP_ number of"
 echo.
 pause

@@ -236,3 +236,29 @@ TEST(util, opus_viewer_show_missing_file) {
   CHECK(!UtilOpusViewerShow(L""));
   CHECK(!UtilOpusViewerShow(L"Z://definitely-not-here//x.png"));
 }
+
+TEST(util, webview_base_follows_config) {
+  UtilSetUsbMode(false);
+  CHECK(!UtilIsUsbMode());
+  CHECK_EQ_STR(UtilWebView2BaseDir(L"C:\\custom-cache"), L"C:\\custom-cache");
+  CHECK_EQ_STR(UtilWebView2UserDataDir(L"C:\\custom-cache"), L"C:\\custom-cache\\WebView2");
+  CHECK_EQ_STR(UtilWebView2SettingsDir(L"C:\\custom-cache"),
+               L"C:\\custom-cache\\WebView2-Settings");
+}
+
+TEST(util, webview_base_usb_mode_ignores_config) {
+  UtilSetUsbMode(true);
+  CHECK(UtilIsUsbMode());
+
+  const std::wstring base = UtilWebView2BaseDir(L"C:\\custom-cache");
+  CHECK(!base.empty());
+  // U 盘模式固定落到临时目录：配置值必须被忽略，两个子目录同根
+  CHECK(base.find(L"custom-cache") == std::wstring::npos);
+  CHECK(base.size() > 13 && base.compare(base.size() - 13, 13, L"DopusMdViewer") == 0);
+  const std::wstring usbCache = base + L"\\WebView2";
+  const std::wstring usbSettings = base + L"\\WebView2-Settings";
+  CHECK_EQ_STR(UtilWebView2UserDataDir(L"C:\\custom-cache"), usbCache.c_str());
+  CHECK_EQ_STR(UtilWebView2SettingsDir(L"C:\\custom-cache"), usbSettings.c_str());
+
+  UtilSetUsbMode(false);  // 别污染后面的用例
+}

@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // DLL 所在目录，不带尾随反斜杠。
 std::wstring UtilModuleDir(void);
@@ -16,18 +17,26 @@ std::wstring UtilModuleDir(void);
 // 不用通用的 "web" 名字，免得和 Viewers 里别的插件抢目录。
 std::wstring UtilWebDir(void);
 
+// 随插件一起导出的文件（DVP_USBSafe 用）：相对 Viewers\ 的路径，形如
+// "DopusMdViewer\web\app.js"。资源目录不存在时返回空列表。
+void UtilUsbExportFiles(std::vector<std::wstring>* out);
+
 // 存在这个 Folder Alias 时，数据根改用它指向的文件夹。
 // 解析靠 dopus.exe 导出的 ResolveAliasPath（未写进 SDK 头，取不到就回退）。
 constexpr wchar_t kDataAliasName[] = L"DopusMdViewerData";
 
-// 数据根目录：优先 /DopusMdViewerData 别名，失败时回退
-// %APPDATA%\GPSoftware\Directory Opus\User Data\DopusMdViewer。
-// 进程内只解析一次（改别名后需重启 Opus）；皮肤、config.json、logs 同根。
+// 数据根目录：优先 /DopusMdViewerData 别名，否则 /dopusdata\User Data\DopusMdViewer。
+// 走 Opus 的内置别名而不是 %APPDATA%：U 盘版的 /dopusdata 指向 U 盘，环境变量不会。
+// 解析成功一次即固定；失败不缓存，下次调用重试。皮肤、config.json、logs 同根。
 // WebView2 缓存默认在本机 %LOCALAPPDATA%\DopusMdViewer\WebView2，可在设置里覆盖。
 std::wstring UtilDataDir(void);
 
 // 同上，但不碰标准库：日志初始化可能早于 CRT 就绪。
 void UtilDataDirInto(wchar_t* buf, size_t cch);
+
+// U 盘模式：由 DVP_IdentifyW 从 dwInitFlags 的 VPINITF_USB 读到后设一次。
+void UtilSetUsbMode(bool usb);
+bool UtilIsUsbMode(void);
 
 // a + "\\" + b；a 允许带或不带尾随反斜杠。
 std::wstring UtilJoin(const std::wstring& a, const wchar_t* b);
@@ -47,9 +56,16 @@ std::wstring UtilNormalizeLocalDir(const std::wstring& text);
 // WebView2 用户数据的默认父目录：%LOCALAPPDATA%\DopusMdViewer。
 std::wstring UtilDefaultWebView2BaseDir(void);
 
-// 实际 WebView2 用户数据目录：<配置父目录>\WebView2。
-// 配置为空或非法时用默认父目录；完全不可用时返回空串。
+// 实际使用的父目录：U 盘模式固定 %TEMP%\DopusMdViewer（忽略配置），
+// 否则用配置值，配置为空或非法时用默认父目录；完全不可用时返回空串。
+std::wstring UtilWebView2BaseDir(const std::wstring& configuredBase);
+
+// 查看器的用户数据目录：<父目录>\WebView2。
 std::wstring UtilWebView2UserDataDir(const std::wstring& configuredBase);
+
+// 设置页字体预览的用户数据目录：<父目录>\WebView2-Settings。
+// 必须与查看器那份分开：同一个目录不能被两个 Environment 同时使用。
+std::wstring UtilWebView2SettingsDir(const std::wstring& configuredBase);
 
 // 逐级创建目录；已存在不算失败。
 bool UtilEnsureDir(const std::wstring& dir);

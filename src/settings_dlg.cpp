@@ -333,6 +333,7 @@ void FocusFirst(DialogState* st);
 void ShowPage(DialogState* st, int page);
 bool ApplySettings(DialogState* st);
 void RefreshWebViewCacheInfo(DialogState* st);
+void UpdateWebViewUsbState(DialogState* st);
 void AddFontNameToChain(DialogState* st, const std::wstring& name);
 void SetDirty(DialogState* st, bool dirty);
 bool FamilyInstalled(DialogState* st, const std::wstring& name);
@@ -691,7 +692,10 @@ void ShowPage(DialogState* st, int page) {
   // 切页后焦点若落在刚藏起来的控件上，挪到本页第一个控件
   HWND focus = ::GetFocus();
   if (!focus || !::IsWindowVisible(focus)) FocusPageFirst(st);
-  if (page == 3) RefreshWebViewCacheInfo(st);
+  if (page == 3) {
+    UpdateWebViewUsbState(st);
+    RefreshWebViewCacheInfo(st);
+  }
 }
 
 std::wstring Trimmed(const wchar_t* text) {
@@ -1343,6 +1347,7 @@ void LoadUiFromStaged(DialogState* st) {
   RefreshChainList(st);
 
   ::SetWindowTextW(st->hWebViewDir, st->staged.webviewBaseDir.c_str());
+  UpdateWebViewUsbState(st);  // U 盘模式下要把这行改写成固定落点
   if (st->page == 3) RefreshWebViewCacheInfo(st);
 }
 
@@ -1512,13 +1517,9 @@ std::wstring WebViewBaseFromUi(DialogState* st) {
 }
 
 bool ResolveWebViewDir(const std::wstring& raw, std::wstring* actual) {
-  const std::wstring trimmed = UtilTrim(raw);
-  std::wstring base;
-  if (trimmed.empty()) {
-    base = UtilNormalizeLocalDir(UtilDefaultWebView2BaseDir());
-  } else {
-    base = UtilNormalizeLocalDir(trimmed);
-  }
+  // U 盘模式下 UtilWebView2BaseDir 会忽略配置值，直接给 %TEMP%\DopusMdViewer，
+  // 所以这里不用单独判模式：界面置灰只是防误操作，真正的口径在 util 里。
+  const std::wstring base = UtilWebView2BaseDir(UtilTrim(raw));
   if (base.empty()) return false;
   *actual = UtilJoin(base, L"WebView2");
   return UtilIsWebView2UserDataDir(*actual);
@@ -1548,18 +1549,46 @@ bool ValidateWebViewDir(const std::wstring& raw, std::wstring* error) {
 void RefreshWebViewCacheInfo(DialogState* st) {
   if (!st->hWebViewInfo) return;
 
+  const std::wstring raw = WebViewBaseFromUi(st);
   std::wstring actual;
-  if (!ResolveWebViewDir(WebViewBaseFromUi(st), &actual)) {
+  if (!ResolveWebViewDir(raw, &actual)) {
     ::SetWindowTextW(st->hWebViewInfo, loc::T(loc::Str::WebViewPathInvalid));
     return;
   }
 
-  const std::wstring size = UtilFormatSize(UtilDirSize(actual));
-  const std::wstring limit = UtilFormatSize(kWebViewCacheAutoCleanBytes);
+  // 缓存其实是两份：查看器的 WebView2 与设置页字体预览的 WebView2-Settings。
+  uint64_t bytes = UtilDirSize(actual);
+  const std::wstring settings = UtilWebView2SettingsDir(raw);
+  if (!settings.empty() && _wcsicmp(settings.c_str(), actual.c_str()) != 0) {
+    bytes += UtilDirSize(settings);
+  }
+
+  const std::wstring size = UtilFormatSize(bytes);
   wchar_t text[512];
-  ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(loc::Str::WebViewCacheInfo), size.c_str(),
-                     limit.c_str());
+  if (UtilIsUsbMode()) {
+    // U 盘模式：路径不可改，直接把实际落点写出来。
+    const std::wstring base = UtilWebView2BaseDir(raw);
+    ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(loc::Str::WebViewUsbInfo), base.c_str(),
+                       size.c_str());
+  } else {
+    const std::wstring limit = UtilFormatSize(kWebViewCacheAutoCleanBytes);
+    ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(loc::Str::WebViewCacheInfo), size.c_str(),
+                       limit.c_str());
+  }
   ::SetWindowTextW(st->hWebViewInfo, text);
+}
+
+// U 盘模式下缓存位置是固定的：输入框、浏览、恢复默认一起置灰，并把实际落点写进
+// 输入框与说明行——否则用户改了也不生效，比直接置灰更让人困惑。
+void UpdateWebViewUsbState(DialogState* st) {
+  if (!st->hWebViewDir) return;
+
+  const bool usb = UtilIsUsbMode();
+  ::EnableWindow(st->hWebViewDir, !usb);
+  if (HWND browse = ::GetDlgItem(st->hwnd, kIdWebViewBrowse)) ::EnableWindow(browse, !usb);
+  if (HWND def = ::GetDlgItem(st->hwnd, kIdWebViewDefault)) ::EnableWindow(def, !usb);
+
+  if (usb) ::SetWindowTextW(st->hWebViewDir, UtilWebView2BaseDir(L"").c_str());
 }
 
 void BrowseWebViewDir(DialogState* st) {
@@ -1609,13 +1638,16 @@ void BrowseWebViewDir(DialogState* st) {
 }
 
 void OpenWebViewDir(DialogState* st) {
-  std::wstring actual;
-  if (!ResolveWebViewDir(WebViewBaseFromUi(st), &actual)) {
+  // 打开父目录：缓存实际是 WebView2 与 WebView2-Settings 两个子目录，只打开其中一个
+  // 会让人以为另一个不存在。
+  const std::wstring base = UtilWebView2BaseDir(WebViewBaseFromUi(st));
+  if (base.empty()) {
     ::MessageBoxW(st->hwnd, loc::T(loc::Str::WebViewPathInvalid), loc::T(loc::Str::WebViewCache),
                   MB_OK | MB_ICONERROR);
     return;
   }
-  OpenFolder(st->hwnd, actual);
+  UtilEnsureDir(base);
+  OpenFolder(st->hwnd, base);
   RefreshWebViewCacheInfo(st);
 }
 
@@ -1634,6 +1666,11 @@ void ClearWebViewCache(DialogState* st) {
 
   HCURSOR old = ::SetCursor(::LoadCursorW(nullptr, IDC_WAIT));
   const bool ok = WebHostClearUserData(actual);
+  // 设置页字体预览那份缓存是独立目录，别漏。
+  const std::wstring settings = UtilWebView2SettingsDir(WebViewBaseFromUi(st));
+  if (!settings.empty() && _wcsicmp(settings.c_str(), actual.c_str()) != 0) {
+    WebHostClearUserData(settings);
+  }
   // 旧版把缓存放在数据根下；按钮顺手把那个目录也清掉。
   const std::wstring legacy = UtilJoin(UtilDataDir(), L"WebView2");
   if (!legacy.empty() && UtilIsWebView2UserDataDir(legacy) &&
@@ -1663,8 +1700,17 @@ void ShowWebViewHelp(DialogState* st) {
   wchar_t text[2048];
   ::StringCchPrintfW(text, ARRAYSIZE(text), loc::T(loc::Str::WebViewDirHelp),
                      defaultShown.c_str(), shown.c_str(), limit.c_str());
+
+  // U 盘模式下下面那些「留空用默认 / 所选位置」的说法都不成立，先说清实际落点。
+  std::wstring body = text;
+  if (UtilIsUsbMode()) {
+    wchar_t head[512];
+    ::StringCchPrintfW(head, ARRAYSIZE(head), loc::T(loc::Str::WebViewUsbHelp),
+                       UtilWebView2BaseDir(L"").c_str());
+    body = std::wstring(head) + L"\r\n\r\n" + body;
+  }
   const std::wstring copy = valid ? actual : std::wstring();
-  ShowTextHelp(st->hwnd, loc::T(loc::Str::WebViewCache), text, copy.c_str(),
+  ShowTextHelp(st->hwnd, loc::T(loc::Str::WebViewCache), body.c_str(), copy.c_str(),
                loc::T(loc::Str::CopyPath), st->font);
 }
 

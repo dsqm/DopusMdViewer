@@ -17,6 +17,7 @@
 #include <memory>
 #include <new>
 
+#include "config.h"
 #include "log.h"
 #include "util.h"
 
@@ -171,15 +172,15 @@ SettingsPreview* SettingsPreviewCreate(HWND parent, const RECT& rc) {
     return nullptr;
   }
 
-  // 用户数据目录独立：同一份目录不能被两个 Environment 同时用。
-  std::wstring dataDir = UtilDefaultWebView2BaseDir();
+  // 用户数据目录独立：同一份目录不能被两个 Environment 同时用。位置与查看器缓存
+  // 同一个父目录（U 盘模式下一起落到 %TEMP%），设置里改了缓存位置这里也跟着走。
+  std::wstring dataDir = UtilWebView2SettingsDir(ConfigSnapshot().webviewBaseDir);
   if (dataDir.empty()) {
     ::DestroyWindow(s->hwnd);
     s->hwnd = nullptr;
     delete p;
     return nullptr;
   }
-  dataDir += L"\\WebView2-Settings";
 
   // 已经在别的套间里初始化过就沿用，WebView2 两种套间都能跑。
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);

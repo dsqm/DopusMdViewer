@@ -8,6 +8,7 @@ EXPORTS
     DVP_Init
     DVP_InitEx
     DVP_Uninit
+    DVP_USBSafe
     DVP_IdentifyW
     DVP_IdentifyFileW
     DVP_CreateViewer

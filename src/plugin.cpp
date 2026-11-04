@@ -9,6 +9,9 @@
 #include <objidl.h>  // LPSTREAM，"viewer plugins.h" 需要（WIN32_LEAN_AND_MEAN 会藏掉）
 #include <strsafe.h>
 
+#include <string>
+#include <vector>
+
 #include "config.h"
 #include "settings_dlg.h"
 #include "log.h"
@@ -169,7 +172,12 @@ extern "C" void DVP_Uninit(void) {
 extern "C" BOOL DVP_IdentifyW(LPVIEWERPLUGININFOW lpVPInfo) {
   if (!lpVPInfo) return FALSE;
 
-  lpVPInfo->cbSize = VIEWERPLUGININFOW_V4_SIZE;
+  // cbSize / dwOpusVer* / dwInitFlags 都是 Opus 填给插件的 [in] 字段，只能读不能写：
+  // 改写 cbSize 会让 Opus 按错的结构长度读回，改写 dwInitFlags 等于把 VPINITF_USB 抹掉。
+  const UINT cbIn = lpVPInfo->cbSize;
+  const bool hasV4 = cbIn >= VIEWERPLUGININFOW_V4_SIZE;
+  if (hasV4) UtilSetUsbMode((lpVPInfo->dwInitFlags & VPINITF_USB) != 0);
+
   lpVPInfo->dwFlags = DVPFIF_ExtensionsOnly | DVPFIF_CanConfigure;
   lpVPInfo->dwVersionHigh = 0;
   lpVPInfo->dwVersionLow = 1;
@@ -193,15 +201,13 @@ extern "C" BOOL DVP_IdentifyW(LPVIEWERPLUGININFOW lpVPInfo) {
 
   lpVPInfo->uiMajorFileType = DVPMajorType_Text;
   lpVPInfo->idPlugin = kPluginId;
-  // 这三个是**输出**字段：插件在这里申报自己按哪个 Opus 版本/初始化标志工作，
-  // 用 InitEx 拿到的宿主版本原样回填（InitEx 没调用时是默认的 13.0）。
-  lpVPInfo->dwOpusVerMajor = g_dwOpusVerMajor;
-  lpVPInfo->dwOpusVerMinor = g_dwOpusVerMinor;
-  lpVPInfo->dwInitFlags = 0;
-  lpVPInfo->hIconSmall = nullptr;
-  lpVPInfo->hIconLarge = nullptr;
+  if (hasV4) {
+    lpVPInfo->hIconSmall = nullptr;
+    lpVPInfo->hIconLarge = nullptr;
+  }
 
-  LogLine(L"DVP_IdentifyW -> TRUE exts=\"%s\"", g_szHandleExts);
+  LogLine(L"DVP_IdentifyW -> TRUE exts=\"%s\" cbSize=%u usb=%d", g_szHandleExts, cbIn,
+          UtilIsUsbMode() ? 1 : 0);
   return TRUE;
 }
 
@@ -247,4 +253,36 @@ extern "C" HWND DVP_CreateViewer(HWND hWndParent, LPRECT lpRc, DWORD dwFlags) {
   HWND hwnd = ViewerCreate(hWndParent, lpRc, dwFlags);
   LogLine(L"DVP_CreateViewer -> %p 存活=%ld", hwnd, ViewerLiveCount());
   return hwnd;
+}
+
+// U 盘导出时 Opus 会调这里：返回 TRUE 即声明「不在系统里留任何东西」，同时把
+// 需要跟着插件走的文件（DLL 同级的资源目录）报给它。不导出这个函数就等于没申报，
+// 导出到 U 盘时插件可能根本不会被带上。
+extern "C" BOOL DVP_USBSafe(LPOPUSUSBSAFEDATA pUSBSafeData) {
+  if (!pUSBSafeData) return FALSE;
+
+  const UINT cch = pUSBSafeData->cchOtherExports;
+  LogLine(L"DVP_USBSafe: 申报 USB 安全，导出缓冲 %u 字符", cch);
+  if (!pUSBSafeData->pszOtherExports || cch == 0) return TRUE;
+
+  std::vector<std::wstring> files;
+  UtilUsbExportFiles(&files);
+
+  // 双 null 结尾的名字列表；装不下就按整条截断，绝不写半个名字。
+  size_t used = 0;
+  size_t written = 0;
+  for (const std::wstring& name : files) {
+    const size_t need = name.size() + 1;  // 名字 + 结尾 NUL
+    if (used + need + 1 > cch) break;     // 末位留给列表结尾的空串
+    if (FAILED(::StringCchCopyW(pUSBSafeData->pszOtherExports + used, cch - used, name.c_str()))) {
+      break;
+    }
+    used += need;
+    ++written;
+  }
+  pUSBSafeData->pszOtherExports[used] = L'\0';
+
+  LogLine(L"DVP_USBSafe: 声明 %zu/%zu 个文件%s", written, files.size(),
+          written < files.size() ? L"（缓冲装不下，已截断）" : L"");
+  return TRUE;
 }

@@ -20,9 +20,9 @@
 
 namespace {
 
-// The log lives under the data root from UtilDataDirInto (which may be
-// overridden by a Folder Alias). %TEMP% is only the fallback for the case
-// where that root is unavailable.
+// The log lives under the data root from UtilDataDirInto (/DopusMdViewerData or
+// /dopusdata\User Data\DopusMdViewer). When that root is unavailable nothing is
+// written to disk at all: OutputDebugStringW is the only remaining sink.
 const int kMaxLogBytes = 1024 * 1024;
 
 SRWLOCK g_lock = SRWLOCK_INIT;
@@ -45,16 +45,6 @@ void EnsureDir(const wchar_t* pszDir) {
   ::CreateDirectoryW(path, nullptr);
 }
 
-void FallBackToTemp(wchar_t* pszPath, size_t cchPath) {
-  wchar_t tempPath[MAX_PATH];
-  DWORD n = ::GetTempPathW(MAX_PATH, tempPath);
-  if (n == 0 || n >= MAX_PATH) {
-    // Fall back to the current directory rather than giving up on logging.
-    ::StringCchCopyW(tempPath, MAX_PATH, L".\\");
-  }
-  ::StringCchCopyW(pszPath, cchPath, tempPath);
-}
-
 void EnsurePathLocked() {
   if (g_pathReady) return;
 
@@ -62,15 +52,18 @@ void EnsurePathLocked() {
   UtilDataDirInto(dataDir, ARRAYSIZE(dataDir));
 
   if (!dataDir[0]) {
-    FallBackToTemp(g_logPath, MAX_PATH);
-  } else {
-    wchar_t logDir[MAX_PATH];
-    ::StringCchPrintfW(logDir, MAX_PATH, L"%s\\logs", dataDir);
-    EnsureDir(dataDir);
-    EnsureDir(logDir);
-    ::StringCchPrintfW(g_logPath, MAX_PATH, L"%s\\DopusMdViewer.log", logDir);
+    // 数据目录不可用（/dopusdata 解析失败）：不落盘，只留 OutputDebugString。
+    // 往 %TEMP% 里偷偷写一份只会让「插件到底写没写宿主机」变成一笔糊涂账。
+    // 不置 g_pathReady：数据目录可能稍后才解析得出来，下一次再试。
+    g_logPath[0] = L'\0';
+    return;
   }
 
+  wchar_t logDir[MAX_PATH];
+  ::StringCchPrintfW(logDir, MAX_PATH, L"%s\\logs", dataDir);
+  EnsureDir(dataDir);
+  EnsureDir(logDir);
+  ::StringCchPrintfW(g_logPath, MAX_PATH, L"%s\\DopusMdViewer.log", logDir);
   g_pathReady = true;
 }
 
@@ -88,6 +81,7 @@ void RotateIfOversizedLocked() {
 }
 
 bool WriteRaw(const char* data, DWORD size) {
+  if (!g_logPath[0]) return false;
   RotateIfOversizedLocked();
 
   HANDLE h = ::CreateFileW(g_logPath, FILE_APPEND_DATA,
