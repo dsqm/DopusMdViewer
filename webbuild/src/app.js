@@ -1312,7 +1312,11 @@ function ensureConsentPanel() {
 
 function showNetPrompt(host) {
   const panel = ensureConsentPanel()
-  NET.title.textContent = '允许加载来自 ' + host + ' 的网络图片吗？'
+  // 档位 2 的一票管整篇所有来源（设置项写的就是「答一次管所有来源」），
+  // 标题只报一个主机就与真实影响不符——这里点的是整篇的开关。
+  NET.title.textContent = NET.mode === 2
+    ? '允许加载本篇里所有来源的网络图片吗？（第一个来自 ' + host + '）'
+    : '允许加载来自 ' + host + ' 的网络图片吗？'
   panel.hidden = false
 }
 
