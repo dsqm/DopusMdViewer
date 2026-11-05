@@ -64,19 +64,19 @@
 
   /* —— 提示框 —— */
   --md-alert-note: #268bd2;
-  --md-alert-note-bg: rgba(38, 139, 210, 0.16);
+  --md-alert-note-bg: color-mix(in srgb, var(--md-alert-note) 16%, transparent);
   --md-alert-note-title: var(--md-alert-note);
   --md-alert-tip: #859900;
-  --md-alert-tip-bg: rgba(133, 153, 0, 0.18);
+  --md-alert-tip-bg: color-mix(in srgb, var(--md-alert-tip) 18%, transparent);
   --md-alert-tip-title: var(--md-alert-tip);
   --md-alert-important: #6c71c4;
-  --md-alert-important-bg: rgba(108, 113, 196, 0.18);
+  --md-alert-important-bg: color-mix(in srgb, var(--md-alert-important) 18%, transparent);
   --md-alert-important-title: var(--md-alert-important);
   --md-alert-warning: #b58900;
-  --md-alert-warning-bg: rgba(181, 137, 0, 0.18);
+  --md-alert-warning-bg: color-mix(in srgb, var(--md-alert-warning) 18%, transparent);
   --md-alert-warning-title: var(--md-alert-warning);
   --md-alert-caution: #dc322f;
-  --md-alert-caution-bg: rgba(220, 50, 47, 0.18);
+  --md-alert-caution-bg: color-mix(in srgb, var(--md-alert-caution) 18%, transparent);
   --md-alert-caution-title: var(--md-alert-caution);
 
   /* —— 滚动条与界面件 —— */
