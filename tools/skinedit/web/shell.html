@@ -3,30 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- 页面只从 https://skinedit.localhost/ 取资源（宿主把 assets 目录映射成这一台）。
-     外壳就这一层：脚本单独一个文件，不给自己开 unsafe-inline。
-     connect-src 给 fetch 皮肤与 sprite.svg；font-src 给 KaTeX 的 woff2——
-     两者都被 default-src 'none' 挡住，少了就是"样式在、字没了、文件读不到"。 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'">
+<!-- CSP 只能写在 meta 里：虚拟主机映射过的请求不进 WebResourceRequested，
+     加不了响应头。框架策略给右侧预览页（同站 preview.html），连接策略给
+     fetch 内置皮肤，脚本策略同时覆盖 module 入口与它导入的读写模块。
+     dev-server.mjs 会对名为 shell.html 的文件做一次 CSP 文本替换，注释里
+     不要出现那些策略名，否则它的正则会越过注释结束符，把整篇吞成注释。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self'">
 <title>皮肤编辑器</title>
 <link rel="stylesheet" href="shell.css">
 </head>
 <body>
-<div class="wrap">
-  <h1>皮肤编辑器</h1>
-  <p class="hint">外壳已就绪。这一页是占位：表单与预览由后续步骤替换。</p>
-
-  <table>
-    <tbody>
-      <tr><th>程序目录</th><td id="exe">—</td></tr>
-      <tr><th>资产目录</th><td id="web">—</td></tr>
-      <tr><th>皮肤目录</th><td id="skins">—</td></tr>
-      <tr><th>首帧耗时</th><td id="ms">—</td></tr>
-    </tbody>
-  </table>
-
-  <p class="hint">用 <code>/web &lt;目录&gt;</code> 换资产目录，<code>/skins &lt;目录&gt;</code> 换皮肤目录。</p>
-</div>
-<script src="shell.js"></script>
+<div id="app"></div>
+<script type="module" src="editor.js"></script>
 </body>
 </html>

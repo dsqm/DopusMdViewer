@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 预览页与编辑器外壳同站（skinedit.localhost），父页面直接改这里 documentElement 的
+     inline 变量来实时换色，所以两边必须同源。虚拟主机映射过的请求不进
+     WebResourceRequested，CSP 只能写在 meta 里。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'">
+<title>皮肤预览</title>
+<!-- 两张样式表由 preview.js 按 ?root= 动态插入：静态 link 会在脚本跑之前
+     先按相对路径发一次请求，开发模式下必然 404。插入位置必须在 skin 之前。 -->
+<style id="skin"></style>
+</head>
+
+<body class="mdv-root">
+<svg id="mdv-sprite" class="mdv-sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-find" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.34-4.34"/></symbol>
+  <symbol id="i-outline" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+</svg>
+
+<div id="doc"></div>
+<div id="sb" hidden><div id="sb-thumb"></div></div>
+
+<div id="tools" class="ui mdv-ui" hidden>
+  <button type="button" class="mdv-ibtn" title="搜索" aria-label="搜索"><svg class="mdv-i"><use href="#i-find"></use></svg></button>
+  <button type="button" class="mdv-ibtn" title="大纲" aria-label="大纲"><svg class="mdv-i"><use href="#i-outline"></use></svg></button>
+</div>
+
+<div id="find" class="ui mdv-ui" hidden>
+  <input id="find-input" type="search" autocomplete="off" spellcheck="false" placeholder="搜索本文档">
+  <span id="find-count"></span>
+  <button id="find-case" type="button" class="tog" title="区分大小写">Aa</button>
+  <button id="find-word" type="button" class="tog" title="整词匹配">W</button>
+  <button id="find-regex" type="button" class="tog" title="正则匹配">.*</button>
+  <button id="find-prev" type="button" class="mdv-ibtn" title="上一个" aria-label="上一个"><svg class="mdv-i"><use href="#i-up"></use></svg></button>
+  <button id="find-next" type="button" class="mdv-ibtn" title="下一个" aria-label="下一个"><svg class="mdv-i"><use href="#i-down"></use></svg></button>
+  <button id="find-close" type="button" class="mdv-ibtn" title="关闭" aria-label="关闭"><svg class="mdv-i"><use href="#i-close"></use></svg></button>
+</div>
+
+<aside id="outline" class="ui mdv-ui" hidden>
+  <div class="outline-head"><span>大纲</span></div>
+  <div id="outline-list" class="outline-list"></div>
+</aside>
+
+<script src="preview.js"></script>
+</body>
+</html>

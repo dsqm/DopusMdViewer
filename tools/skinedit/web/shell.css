@@ -1,34 +1,528 @@
-/* 外壳占位页的样式。等真正的编辑器页面（表单 + 预览双栏）接上来就替换掉。 */
+/* 皮肤编辑器主体样式。沿用窗口交互原型 D 变体的表单与联动样式，
+   去掉假窗口框与原型药丸条，改成铺满 WebView2 视口。 */
 
-:root { color-scheme: light; }
+* { box-sizing: border-box; }
 
-body {
+/* 行/块自己带 display:flex，UA 的 [hidden]{display:none} 压不住 */
+[hidden] { display: none !important; }
+
+html, body {
   margin: 0;
-  padding: 32px 36px;
-  font: 14px/1.7 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  height: 100%;
+  overflow: hidden;
+  background: #fff;
   color: #1f2328;
+  font: 13px/1.5 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+}
+
+#app {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.app { flex: 1 1 auto; min-height: 0; display: flex; position: relative; }
+
+.app-host { flex: 1 1 auto; min-height: 0; display: flex; }
+
+/* —— 通用零件 —— */
+
+.pane-scroll { overflow: auto; }
+
+.ghostbtn {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 9px;
+  border: 1px solid #c4c9ce;
+  border-radius: 5px;
+  background: #fff;
+  color: #24292f;
+  cursor: pointer;
+}
+.ghostbtn:hover { background: #f2f4f6; border-color: #a8aeb4; }
+.ghostbtn[aria-pressed="true"] { background: #e2ecfa; border-color: #7aa7dd; color: #0b4c8c; }
+.ghostbtn.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.ghostbtn.primary:hover { background: #1a5fd0; }
+.ghostbtn:disabled { opacity: .4; cursor: default; }
+.ghostbtn:disabled:hover { background: #fff; border-color: #c4c9ce; }
+
+select.sel {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid #c4c9ce;
+  border-radius: 5px;
+  background: #fff;
+  max-width: 190px;
+}
+
+.splitter {
+  flex: 0 0 6px;
+  background: #e6e9ec;
+  border-left: 1px solid #dcdfe3;
+  border-right: 1px solid #dcdfe3;
+  cursor: col-resize;
+}
+.splitter:hover, .splitter.dragging { background: #b9d3f2; }
+
+.preview { flex: 1 1 auto; min-width: 0; position: relative; background: #fff; }
+.preview iframe { display: block; width: 100%; height: 100%; border: 0; }
+
+/* —— 表单 —— */
+
+.grp { border-bottom: 1px solid #eceff1; }
+
+.grp-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #3a4149;
+  cursor: pointer;
+  text-align: left;
+}
+.grp-h:hover { background: #f6f8fa; }
+.grp-h .chev { color: #8a9199; font-size: 10px; transition: transform .12s; }
+.grp.closed .chev { transform: rotate(-90deg); }
+.grp.closed .grp-b { display: none; }
+.grp-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grp-n { margin-left: auto; font-weight: 400; color: #98a0a8; }
+
+/* 组头里的「一次生成」：小一号，不吃掉标题宽度 */
+.minibtn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  border: 1px solid #c4c9ce;
+  border-radius: 999px;
+  background: #fff;
+  color: #4a5158;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.minibtn:hover { background: #f2f4f6; border-color: #a8aeb4; }
+
+/* 特殊值（transparent / currentColor）的勾选槽：所有行都占同样宽度，列才对得齐 */
+.row .slot {
+  flex: 0 0 46px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.row .tgl {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  color: #59616a;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.row .tgl input { width: 12px; height: 12px; margin: 0; cursor: pointer; }
+
+/* 派生行：值框里放百分比，比 hex 短；显示合成后的色块，点它即断开派生 */
+/* 百分比与 hex 用同一套宽度规则，列才对得齐；只是内容靠右 */
+.row .v.pct { text-align: right; }
+.row.derived .v.pct:focus { outline: 2px solid #9dc2ee; outline-offset: -1px; }
+.row.derived .k { color: #3f5768; }
+.row .relink {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid #d6dade;
+  border-radius: 4px;
+  background: #fff;
+  color: #7b838b;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.row .relink:hover { background: #eef4fd; border-color: #9dc2ee; color: #0b4c8c; }
+.row .sw:disabled { cursor: default; opacity: .8; }
+
+.grp-b { padding: 2px 8px 8px; }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 2px;
+  border-radius: 4px;
+}
+.row:hover { background: #f6f8fa; }
+
+.row .sw {
+  flex: 0 0 20px;
+  width: 20px; height: 20px;
+  padding: 0;
+  border: 1px solid #b9bfc5;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+.row .sw.kw {
+  border-style: dashed;
+  background-image: linear-gradient(45deg, #eee 25%, transparent 25%, transparent 75%, #eee 75%),
+                    linear-gradient(45deg, #eee 25%, transparent 25%, transparent 75%, #eee 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 4px 4px;
+}
+.row .k {
+  /* 名字可缩、值框可长：rgba(154, 103, 0, 0.12) 比 hex 长得多，
+     值框固定 84px 时会被截成「rgba(9, 105,」。 */
+  flex: 0 1 auto;
+  max-width: 46%;
+  min-width: 0;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  color: #59616a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row .v {
+  flex: 1 1 auto;
+  min-width: 84px;
+  font: inherit;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  padding: 2px 4px;
+  border: 1px solid #d6dade;
+  border-radius: 4px;
+  background: #fff;
+  color: #24292f;
+}
+.row .v:focus { outline: 2px solid #9dc2ee; outline-offset: -1px; }
+.row.changed .k { color: #0b4c8c; font-weight: 600; }
+.row.changed .v { border-color: #7aa7dd; background: #f3f8ff; }
+
+/* 继承来的值：名字后面一个 ↳，值显示成灰字（它还是 var(--上级)，不是字面值） */
+.row .inhmark { font-style: normal; color: #a8afb6; margin-left: 4px; font-size: 10px; }
+.row.inh .v { color: #7b838b; }
+
+/* 左栏搜索行 */
+.rail-tools {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  border-bottom: 1px solid #e6e9ec;
   background: #fff;
 }
 
-h1 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
+.search { position: relative; flex: 1 1 auto; min-width: 0; }
 
-.hint { margin: 0 0 18px; color: #656d76; }
+.search-in {
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid #d6dade;
+  border-radius: 5px;
+  background: #fff;
+  color: #24292f;
+}
+.search-in:focus { outline: 2px solid #9dc2ee; outline-offset: -1px; }
+.search-in::-webkit-search-cancel-button { cursor: pointer; }
 
-table { border-collapse: collapse; }
-
-th, td {
-  padding: 6px 14px 6px 0;
-  text-align: left;
-  vertical-align: top;
-  border-bottom: 1px solid #eaeef2;
+.search-n {
+  position: absolute;
+  right: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  color: #8a9199;
+  pointer-events: none;
 }
 
-th { width: 96px; font-weight: 600; color: #57606a; }
+.foldbtn { flex: 0 0 auto; white-space: nowrap; }
 
-code {
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: #eff1f3;
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 12.5px;
+/* 原生控件配色：两态分段 + 一句来源标注 */
+.schemerow {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid #e6e9ec;
+  background: #f7f9fb;
+  font-size: 11.5px;
+  color: #4a5158;
 }
+.schemerow .slabel { flex: 0 0 auto; }
+.schemerow .seg {
+  display: flex;
+  border: 1px solid #c4c9ce;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #fff;
+}
+.schemerow .segbtn {
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 10px;
+  border: 0;
+  background: none;
+  color: #3a4149;
+  cursor: pointer;
+}
+.schemerow .segbtn + .segbtn { border-left: 1px solid #d6dade; }
+.schemerow .segbtn[aria-pressed="true"] { background: #1f6feb; color: #fff; }
+.schemerow .shint { margin-left: auto; color: #8a9199; font-size: 10.5px; }
+
+/* 过滤后整片为空时的说明 */
+.empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: #8a9199;
+}
+
+/* 极窄色板栏放不下横排：搜索在上、折叠在下 */
+.app[data-v="C"] .rail-tools { flex-direction: column; align-items: stretch; }
+
+/* —— A / D：左侧分栏 —— */
+
+.rail {
+  flex: 0 0 360px;
+  width: 360px;
+  min-width: 280px;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #e6e9ec;
+  background: #fbfbfc;
+}
+
+.rail-head {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid #e6e9ec;
+  background: #fff;
+}
+
+.rail-body { flex: 1 1 auto; min-height: 0; }
+
+.rail-foot {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border-top: 1px solid #e6e9ec;
+  background: #fff;
+}
+.rail-foot .grow { flex: 1 1 auto; }
+.rail-foot .tiny { font-size: 11px; color: #7b838b; }
+
+/* 预览右下角的浮层小工具：A 用这种，B/C 不这么放。
+   放右下而不是右上：右上角在真窗格里是宿主自己的工具条（#tools），两排按钮会叠在一起。 */
+.pv-tools {
+  position: absolute;
+  bottom: 10px;
+  right: 12px;
+  display: flex;
+  gap: 6px;
+  z-index: 3;
+}
+.pv-tools .ghostbtn { backdrop-filter: blur(6px); background: rgba(255,255,255,.88); }
+
+/* —— B：预览优先 + 抽屉 —— */
+
+.app[data-v="B"] { flex-direction: column; }
+
+.topbar {
+  flex: 0 0 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  background: #fff;
+  border-bottom: 1px solid #e6e9ec;
+}
+.topbar .grow { flex: 1 1 auto; }
+
+.app[data-v="B"] .body { flex: 1 1 auto; min-height: 0; display: flex; position: relative; }
+
+.drawer {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-right: 1px solid #d7dbdf;
+  box-shadow: 8px 0 24px rgba(0, 0, 0, .10);
+  z-index: 4;
+  transition: transform .16s ease;
+}
+.drawer.closed { transform: translateX(-100%); box-shadow: none; }
+.drawer-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.drawer-foot {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border-top: 1px solid #e6e9ec;
+  background: #fbfbfc;
+}
+.drawer-foot .grow { flex: 1 1 auto; }
+
+/* —— C：极窄色板 + 整宽底栏 —— */
+
+.app[data-v="C"] { flex-direction: column; }
+
+.cbody { flex: 1 1 auto; min-height: 0; display: flex; }
+
+.palette {
+  flex: 0 0 208px;
+  width: 208px;
+  border-right: 1px solid #e6e9ec;
+  background: #fbfbfc;
+  overflow: auto;
+  padding: 6px 6px 12px;
+}
+
+.pgrp-t {
+  margin: 8px 2px 4px;
+  font-size: 10px;
+  letter-spacing: .04em;
+  color: #8a9199;
+  text-transform: uppercase;
+}
+
+.pgrid { display: grid; grid-template-columns: 1fr; gap: 1px; }
+
+.prow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 3px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.prow:hover { background: #eef1f4; }
+.prow .psw {
+  flex: 0 0 14px;
+  width: 14px; height: 14px;
+  padding: 0;
+  border: 1px solid #b9bfc5;
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+}
+.prow .psw.kw { border-style: dashed; background: #eef1f4; }
+.prow .pn {
+  font-family: Consolas, monospace;
+  font-size: 10.5px;
+  color: #59616a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prow.changed .pn { color: #0b4c8c; font-weight: 600; }
+
+.bottombar {
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  background: #fff;
+  border-top: 1px solid #e6e9ec;
+}
+.bottombar .grow { flex: 1 1 auto; }
+.bottombar .tiny { font-size: 11px; color: #7b838b; }
+
+/* —— D：A 的左右分工 + B 的顶栏（定稿候选） —— */
+
+.app[data-v="D"] { flex-direction: column; }
+
+.appbody { flex: 1 1 auto; min-height: 0; display: flex; }
+
+.rail-head .fname { font-size: 12px; font-weight: 600; color: #24292f; }
+.rail-head .dirty {
+  font-size: 11px;
+  color: #a4511c;
+  background: #fff4e5;
+  border: 1px solid #f0d6b8;
+  border-radius: 999px;
+  padding: 0 6px;
+}
+.rail-head .grow { flex: 1 1 auto; }
+
+/* 变量行被右侧选中 */
+.row.used { background: #e8f1fe; box-shadow: inset 2px 0 0 #1f6feb; }
+.prow.used { background: #e8f1fe; box-shadow: inset 2px 0 0 #1f6feb; }
+
+/* 预览里的中文名提示 */
+.chip {
+  position: absolute;
+  z-index: 5;
+  max-width: 300px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(20, 22, 26, .92);
+  color: #fff;
+  font-size: 11.5px;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip.pin { background: rgba(31, 111, 235, .95); }
+
+/* 皮肤目录弹层 */
+.popwrap { position: relative; display: inline-flex; }
+.pop {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  z-index: 20;
+  width: 320px;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid #c9cfd5;
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .18);
+}
+.pop-t { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.pop-v {
+  width: 100%;
+  font: inherit;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  padding: 4px 6px;
+  border: 1px solid #d6dade;
+  border-radius: 5px;
+  background: #f8f9fa;
+  color: #24292f;
+}
+.pop-r { display: flex; gap: 6px; margin-top: 8px; }
+.pop-h { margin-top: 8px; font-size: 11px; line-height: 1.5; color: #7b838b; }
+
+/* —— 原型切换条（不是设计的一部分） —— */
+
+/* 关于浮层：路径可能很长，只让值那列折行 */
+.pop.about { width: 340px; }
+.about-row { display: flex; gap: 8px; margin-top: 4px; font-size: 12px; }
+.about-k { flex: 0 0 64px; color: #7b838b; }
+.about-v { flex: 1 1 auto; min-width: 0; word-break: break-all; font-family: Consolas, monospace; }

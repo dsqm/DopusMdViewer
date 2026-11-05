@@ -1,0 +1,4 @@
+# build-preview.mjs 生成的页面资产：源码在 src/ 与 webbuild 的依赖里，
+# build.py（全量与 --assets）每次都会重新生成并同步进 build/tools/assets/。
+web/preview.js
+web/skinfile.mjs

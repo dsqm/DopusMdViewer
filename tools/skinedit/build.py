@@ -145,7 +145,21 @@ def extract_sprite(html_path, out_path):
     return symbols
 
 
+def build_preview():
+    """把预览页的 markdown-it 全家桶打成单文件 preview.js。
+
+    产物放在 tools/skinedit/web/ 下，sync_assets 会把它当普通页面资产拷走；
+    源码在 tools/skinedit/src/preview.mjs，依赖装在 webbuild/node_modules。
+    """
+    p = subprocess.run(['node', os.path.join('tools', 'skinedit', 'build-preview.mjs')],
+                       cwd=ROOT, env=env, capture_output=True)
+    if p.returncode != 0:
+        raise BuildError('预览页打包失败：\n' +
+                         (p.stdout + p.stderr).decode('utf-8', 'replace')[:800])
+
+
 def sync_assets():
+    build_preview()
     missing = [n for n in WEB_ASSET_FILES + WEB_ASSET_DIRS
                if not os.path.exists(os.path.join(WEB, n))]
     if missing:
