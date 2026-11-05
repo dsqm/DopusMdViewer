@@ -5566,8 +5566,10 @@ function confirmOpenExternal(href, target) {
     '</div></div>'
   const modal = overlay.querySelector('.mdv-modal')
   modal.querySelector('.mdv-modal-title').textContent = '打开外部链接'
+  // 不写「交给系统」：走 Opus 查看器那一档时并不经过系统默认程序，
+  // 而页面也无从知道宿主最后用了哪条路，所以只说「本机程序」。
   modal.querySelector('.mdv-modal-warn').textContent =
-    '此链接会交给系统打开，可能是程序或脚本。请确认来源可信。'
+    '此链接会交给本机程序打开，可能是程序或脚本。请确认来源可信。'
   modal.querySelector('.mdv-modal-url').textContent = href
   const btnCancel = modal.querySelector('.mdv-cancel')
   const btnOpen = modal.querySelector('.mdv-open')
