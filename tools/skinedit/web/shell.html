@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 页面只从 https://skinedit.localhost/ 取资源（宿主把 assets 目录映射成这一台）。
+     外壳就这一层：脚本单独一个文件，不给自己开 unsafe-inline。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<title>皮肤编辑器</title>
+<link rel="stylesheet" href="shell.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>皮肤编辑器</h1>
+  <p class="hint">外壳已就绪。这一页是占位：表单与预览由后续步骤替换。</p>
+
+  <table>
+    <tbody>
+      <tr><th>程序目录</th><td id="exe">—</td></tr>
+      <tr><th>资产目录</th><td id="web">—</td></tr>
+      <tr><th>皮肤目录</th><td id="skins">—</td></tr>
+      <tr><th>首帧耗时</th><td id="ms">—</td></tr>
+    </tbody>
+  </table>
+
+  <p class="hint">用 <code>/web &lt;目录&gt;</code> 换资产目录，<code>/skins &lt;目录&gt;</code> 换皮肤目录。</p>
+</div>
+<script src="shell.js"></script>
+</body>
+</html>
