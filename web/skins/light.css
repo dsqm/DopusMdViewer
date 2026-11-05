@@ -1,6 +1,6 @@
 /* name: GitHub Light
    id: light — 默认皮肤，同时是皮肤模板。
-   56 个变量全部列出；只想要配色时改这里就够，
+   66 个变量全部列出；只想要配色时改这里就够，
    要改排版再往下写选择器。字体不归皮肤：font-family / font-size /
    line-height / 行宽由 <style id="fx"> 最后写出并压住。 */
 
@@ -27,6 +27,7 @@
   /* —— 代码 —— */
   --md-code-bg: #eff1f3;
   --md-code-fg: #1f2328;
+  --md-code-ln-fg: #656d76;
   --md-block-bg: #f6f8fa;
   --md-block-fg: #1f2328;
   --md-block-border: #d0d7de;
@@ -34,8 +35,14 @@
   /* —— 引用与表格 —— */
   --md-quote-bar: #d0d7de;
   --md-quote-fg: #57606a;
+  --md-quote-bg: transparent;
+  --md-table-bg: transparent;
+  --md-table-odd-bg: transparent;
+  --md-table-even-bg: #f6f8fa;
   --md-table-head-bg: #f6f8fa;
-  --md-table-zebra: #f6f8fa;
+  --md-table-head-fg: #1f2328;
+  --md-table-border: #d0d7de;
+  --md-table-row-hover: transparent;
 
   /* —— 提示框 —— */
   --md-alert-note: #0969da;
@@ -77,10 +84,16 @@
   --md-syn-addition: #116329;
   --md-syn-addition-bg: #dafbe1;
 
+  /* —— 列表、分隔线与脚注 —— */
+  --md-list-marker: currentColor;
+  --md-hr: #d0d7de;
+  --md-footnote-fg: #656d76;
+
   /* —— 形状 —— */
   --md-radius: 6px;
   --md-space-block: 1em;
 }
+
 
 /* 语法高亮的 .hljs-* 规则在 base.css，皮肤只给 --md-syn-* 的值。 */
 

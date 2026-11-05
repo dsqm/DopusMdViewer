@@ -4,6 +4,7 @@
 :root {
   color-scheme: dark;
 
+  /* —— 底与字 —— */
   --md-bg: #002b36;
   --md-bg-alt: #073642;
   --md-fg: #839496;
@@ -11,6 +12,7 @@
   --md-fg-heading: #93a1a1;
   --md-border: #0f4551;
 
+  /* —— 链接与交互 —— */
   --md-link: #2aa198;
   --md-link-hover: #4fc0b6;
   --md-danger: #dc322f;
@@ -19,16 +21,25 @@
   --md-hit-current: #5c6a24;
   --md-mark-bg: #37410f;
 
+  /* —— 代码 —— */
   --md-code-bg: #073642;
   --md-code-fg: #93a1a1;
+  --md-code-ln-fg: #586e75;
   --md-block-bg: #022f3a;
   --md-block-fg: #93a1a1;
   --md-block-border: #0f4551;
 
+  /* —— 引用与表格 —— */
   --md-quote-bar: #0f4551;
   --md-quote-fg: #657b83;
+  --md-quote-bg: transparent;
+  --md-table-bg: transparent;
+  --md-table-odd-bg: transparent;
+  --md-table-even-bg: #03303b;
   --md-table-head-bg: #073642;
-  --md-table-zebra: #03303b;
+  --md-table-head-fg: #839496;
+  --md-table-border: #0f4551;
+  --md-table-row-hover: transparent;
 
   /* —— 提示框 —— */
   --md-alert-note: #268bd2;
@@ -42,6 +53,7 @@
   --md-alert-caution: #dc322f;
   --md-alert-caution-bg: rgba(220, 50, 47, 0.18);
 
+  /* —— 滚动条与界面件 —— */
   --md-scrollbar: #0f4551;
   --md-scrollbar-hover: #1a5b69;
   --md-outline-bg: #002b36;
@@ -51,9 +63,6 @@
   --md-icon: #93a1a1;
   --md-icon-hover: #2aa198;
   --md-icon-bg: #0f4551;
-
-  --md-radius: 4px;
-  --md-space-block: 1em;
 
   /* —— 语法高亮 token —— */
   --md-syn-keyword: #859900;
@@ -71,7 +80,17 @@
   --md-syn-deletion-bg: transparent;
   --md-syn-addition: #859900;
   --md-syn-addition-bg: transparent;
+
+  /* —— 列表、分隔线与脚注 —— */
+  --md-list-marker: currentColor;
+  --md-hr: #0f4551;
+  --md-footnote-fg: #586e75;
+
+  /* —— 形状 —— */
+  --md-radius: 4px;
+  --md-space-block: 1em;
 }
+
 
 /* 语法高亮的 .hljs-* 规则在 base.css，皮肤只给 --md-syn-* 的值。 */
 

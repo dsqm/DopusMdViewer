@@ -10,10 +10,8 @@
    ============================================================ */
 
 :root {
-  /* —— 变量契约（46 个）——
-     另有 10 个 --md-alert-*（note / tip / important / warning / caution 各带
-     一组 -bg），由各自的 .markdown-alert-* 规则局部覆盖，皮肤也要给全。
-     合计 56 个。 */
+  /* —— 变量契约（66 个，本文件全量给出默认值，等于 light 皮肤）——
+     皮肤只写想改的项即可；缺项就落回这里的值。 */
   --md-bg: #ffffff;
   --md-bg-alt: #f6f8fa;
   --md-fg: #1f2328;
@@ -30,14 +28,41 @@
 
   --md-code-bg: #eff1f3;
   --md-code-fg: #1f2328;
+  --md-code-ln-fg: #656d76;
   --md-block-bg: #f6f8fa;
   --md-block-fg: #1f2328;
   --md-block-border: #d0d7de;
 
   --md-quote-bar: #d0d7de;
   --md-quote-fg: #57606a;
+  --md-quote-bg: transparent;
+
+  /* 表格底与行底分开给：奇数行 / 偶数行各一个变量，才能做"只给奇行着色"这类效果。
+     底色默认 transparent（沿用父层），所以只要不给 --md-table-even-bg 就没有斑马纹。 */
+  --md-table-bg: transparent;
+  --md-table-odd-bg: transparent;
+  --md-table-even-bg: #f6f8fa;
   --md-table-head-bg: #f6f8fa;
-  --md-table-zebra: #f6f8fa;
+  --md-table-head-fg: #1f2328;
+  --md-table-border: #d0d7de;
+  --md-table-row-hover: transparent;
+
+  /* 提示框：主色与底色各一套，由 .markdown-alert-* 转发成 --md-alert-accent / -bg。
+     放在这里当默认值，皮肤不写也有可观感（与 light 一致）。 */
+  --md-alert-note: #0969da;
+  --md-alert-note-bg: #ddf4ff;
+  --md-alert-tip: #1a7f37;
+  --md-alert-tip-bg: #dafbe1;
+  --md-alert-important: #8250df;
+  --md-alert-important-bg: #fbefff;
+  --md-alert-warning: #9a6700;
+  --md-alert-warning-bg: #fff8c5;
+  --md-alert-caution: #cf222e;
+  --md-alert-caution-bg: #ffebe9;
+
+  --md-list-marker: currentColor;
+  --md-hr: #d0d7de;
+  --md-footnote-fg: #656d76;
 
   --md-scrollbar: #c9d1d9;
   --md-scrollbar-hover: #adb5bd;
@@ -353,7 +378,7 @@ hr {
   height: 0;
   margin: 1.8em 0;
   border: 0;
-  border-top: 2px solid var(--md-border);
+  border-top: 2px solid var(--md-hr);
 }
 
 img {
@@ -395,6 +420,9 @@ mark.hit--current { background: var(--md-hit-current); }
 /* ---------------- 列表 ---------------- */
 
 ul, ol { margin: var(--md-space-block) 0; padding-left: 1.9em; }
+
+/* 列表符号（圆点/数字）单独一个色，暗皮肤里常需要比正文更淡 */
+li::marker { color: var(--md-list-marker); }
 li { margin: 0.25em 0; }
 li > ul, li > ol { margin: 0.25em 0; }
 
@@ -513,7 +541,7 @@ pre > code.has-ln {
   left: 0;
   width: var(--ln-w);
   border-right: 1px solid var(--md-block-border);
-  color: var(--md-fg-muted);
+  color: var(--md-code-ln-fg);
   text-align: right;
   counter-reset: mdv-line;
   /* 行号不该被拖选、不该吃点击：拖过头时选中的仍是源码 */
@@ -605,6 +633,7 @@ blockquote {
   margin: var(--md-space-block) 0;
   padding: 0.1em 1em;
   border-left: 0.25em solid var(--md-quote-bar);
+  background: var(--md-quote-bg);
   color: var(--md-quote-fg);
 }
 
@@ -672,6 +701,7 @@ blockquote > *:last-child { margin-bottom: 0; }
 
 table {
   margin: var(--md-space-block) 0;
+  background: var(--md-table-bg);
   border-collapse: collapse;
   border-spacing: 0;
   width: auto;
@@ -680,7 +710,7 @@ table {
 
 th, td {
   padding: 0.4em 0.85em;
-  border: 1px solid var(--md-border);
+  border: 1px solid var(--md-table-border);
   /* 长 URL、长哈希这类不可断内容也允许在任意字符处断开 */
   overflow-wrap: anywhere;
   min-width: calc(2em + 1.7em);
@@ -697,10 +727,14 @@ body.mdv-table-nowrap .mdv-cb--table td {
 
 th {
   background: var(--md-table-head-bg);
+  color: var(--md-table-head-fg);
   font-weight: 600;
 }
 
-tbody tr:nth-child(2n) { background: var(--md-table-zebra); }
+/* 奇偶行各一个变量；悬停底色走单元格，默认 transparent 时不影响行底 */
+tbody tr:nth-child(odd) { background: var(--md-table-odd-bg); }
+tbody tr:nth-child(even) { background: var(--md-table-even-bg); }
+tbody tr:hover > td { background: var(--md-table-row-hover); }
 
 /* ---------------- 巨型表格（>20000 行：分块真表格） ----------------
    一张表拆成多张块级 <table>，每块 500 行。内容上是一整张表，视觉上不能看出来：
@@ -746,7 +780,7 @@ body.mdv-table-nowrap .mdv-cb--bigtable { width: 100%; }
   padding-top: 1em;
   border-top: 1px solid var(--md-border);
   font-size: 0.92em;
-  color: var(--md-fg-muted);
+  color: var(--md-footnote-fg);
 }
 
 .footnotes ol { padding-left: 1.4em; }
