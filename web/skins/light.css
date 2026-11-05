@@ -1,6 +1,6 @@
 /* name: GitHub Light
    id: light — 默认皮肤，同时是皮肤模板。
-   66 个变量全部列出；只想要配色时改这里就够，
+   108 个变量全部列出；只想要配色时改这里就够，
    要改排版再往下写选择器。字体不归皮肤：font-family / font-size /
    line-height / 行宽由 <style id="fx"> 最后写出并压住。 */
 
@@ -14,6 +14,18 @@
   --md-fg-muted: #656d76;
   --md-fg-heading: #1f2328;
   --md-border: #d0d7de;
+  --md-h1-fg: var(--md-fg-heading);
+  --md-h2-fg: var(--md-fg-heading);
+  --md-h3-fg: var(--md-fg-heading);
+  --md-h4-fg: var(--md-fg-heading);
+  --md-h5-fg: var(--md-fg-heading);
+  --md-h6-fg: var(--md-fg-muted);
+  --md-h1-border: var(--md-border);
+  --md-h2-border: var(--md-border);
+  --md-h3-border: transparent;
+  --md-h4-border: transparent;
+  --md-h5-border: transparent;
+  --md-h6-border: transparent;
 
   /* —— 链接与交互 —— */
   --md-link: #0969da;
@@ -31,41 +43,64 @@
   --md-block-bg: #f6f8fa;
   --md-block-fg: #1f2328;
   --md-block-border: #d0d7de;
+  --md-code-ln-bg: transparent;
+  --md-code-ws-fg: var(--md-fg-muted);
+  --md-copy-bg: var(--md-icon-bg);
+  --md-copy-fg: var(--md-icon);
+  --md-copy-hover-fg: var(--md-icon-hover);
 
   /* —— 引用与表格 —— */
   --md-quote-bar: #d0d7de;
   --md-quote-fg: #57606a;
   --md-quote-bg: transparent;
+  --md-quote-2-bar: var(--md-quote-bar);
+  --md-quote-2-fg: var(--md-quote-fg);
+  --md-quote-2-bg: var(--md-quote-bg);
   --md-table-bg: transparent;
   --md-table-odd-bg: transparent;
   --md-table-even-bg: #f6f8fa;
   --md-table-head-bg: #f6f8fa;
   --md-table-head-fg: #1f2328;
   --md-table-border: #d0d7de;
+  --md-table-head-border: var(--md-table-border);
   --md-table-row-hover: transparent;
 
   /* —— 提示框 —— */
   --md-alert-note: #0969da;
   --md-alert-note-bg: #ddf4ff;
+  --md-alert-note-title: var(--md-alert-note);
   --md-alert-tip: #1a7f37;
   --md-alert-tip-bg: #dafbe1;
+  --md-alert-tip-title: var(--md-alert-tip);
   --md-alert-important: #8250df;
   --md-alert-important-bg: #fbefff;
+  --md-alert-important-title: var(--md-alert-important);
   --md-alert-warning: #9a6700;
   --md-alert-warning-bg: #fff8c5;
+  --md-alert-warning-title: var(--md-alert-warning);
   --md-alert-caution: #cf222e;
   --md-alert-caution-bg: #ffebe9;
+  --md-alert-caution-title: var(--md-alert-caution);
 
   /* —— 滚动条与界面件 —— */
   --md-scrollbar: #c9d1d9;
   --md-scrollbar-hover: #adb5bd;
+  --md-scrollbar-track: transparent;
   --md-outline-bg: #ffffff;
   --md-outline-fg: #1f2328;
+  --md-outline-border: var(--md-border);
+  --md-outline-hover-bg: var(--md-bg-alt);
+  --md-find-bg: var(--md-outline-bg);
+  --md-find-border: var(--md-border);
+  --md-find-fg: var(--md-fg);
+  --md-tools-bg: transparent;
+  --md-icon-active: var(--md-link);
 
   /* —— 图标（工具条按钮与复制按钮） —— */
   --md-icon: #1f2328;
   --md-icon-hover: #0969da;
   --md-icon-bg: #ffffff;
+  --md-icon-border: var(--md-border);
 
   /* —— 语法高亮 token —— */
   --md-syn-keyword: #cf222e;
@@ -86,11 +121,18 @@
 
   /* —— 列表、分隔线与脚注 —— */
   --md-list-marker: currentColor;
+  --md-ul-marker: var(--md-list-marker);
+  --md-ol-marker: var(--md-list-marker);
   --md-hr: #d0d7de;
   --md-footnote-fg: #656d76;
+  --md-footnote-bg: transparent;
+  --md-footnote-border: var(--md-border);
 
   /* —— 形状 —— */
   --md-radius: 6px;
+  --md-radius-code: var(--md-radius);
+  --md-radius-alert: var(--md-radius);
+  --md-radius-ui: calc(var(--md-radius) * 0.7);
   --md-space-block: 1em;
 }
 

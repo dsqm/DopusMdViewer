@@ -11,6 +11,18 @@
   --md-fg-muted: #93a1a1;
   --md-fg-heading: #586e75;
   --md-border: #ddd6c1;
+  --md-h1-fg: var(--md-fg-heading);
+  --md-h2-fg: var(--md-fg-heading);
+  --md-h3-fg: var(--md-fg-heading);
+  --md-h4-fg: var(--md-fg-heading);
+  --md-h5-fg: var(--md-fg-heading);
+  --md-h6-fg: var(--md-fg-muted);
+  --md-h1-border: var(--md-border);
+  --md-h2-border: var(--md-border);
+  --md-h3-border: transparent;
+  --md-h4-border: transparent;
+  --md-h5-border: transparent;
+  --md-h6-border: transparent;
 
   /* —— 链接与交互 —— */
   --md-link: #268bd2;
@@ -28,41 +40,64 @@
   --md-block-bg: #f7f1de;
   --md-block-fg: #586e75;
   --md-block-border: #ddd6c1;
+  --md-code-ln-bg: transparent;
+  --md-code-ws-fg: var(--md-fg-muted);
+  --md-copy-bg: var(--md-icon-bg);
+  --md-copy-fg: var(--md-icon);
+  --md-copy-hover-fg: var(--md-icon-hover);
 
   /* —— 引用与表格 —— */
   --md-quote-bar: #d6cfb8;
   --md-quote-fg: #93a1a1;
   --md-quote-bg: transparent;
+  --md-quote-2-bar: var(--md-quote-bar);
+  --md-quote-2-fg: var(--md-quote-fg);
+  --md-quote-2-bg: var(--md-quote-bg);
   --md-table-bg: transparent;
   --md-table-odd-bg: transparent;
   --md-table-even-bg: #f5efdd;
   --md-table-head-bg: #eee8d5;
   --md-table-head-fg: #657b83;
   --md-table-border: #ddd6c1;
+  --md-table-head-border: var(--md-table-border);
   --md-table-row-hover: transparent;
 
   /* —— 提示框 —— */
   --md-alert-note: #268bd2;
   --md-alert-note-bg: #e9f1f5;
+  --md-alert-note-title: var(--md-alert-note);
   --md-alert-tip: #859900;
   --md-alert-tip-bg: #eef2dc;
+  --md-alert-tip-title: var(--md-alert-tip);
   --md-alert-important: #6c71c4;
   --md-alert-important-bg: #ecebf6;
+  --md-alert-important-title: var(--md-alert-important);
   --md-alert-warning: #b58900;
   --md-alert-warning-bg: #f7f0d7;
+  --md-alert-warning-title: var(--md-alert-warning);
   --md-alert-caution: #dc322f;
   --md-alert-caution-bg: #f8e5e2;
+  --md-alert-caution-title: var(--md-alert-caution);
 
   /* —— 滚动条与界面件 —— */
   --md-scrollbar: #d6cfb8;
   --md-scrollbar-hover: #c4bda6;
+  --md-scrollbar-track: transparent;
   --md-outline-bg: #fdf6e3;
   --md-outline-fg: #586e75;
+  --md-outline-border: var(--md-border);
+  --md-outline-hover-bg: var(--md-bg-alt);
+  --md-find-bg: var(--md-outline-bg);
+  --md-find-border: var(--md-border);
+  --md-find-fg: var(--md-fg);
+  --md-tools-bg: transparent;
+  --md-icon-active: var(--md-link);
 
   /* —— 图标（工具条按钮与复制按钮） —— */
   --md-icon: #586e75;
   --md-icon-hover: #268bd2;
   --md-icon-bg: #fdf6e3;
+  --md-icon-border: var(--md-border);
 
   /* —— 语法高亮 token —— */
   --md-syn-keyword: #859900;
@@ -83,11 +118,18 @@
 
   /* —— 列表、分隔线与脚注 —— */
   --md-list-marker: currentColor;
+  --md-ul-marker: var(--md-list-marker);
+  --md-ol-marker: var(--md-list-marker);
   --md-hr: #ddd6c1;
   --md-footnote-fg: #93a1a1;
+  --md-footnote-bg: transparent;
+  --md-footnote-border: var(--md-border);
 
   /* —— 形状 —— */
   --md-radius: 4px;
+  --md-radius-code: var(--md-radius);
+  --md-radius-alert: var(--md-radius);
+  --md-radius-ui: calc(var(--md-radius) * 0.7);
   --md-space-block: 1em;
 }
 

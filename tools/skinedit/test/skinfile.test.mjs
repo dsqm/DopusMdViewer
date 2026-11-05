@@ -33,9 +33,9 @@ function eq(actual, expect, label) {
 
 /* ---- 1. 分组与默认值表 ---- */
 console.log('[1] 分组与默认值')
-eq(ORDER.length, 66, '共 66 个变量')
-eq(Object.keys(DEFAULTS).length, 66, 'DEFAULTS 有 66 项')
-eq(new Set(ORDER).size, 66, 'ORDER 无重复')
+eq(ORDER.length, 108, '共 108 个变量')
+eq(Object.keys(DEFAULTS).length, 108, 'DEFAULTS 有 108 项')
+eq(new Set(ORDER).size, 108, 'ORDER 无重复')
 const missingDefault = ORDER.filter((n) => !(n in DEFAULTS))
 eq(missingDefault.length, 0, '每个变量都有默认值', missingDefault.join(','))
 const extraDefault = Object.keys(DEFAULTS).filter((n) => !ORDER.includes(n))
@@ -49,7 +49,7 @@ const baseVars = {}
 for (const m of (baseRoot ? baseRoot[1] : '').matchAll(/--md-([a-z0-9-]+)\s*:\s*([^;]+);/g)) {
   baseVars[m[1]] = m[2].replace(/\s+/g, ' ').trim()
 }
-eq(Object.keys(baseVars).length, 66, 'base.css :root 也是 66 项')
+eq(Object.keys(baseVars).length, 108, 'base.css :root 也是 108 项')
 const drift = ORDER.filter((n) => baseVars[n] !== DEFAULTS[n])
 eq(drift.length, 0, '默认值表与 base.css 一致',
   drift.map((n) => n + ': base=' + baseVars[n] + ' table=' + DEFAULTS[n]).join('; '))
@@ -77,11 +77,11 @@ for (const file of fs.readdirSync(SKINS).filter((f) => f.endsWith('.css')).sort(
 console.log('[3] 缺项与重复')
 const minimal = ':root {\n  --md-bg: #101010;\n}\n'
 const p3 = parseSkin(minimal)
-eq(p3.filled.length, 65, '缺 65 项被补齐')
+eq(p3.filled.length, 107, '缺 107 项被补齐')
 eq(p3.vars.bg, '#101010', '写了的项保持原值')
 eq(p3.vars.fg, DEFAULTS.fg, '缺的项落回默认值')
 const out3 = emitSkin({ ...p3, name: 'mini', id: 'mini' })
-eq((out3.match(/^  --md-/gm) || []).length, 66, '写出 66 行变量')
+eq((out3.match(/^  --md-/gm) || []).length, 108, '写出 108 行变量')
 
 const dup = ':root {\n  --md-bg: #111111;\n  --md-bg: #222222;\n}\n'
 const p4 = parseSkin(dup)

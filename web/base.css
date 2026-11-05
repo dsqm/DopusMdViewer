@@ -10,8 +10,10 @@
    ============================================================ */
 
 :root {
-  /* —— 变量契约（66 个，本文件全量给出默认值，等于 light 皮肤）——
-     皮肤只写想改的项即可；缺项就落回这里的值。 */
+  /* —— 变量契约（108 个，本文件全量给出默认值，等于 light 皮肤）——
+     皮肤只写想改的项即可；缺项就落回这里的值。
+     默认值里大量出现 var(--上级)：这是「总开关 + 个别覆盖」的级联，改 --md-fg-heading
+     六级标题跟着变，某一级被单独写过就不再跟。 */
   --md-bg: #ffffff;
   --md-bg-alt: #f6f8fa;
   --md-fg: #1f2328;
@@ -19,8 +21,24 @@
   --md-fg-heading: #1f2328;
   --md-border: #d0d7de;
 
+  /* 六级标题各自一色。h6 沿用次要字（现状），h1–h5 继承标题总色。
+     下边框：h1/h2 默认画线，h3–h6 默认透明（用 box-shadow 画，透明时零占位）。 */
+  --md-h1-fg: var(--md-fg-heading);
+  --md-h2-fg: var(--md-fg-heading);
+  --md-h3-fg: var(--md-fg-heading);
+  --md-h4-fg: var(--md-fg-heading);
+  --md-h5-fg: var(--md-fg-heading);
+  --md-h6-fg: var(--md-fg-muted);
+  --md-h1-border: var(--md-border);
+  --md-h2-border: var(--md-border);
+  --md-h3-border: transparent;
+  --md-h4-border: transparent;
+  --md-h5-border: transparent;
+  --md-h6-border: transparent;
+
   --md-link: #0969da;
   --md-link-hover: #0550ae;
+  --md-danger: #cf222e;
   --md-selection: #b6d7ff;
   --md-hit: #fff3b0;
   --md-hit-current: #ffd33d;
@@ -32,10 +50,21 @@
   --md-block-bg: #f6f8fa;
   --md-block-fg: #1f2328;
   --md-block-border: #d0d7de;
+  /* 行号槽底色、空白符标记色（透明时与代码块同底） */
+  --md-code-ln-bg: transparent;
+  --md-code-ws-fg: var(--md-fg-muted);
+  /* 复制按钮单独一套：它压在表格/代码块上，常需要与工具条图标不同的底 */
+  --md-copy-bg: var(--md-icon-bg);
+  --md-copy-fg: var(--md-icon);
+  --md-copy-hover-fg: var(--md-icon-hover);
 
   --md-quote-bar: #d0d7de;
   --md-quote-fg: #57606a;
   --md-quote-bg: transparent;
+  /* 嵌套一层引用：默认与上一层相同，想分层时才改 */
+  --md-quote-2-bar: var(--md-quote-bar);
+  --md-quote-2-fg: var(--md-quote-fg);
+  --md-quote-2-bg: var(--md-quote-bg);
 
   /* 表格底与行底分开给：奇数行 / 偶数行各一个变量，才能做"只给奇行着色"这类效果。
      底色默认 transparent（沿用父层），所以只要不给 --md-table-even-bg 就没有斑马纹。 */
@@ -45,35 +74,52 @@
   --md-table-head-bg: #f6f8fa;
   --md-table-head-fg: #1f2328;
   --md-table-border: #d0d7de;
+  --md-table-head-border: var(--md-table-border);
   --md-table-row-hover: transparent;
 
-  /* 提示框：主色与底色各一套，由 .markdown-alert-* 转发成 --md-alert-accent / -bg。
-     放在这里当默认值，皮肤不写也有可观感（与 light 一致）。 */
+  /* 提示框：主色与底色各一套，由 .markdown-alert-* 转发成 --md-alert-accent / -bg /
+     -title。标题默认与主色同色，想单独压深时改 -title。 */
   --md-alert-note: #0969da;
   --md-alert-note-bg: #ddf4ff;
+  --md-alert-note-title: var(--md-alert-note);
   --md-alert-tip: #1a7f37;
   --md-alert-tip-bg: #dafbe1;
+  --md-alert-tip-title: var(--md-alert-tip);
   --md-alert-important: #8250df;
   --md-alert-important-bg: #fbefff;
+  --md-alert-important-title: var(--md-alert-important);
   --md-alert-warning: #9a6700;
   --md-alert-warning-bg: #fff8c5;
+  --md-alert-warning-title: var(--md-alert-warning);
   --md-alert-caution: #cf222e;
   --md-alert-caution-bg: #ffebe9;
+  --md-alert-caution-title: var(--md-alert-caution);
 
   --md-list-marker: currentColor;
+  --md-ul-marker: var(--md-list-marker);
+  --md-ol-marker: var(--md-list-marker);
   --md-hr: #d0d7de;
   --md-footnote-fg: #656d76;
+  --md-footnote-bg: transparent;
+  --md-footnote-border: var(--md-border);
 
   --md-scrollbar: #c9d1d9;
   --md-scrollbar-hover: #adb5bd;
+  --md-scrollbar-track: transparent;
   --md-outline-bg: #ffffff;
   --md-outline-fg: #1f2328;
+  --md-outline-border: var(--md-border);
+  --md-outline-hover-bg: var(--md-bg-alt);
+  --md-find-bg: var(--md-outline-bg);
+  --md-find-border: var(--md-border);
+  --md-find-fg: var(--md-fg);
+  --md-tools-bg: transparent;
 
   --md-icon: #1f2328;
   --md-icon-hover: #0969da;
   --md-icon-bg: #ffffff;
-
-  --md-danger: #cf222e;
+  --md-icon-border: var(--md-border);
+  --md-icon-active: var(--md-link);
 
   /* —— 语法高亮 token（颜色；斜体/加粗是结构，写在下面的规则里） —— */
   --md-syn-keyword: #cf222e;
@@ -94,6 +140,10 @@
 
   --md-radius: 6px;
   --md-space-block: 1em;
+  /* 三种圆角共用总开关；想单独处理代码块/提示框/小按钮时才分开写 */
+  --md-radius-code: var(--md-radius);
+  --md-radius-alert: var(--md-radius);
+  --md-radius-ui: calc(var(--md-radius) * 0.7);
 
   /* —— 字体与行宽，#fx 会整组覆盖 —— */
   --fx-ui: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
@@ -110,7 +160,7 @@
 
 html {
   background: var(--md-bg);
-  scrollbar-color: var(--md-scrollbar) transparent;
+  scrollbar-color: var(--md-scrollbar) var(--md-scrollbar-track);
 }
 
 body.mdv-root {
@@ -173,6 +223,7 @@ body.virtual .blk--hr { padding-top: 1.8em; }
   bottom: 4px;
   width: 10px;
   z-index: 20;
+  background: var(--md-scrollbar-track);
 }
 
 #sb[hidden] { display: none; }
@@ -256,7 +307,7 @@ body.dev #doc {
 ::selection { background: var(--md-selection); }
 
 ::-webkit-scrollbar { width: 12px; height: 12px; }
-::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-track { background: var(--md-scrollbar-track); }
 ::-webkit-scrollbar-thumb {
   background: var(--md-scrollbar);
   border: 3px solid var(--md-bg);
@@ -288,7 +339,7 @@ body.virtual .blk--big .big-frame {
   background: var(--md-block-bg);
   color: var(--md-block-fg);
   border: 1px solid var(--md-block-border);
-  border-radius: var(--md-radius);
+  border-radius: var(--md-radius-code);
   /* 横向滚动条跟着框的底边走，与普通代码块一致：滚到块末尾就能看到它。
      框高等于整块高，所以它不会像普通块那样一直贴在视口里，这是有意的。 */
 }
@@ -357,12 +408,17 @@ h1, h2, h3, h4, h5, h6 {
 .mdv-root > *:first-child,
 .measure > *:first-child { margin-top: 0; }
 
-h1 { font-size: 2em; padding-bottom: 0.25em; border-bottom: 1px solid var(--md-border); }
-h2 { font-size: 1.5em; padding-bottom: 0.22em; border-bottom: 1px solid var(--md-border); }
-h3 { font-size: 1.22em; }
-h4 { font-size: 1.05em; }
-h5 { font-size: 0.95em; }
-h6 { font-size: 0.9em; color: var(--md-fg-muted); }
+/* 每级各自一色。下边框 h1/h2 用 border-bottom（现状的留白就是这个内边距），
+   h3–h6 用 inset 阴影画：透明色时零占位，给了颜色才出现，不会因为多一条 1px
+   边框把基线整体推下去。 */
+h1 { font-size: 2em; padding-bottom: 0.25em; color: var(--md-h1-fg);
+     border-bottom: 1px solid var(--md-h1-border); }
+h2 { font-size: 1.5em; padding-bottom: 0.22em; color: var(--md-h2-fg);
+     border-bottom: 1px solid var(--md-h2-border); }
+h3 { font-size: 1.22em; color: var(--md-h3-fg); box-shadow: inset 0 -1px 0 var(--md-h3-border); }
+h4 { font-size: 1.05em; color: var(--md-h4-fg); box-shadow: inset 0 -1px 0 var(--md-h4-border); }
+h5 { font-size: 0.95em; color: var(--md-h5-fg); box-shadow: inset 0 -1px 0 var(--md-h5-border); }
+h6 { font-size: 0.9em; color: var(--md-h6-fg); box-shadow: inset 0 -1px 0 var(--md-h6-border); }
 
 /* ---------------- 正文 ---------------- */
 
@@ -421,8 +477,9 @@ mark.hit--current { background: var(--md-hit-current); }
 
 ul, ol { margin: var(--md-space-block) 0; padding-left: 1.9em; }
 
-/* 列表符号（圆点/数字）单独一个色，暗皮肤里常需要比正文更淡 */
-li::marker { color: var(--md-list-marker); }
+/* 列表符号（圆点/数字）单独给色，暗皮肤里常需要比正文更淡；无序与有序分开 */
+ul > li::marker { color: var(--md-ul-marker); }
+ol > li::marker { color: var(--md-ol-marker); }
 li { margin: 0.25em 0; }
 li > ul, li > ol { margin: 0.25em 0; }
 
@@ -471,7 +528,7 @@ pre {
   background: var(--md-block-bg);
   color: var(--md-block-fg);
   border: 1px solid var(--md-block-border);
-  border-radius: var(--md-radius);
+  border-radius: var(--md-radius-code);
   overflow-x: auto;
   line-height: var(--fx-lh);
   tab-size: 4;
@@ -541,6 +598,7 @@ pre > code.has-ln {
   left: 0;
   width: var(--ln-w);
   border-right: 1px solid var(--md-block-border);
+  background: var(--md-code-ln-bg);
   color: var(--md-code-ln-fg);
   text-align: right;
   counter-reset: mdv-line;
@@ -579,7 +637,7 @@ code .mdv-wt::before {
   top: 50%;
   line-height: 1;
   transform: translateY(-50%);
-  color: var(--md-fg-muted);
+  color: var(--md-code-ws-fg);
   opacity: 0.55;
   /* 标记不该被拖选、不该吃点击：拖过头时选中的仍是源码 */
   user-select: none;
@@ -640,13 +698,20 @@ blockquote {
 blockquote > *:first-child { margin-top: 0; }
 blockquote > *:last-child { margin-bottom: 0; }
 
+/* 第二层引用可以用另一套色，默认与上一层一致 */
+blockquote blockquote {
+  border-left-color: var(--md-quote-2-bar);
+  background: var(--md-quote-2-bg);
+  color: var(--md-quote-2-fg);
+}
+
 /* ---------------- GitHub 提示框 ---------------- */
 
 .markdown-alert {
   margin: var(--md-space-block) 0;
   padding: 0.6em 1em;
   border-left: 3px solid var(--md-alert-accent);
-  border-radius: var(--md-radius);
+  border-radius: var(--md-radius-alert);
   background: var(--md-alert-bg);
 }
 
@@ -656,32 +721,37 @@ blockquote > *:last-child { margin-bottom: 0; }
 .markdown-alert .markdown-alert-title {
   margin: 0 0 0.35em;
   font-weight: 600;
-  color: var(--md-alert-accent);
+  color: var(--md-alert-title);
 }
 
 .markdown-alert-note {
   --md-alert-accent: var(--md-alert-note);
   --md-alert-bg: var(--md-alert-note-bg);
+  --md-alert-title: var(--md-alert-note-title);
 }
 
 .markdown-alert-tip {
   --md-alert-accent: var(--md-alert-tip);
   --md-alert-bg: var(--md-alert-tip-bg);
+  --md-alert-title: var(--md-alert-tip-title);
 }
 
 .markdown-alert-important {
   --md-alert-accent: var(--md-alert-important);
   --md-alert-bg: var(--md-alert-important-bg);
+  --md-alert-title: var(--md-alert-important-title);
 }
 
 .markdown-alert-warning {
   --md-alert-accent: var(--md-alert-warning);
   --md-alert-bg: var(--md-alert-warning-bg);
+  --md-alert-title: var(--md-alert-warning-title);
 }
 
 .markdown-alert-caution {
   --md-alert-accent: var(--md-alert-caution);
   --md-alert-bg: var(--md-alert-caution-bg);
+  --md-alert-title: var(--md-alert-caution-title);
 }
 
 /* ---------------- 表格 ----------------
@@ -728,6 +798,7 @@ body.mdv-table-nowrap .mdv-cb--table td {
 th {
   background: var(--md-table-head-bg);
   color: var(--md-table-head-fg);
+  border-color: var(--md-table-head-border);
   font-weight: 600;
 }
 
@@ -778,7 +849,8 @@ body.mdv-table-nowrap .mdv-cb--bigtable { width: 100%; }
 .footnotes {
   margin-top: 2.5em;
   padding-top: 1em;
-  border-top: 1px solid var(--md-border);
+  border-top: 1px solid var(--md-footnote-border);
+  background: var(--md-footnote-bg);
   font-size: 0.92em;
   color: var(--md-footnote-fg);
 }
@@ -918,8 +990,8 @@ pre.mermaid-src {
   width: 24px;
   height: 24px;
   padding: 0;
-  border: 1px solid var(--md-border);
-  border-radius: calc(var(--md-radius) * 0.7);
+  border: 1px solid var(--md-icon-border);
+  border-radius: var(--md-radius-ui);
   background: var(--md-icon-bg);
   color: var(--md-icon);
   cursor: pointer;
@@ -961,10 +1033,10 @@ pre.mermaid-src {
   width: 24px;
   height: 24px;
   padding: 0;
-  border: 1px solid var(--md-border);
-  border-radius: calc(var(--md-radius) * 0.7);
-  background: var(--md-icon-bg);
-  color: var(--md-icon);
+  border: 1px solid var(--md-icon-border);
+  border-radius: var(--md-radius-ui);
+  background: var(--md-copy-bg);
+  color: var(--md-copy-fg);
   cursor: pointer;
   opacity: 0;
   /* 透明时不挡选字：鼠标还没进块的时候它不该吃掉这块区域的点击 */
@@ -979,11 +1051,11 @@ pre.mermaid-src {
 }
 
 .mdv-copy:hover {
-  color: var(--md-icon-hover);
+  color: var(--md-copy-hover-fg);
   border-color: var(--md-fg-muted);
 }
 
-.mdv-copy[data-done="1"] { color: var(--md-icon-hover); }
+.mdv-copy[data-done="1"] { color: var(--md-copy-hover-fg); }
 
 @media (prefers-reduced-motion: reduce) {
   .mdv-copy { transition: none; }
@@ -999,8 +1071,8 @@ pre.mermaid-src {
   display: flex;
   gap: 4px;
   /* .ui 给了实底（--md-outline-bg）：正文是白底时看不出来，浮到图片上就是一块
-     白色托盘。这里只承载两个图标按钮，底必须透出去。 */
-  background: transparent;
+     白色托盘。这里只承载两个图标按钮，底默认透出去；要给工具条加托盘改这个变量。 */
+  background: var(--md-tools-bg);
 }
 
 #tools[hidden] { display: none; }
@@ -1010,8 +1082,8 @@ pre.mermaid-src {
 .outline-head button {
   font: inherit;
   padding: 2px 8px;
-  border: 1px solid var(--md-border);
-  border-radius: calc(var(--md-radius) * 0.7);
+  border: 1px solid var(--md-icon-border);
+  border-radius: var(--md-radius-ui);
   background: var(--md-outline-bg);
   color: var(--md-outline-fg);
   cursor: pointer;
@@ -1048,9 +1120,10 @@ pre.mermaid-src {
   align-items: center;
   gap: 6px;
   padding: 5px 6px;
-  border: 1px solid var(--md-border);
+  border: 1px solid var(--md-find-border);
   border-radius: var(--md-radius);
-  background: var(--md-outline-bg);
+  background: var(--md-find-bg);
+  color: var(--md-find-fg);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }
 
@@ -1063,7 +1136,7 @@ pre.mermaid-src {
   padding: 2px 6px;
   color: inherit;
   background: var(--md-bg);
-  border: 1px solid var(--md-border);
+  border: 1px solid var(--md-find-border);
   border-radius: calc(var(--md-radius) * 0.6);
   outline: none;
 }
@@ -1080,8 +1153,8 @@ pre.mermaid-src {
 #find button:disabled { opacity: 0.45; cursor: default; }
 
 #find .tog.on {
-  border-color: var(--md-link);
-  color: var(--md-link);
+  border-color: var(--md-icon-active);
+  color: var(--md-icon-active);
 }
 
 #outline {
@@ -1093,7 +1166,7 @@ pre.mermaid-src {
   display: flex;
   flex-direction: column;
   width: min(280px, 78vw);
-  border-left: 1px solid var(--md-border);
+  border-left: 1px solid var(--md-outline-border);
   background: var(--md-outline-bg);
   box-shadow: -2px 0 8px rgba(0, 0, 0, 0.1);
 }
@@ -1105,7 +1178,7 @@ pre.mermaid-src {
   align-items: center;
   justify-content: space-between;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--md-border);
+  border-bottom: 1px solid var(--md-outline-border);
   font-weight: 600;
 }
 
@@ -1130,7 +1203,7 @@ pre.mermaid-src {
   white-space: nowrap;
 }
 
-.outline-item:hover { background: var(--md-bg-alt); }
+.outline-item:hover { background: var(--md-outline-hover-bg); }
 
 .outline-empty,
 .outline-note {

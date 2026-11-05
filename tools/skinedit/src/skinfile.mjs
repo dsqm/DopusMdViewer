@@ -3,77 +3,102 @@
 // 一份皮肤固定是三段：
 //   <header>   /* name: 显示名
 //                 id: 文件名主干 */
-//   <root>     :root { color-scheme: …; 66 个 --md-* }
+//   <root>     :root { color-scheme: …; 108 个 --md-* }
 //   <extra>    :root 之后的原文，逐字带回
 //
-// 读：抽出 66 个变量、color-scheme、未识别声明与 extra，缺的补 DEFAULTS。
-// 写：头注释 + :root（十个分组、固定顺序、全量 66 行）+ 未识别声明 + extra。
+// 读：抽出 108 个变量、color-scheme、未识别声明与 extra，缺的补 DEFAULTS。
+// 写：头注释 + :root（十个分组、固定顺序、全量 108 行）+ 未识别声明 + extra。
 // 因此 emitSkin(parseSkin(x)) 与 x 的 ":root" 起部分逐字相同（头注释会被重写成
 // 只有 name/id，模板里的说明文字不保留）。这条等式是 test/skinfile.test.mjs 的主断言。
 
-/* 分组顺序即写出顺序，与 web/skins/light.css 一致。 */
+/* 分组顺序即写出顺序，与 web/skins/light.css 一致。108 项。 */
 export const GROUPS = [
-  { title: '底与字', names: ['bg', 'bg-alt', 'fg', 'fg-muted', 'fg-heading', 'border'] },
-  { title: '链接与交互', names: ['link', 'link-hover', 'danger', 'selection', 'hit', 'hit-current', 'mark-bg'] },
-  { title: '代码', names: ['code-bg', 'code-fg', 'code-ln-fg', 'block-bg', 'block-fg', 'block-border'] },
-  { title: '引用与表格', names: ['quote-bar', 'quote-fg', 'quote-bg',
-                                 'table-bg', 'table-odd-bg', 'table-even-bg',
-                                 'table-head-bg', 'table-head-fg', 'table-border', 'table-row-hover'] },
-  { title: '提示框', names: ['alert-note', 'alert-note-bg', 'alert-tip', 'alert-tip-bg',
-                             'alert-important', 'alert-important-bg',
-                             'alert-warning', 'alert-warning-bg',
-                             'alert-caution', 'alert-caution-bg'] },
-  { title: '滚动条与界面件', names: ['scrollbar', 'scrollbar-hover', 'outline-bg', 'outline-fg'] },
-  { title: '图标（工具条按钮与复制按钮）', names: ['icon', 'icon-hover', 'icon-bg'] },
+  { title: '底与字', names: ['bg', 'bg-alt', 'fg', 'fg-muted', 'fg-heading', 'border', 'h1-fg',
+      'h2-fg', 'h3-fg', 'h4-fg', 'h5-fg', 'h6-fg', 'h1-border', 'h2-border', 'h3-border',
+      'h4-border', 'h5-border', 'h6-border'] },
+  { title: '链接与交互', names: ['link', 'link-hover', 'danger', 'selection', 'hit', 'hit-current',
+      'mark-bg'] },
+  { title: '代码', names: ['code-bg', 'code-fg', 'code-ln-fg', 'block-bg', 'block-fg',
+      'block-border', 'code-ln-bg', 'code-ws-fg', 'copy-bg', 'copy-fg', 'copy-hover-fg'] },
+  { title: '引用与表格', names: ['quote-bar', 'quote-fg', 'quote-bg', 'quote-2-bar', 'quote-2-fg',
+      'quote-2-bg', 'table-bg', 'table-odd-bg', 'table-even-bg', 'table-head-bg',
+      'table-head-fg', 'table-border', 'table-head-border', 'table-row-hover'] },
+  { title: '提示框', names: ['alert-note', 'alert-note-bg', 'alert-note-title', 'alert-tip',
+      'alert-tip-bg', 'alert-tip-title', 'alert-important', 'alert-important-bg',
+      'alert-important-title', 'alert-warning', 'alert-warning-bg', 'alert-warning-title',
+      'alert-caution', 'alert-caution-bg', 'alert-caution-title'] },
+  { title: '滚动条与界面件', names: ['scrollbar', 'scrollbar-hover', 'scrollbar-track', 'outline-bg',
+      'outline-fg', 'outline-border', 'outline-hover-bg', 'find-bg', 'find-border', 'find-fg',
+      'tools-bg', 'icon-active'] },
+  { title: '图标（工具条按钮与复制按钮）', names: ['icon', 'icon-hover', 'icon-bg', 'icon-border'] },
   { title: '语法高亮 token', names: ['syn-keyword', 'syn-string', 'syn-comment', 'syn-number',
-                                     'syn-builtin', 'syn-title', 'syn-type', 'syn-variable',
-                                     'syn-name', 'syn-selector', 'syn-meta',
-                                     'syn-deletion', 'syn-deletion-bg',
-                                     'syn-addition', 'syn-addition-bg'] },
-  { title: '列表、分隔线与脚注', names: ['list-marker', 'hr', 'footnote-fg'] },
-  { title: '形状', names: ['radius', 'space-block'] },
+      'syn-builtin', 'syn-title', 'syn-type', 'syn-variable', 'syn-name', 'syn-selector',
+      'syn-meta', 'syn-deletion', 'syn-deletion-bg', 'syn-addition', 'syn-addition-bg'] },
+  { title: '列表、分隔线与脚注', names: ['list-marker', 'ul-marker', 'ol-marker', 'hr', 'footnote-fg',
+      'footnote-bg', 'footnote-border'] },
+  { title: '形状', names: ['radius', 'radius-code', 'radius-alert', 'radius-ui', 'space-block'] },
 ]
 
 export const ORDER = GROUPS.flatMap((g) => g.names)
 
 /* 与 web/base.css 的 :root 一致，皮肤缺项就落回这里。测试会拿 base.css 比对防漂。
+   大量默认值是 var(--上级)：改总开关时下级跟着变，单独改过的项不再跟。
    list-marker 的 currentColor = 跟随正文（引用块里就是引用文字色）。 */
 export const DEFAULTS = {
-  bg: '#ffffff', 'bg-alt': '#f6f8fa', fg: '#1f2328', 'fg-muted': '#656d76',
-  'fg-heading': '#1f2328', border: '#d0d7de',
-
-  link: '#0969da', 'link-hover': '#0550ae', danger: '#cf222e', selection: '#b6d7ff',
-  hit: '#fff3b0', 'hit-current': '#ffd33d', 'mark-bg': '#fff8c5',
-
-  'code-bg': '#eff1f3', 'code-fg': '#1f2328', 'code-ln-fg': '#656d76',
-  'block-bg': '#f6f8fa', 'block-fg': '#1f2328', 'block-border': '#d0d7de',
-
+  /* 底与字 */
+  'bg': '#ffffff', 'bg-alt': '#f6f8fa', 'fg': '#1f2328', 'fg-muted': '#656d76',
+  'fg-heading': '#1f2328', 'border': '#d0d7de', 'h1-fg': 'var(--md-fg-heading)',
+  'h2-fg': 'var(--md-fg-heading)', 'h3-fg': 'var(--md-fg-heading)',
+  'h4-fg': 'var(--md-fg-heading)', 'h5-fg': 'var(--md-fg-heading)',
+  'h6-fg': 'var(--md-fg-muted)', 'h1-border': 'var(--md-border)',
+  'h2-border': 'var(--md-border)', 'h3-border': 'transparent', 'h4-border': 'transparent',
+  'h5-border': 'transparent', 'h6-border': 'transparent',
+  /* 链接与交互 */
+  'link': '#0969da', 'link-hover': '#0550ae', 'danger': '#cf222e', 'selection': '#b6d7ff',
+  'hit': '#fff3b0', 'hit-current': '#ffd33d', 'mark-bg': '#fff8c5',
+  /* 代码 */
+  'code-bg': '#eff1f3', 'code-fg': '#1f2328', 'code-ln-fg': '#656d76', 'block-bg': '#f6f8fa',
+  'block-fg': '#1f2328', 'block-border': '#d0d7de', 'code-ln-bg': 'transparent',
+  'code-ws-fg': 'var(--md-fg-muted)', 'copy-bg': 'var(--md-icon-bg)',
+  'copy-fg': 'var(--md-icon)', 'copy-hover-fg': 'var(--md-icon-hover)',
+  /* 引用与表格 */
   'quote-bar': '#d0d7de', 'quote-fg': '#57606a', 'quote-bg': 'transparent',
-  'table-bg': 'transparent', 'table-odd-bg': 'transparent', 'table-even-bg': '#f6f8fa',
-  'table-head-bg': '#f6f8fa', 'table-head-fg': '#1f2328', 'table-border': '#d0d7de',
+  'quote-2-bar': 'var(--md-quote-bar)', 'quote-2-fg': 'var(--md-quote-fg)',
+  'quote-2-bg': 'var(--md-quote-bg)', 'table-bg': 'transparent', 'table-odd-bg': 'transparent',
+  'table-even-bg': '#f6f8fa', 'table-head-bg': '#f6f8fa', 'table-head-fg': '#1f2328',
+  'table-border': '#d0d7de', 'table-head-border': 'var(--md-table-border)',
   'table-row-hover': 'transparent',
-
+  /* 提示框 */
   'alert-note': '#0969da', 'alert-note-bg': '#ddf4ff',
-  'alert-tip': '#1a7f37', 'alert-tip-bg': '#dafbe1',
+  'alert-note-title': 'var(--md-alert-note)', 'alert-tip': '#1a7f37',
+  'alert-tip-bg': '#dafbe1', 'alert-tip-title': 'var(--md-alert-tip)',
   'alert-important': '#8250df', 'alert-important-bg': '#fbefff',
-  'alert-warning': '#9a6700', 'alert-warning-bg': '#fff8c5',
+  'alert-important-title': 'var(--md-alert-important)', 'alert-warning': '#9a6700',
+  'alert-warning-bg': '#fff8c5', 'alert-warning-title': 'var(--md-alert-warning)',
   'alert-caution': '#cf222e', 'alert-caution-bg': '#ffebe9',
-
-  scrollbar: '#c9d1d9', 'scrollbar-hover': '#adb5bd',
-  'outline-bg': '#ffffff', 'outline-fg': '#1f2328',
-
-  icon: '#1f2328', 'icon-hover': '#0969da', 'icon-bg': '#ffffff',
-
+  'alert-caution-title': 'var(--md-alert-caution)',
+  /* 滚动条与界面件 */
+  'scrollbar': '#c9d1d9', 'scrollbar-hover': '#adb5bd', 'scrollbar-track': 'transparent',
+  'outline-bg': '#ffffff', 'outline-fg': '#1f2328', 'outline-border': 'var(--md-border)',
+  'outline-hover-bg': 'var(--md-bg-alt)', 'find-bg': 'var(--md-outline-bg)',
+  'find-border': 'var(--md-border)', 'find-fg': 'var(--md-fg)', 'tools-bg': 'transparent',
+  'icon-active': 'var(--md-link)',
+  /* 图标（工具条按钮与复制按钮） */
+  'icon': '#1f2328', 'icon-hover': '#0969da', 'icon-bg': '#ffffff',
+  'icon-border': 'var(--md-border)',
+  /* 语法高亮 token */
   'syn-keyword': '#cf222e', 'syn-string': '#0a3069', 'syn-comment': '#6e7781',
   'syn-number': '#0550ae', 'syn-builtin': '#0550ae', 'syn-title': '#8250df',
   'syn-type': '#953800', 'syn-variable': '#953800', 'syn-name': '#116329',
-  'syn-selector': '#116329', 'syn-meta': '#6e7781',
-  'syn-deletion': '#82071e', 'syn-deletion-bg': '#ffebe9',
-  'syn-addition': '#116329', 'syn-addition-bg': '#dafbe1',
-
-  'list-marker': 'currentColor', hr: '#d0d7de', 'footnote-fg': '#656d76',
-
-  radius: '6px', 'space-block': '1em',
+  'syn-selector': '#116329', 'syn-meta': '#6e7781', 'syn-deletion': '#82071e',
+  'syn-deletion-bg': '#ffebe9', 'syn-addition': '#116329', 'syn-addition-bg': '#dafbe1',
+  /* 列表、分隔线与脚注 */
+  'list-marker': 'currentColor', 'ul-marker': 'var(--md-list-marker)',
+  'ol-marker': 'var(--md-list-marker)', 'hr': '#d0d7de', 'footnote-fg': '#656d76',
+  'footnote-bg': 'transparent', 'footnote-border': 'var(--md-border)',
+  /* 形状 */
+  'radius': '6px', 'radius-code': 'var(--md-radius)', 'radius-alert': 'var(--md-radius)',
+  'radius-ui': 'calc(var(--md-radius) * 0.7)', 'space-block': '1em',
 }
 
 /* ---------------- 扫描 ---------------- */
