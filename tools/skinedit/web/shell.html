@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- 页面只从 https://skinedit.localhost/ 取资源（宿主把 assets 目录映射成这一台）。
-     外壳就这一层：脚本单独一个文件，不给自己开 unsafe-inline。 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+     外壳就这一层：脚本单独一个文件，不给自己开 unsafe-inline。
+     connect-src 给 fetch 皮肤与 sprite.svg；font-src 给 KaTeX 的 woff2——
+     两者都被 default-src 'none' 挡住，少了就是"样式在、字没了、文件读不到"。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'">
 <title>皮肤编辑器</title>
 <link rel="stylesheet" href="shell.css">
 </head>
