@@ -246,7 +246,7 @@ def main():
                                         'WebView2LoaderStatic.lib'),
                            'kernel32.lib', 'user32.lib', 'gdi32.lib', 'ole32.lib',
                            'oleaut32.lib', 'shell32.lib', 'shlwapi.lib', 'advapi32.lib',
-                           'version.lib', 'comctl32.lib']):
+                           'version.lib', 'comctl32.lib', 'comdlg32.lib']):
             return 1
 
         sync_assets()

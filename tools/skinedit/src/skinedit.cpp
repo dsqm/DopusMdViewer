@@ -1,12 +1,14 @@
 // skinedit.cpp — 皮肤编辑器外壳（便携，单窗口 WebView2）。
 //
-// 只做五件事，别的一概不管（表单与预览页是网页那一层的事）：
+// 只做六件事，别的一概不管（表单与预览页是网页那一层的事）：
 //   1. 程序目录可写校验：不可写就报一句并退出，便携的前提是能把 WebView2 缓存与
 //      skinedit.ini 都写在程序旁边；不可写时静默降级会变成"改了存不上"。
 //   2. 把 assets\ 映射成虚拟主机 https://skinedit.localhost/ ，页面只从这一台取资源。
 //   3. 用程序目录下的 WebView2\ 当用户数据目录（不放 APPDATA）。
 //   4. 把解析好的资产目录与皮肤目录推给页面（postMessage），页面自己决定怎么用。
-//   5. 记一份日志：从启动到首帧的耗时、映射结果、页面发回来的消息。
+//   5. 按页面请求做字节 I/O 与本机对话框：枚举皮肤、读、写、stat、打开/另存为、
+//      系统取色器。CSS 的编码与解析一律留在页面侧，宿主不碰文本内容。
+//   6. 记一份日志：从启动到首帧的耗时、映射结果、页面发回来的消息。
 //
 // 命令行：skinedit.exe [/web <资产目录>] [/skins <皮肤目录>]
 //   /web   不给就用 <exe 目录>\assets
@@ -16,8 +18,11 @@
 // 一个指向旧代码的 lpfnWndProc。
 
 #include <windows.h>
+#include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <shobjidl.h>
+#include <shlguid.h>
 
 #include <objbase.h>
 #include <eventtoken.h>
@@ -26,6 +31,8 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -183,6 +190,316 @@ std::wstring JsonStr(const std::wstring& s) {
   return o;
 }
 
+/* ---------------- 宿主桥：字节 I/O 与本机对话框 ----------------
+   页面发 {op, id, …}，路径与文件字节一律 base64(UTF-8)：这样请求里不会出现引号、
+   反斜杠与控制字符，宿主按固定格式取值即可，不必塞一个通用 JSON 解析器。
+   反向仍用 PostWebMessageAsJson + JsonStr，交给浏览器原生解析。
+   mtime 是 FILETIME 量级的 64 位整数，只能当字符串传：JS Number 过 2^53 会丢精度。 */
+
+std::wstring FromUtf8(const std::string& s) {
+  if (s.empty()) return std::wstring();
+  const int n = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
+                                      nullptr, 0);
+  if (n <= 0) return std::wstring();
+  std::wstring out(static_cast<size_t>(n), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
+  return out;
+}
+
+const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string Base64Decode(const std::wstring& in) {
+  int acc = 0, bits = 0;
+  std::string out;
+  for (const wchar_t c : in) {
+    if (c == L'=' || c > 127) break;
+    const char* p = std::strchr(kB64, static_cast<char>(c));
+    if (!p) continue;
+    acc = (acc << 6) | static_cast<int>(p - kB64);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push_back(static_cast<char>((acc >> bits) & 0xFF));
+    }
+  }
+  return out;
+}
+
+std::wstring Base64Encode(const std::string& in) {
+  static const wchar_t tbl[] =
+      L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::wstring out;
+  size_t i = 0;
+  while (i + 2 < in.size()) {
+    const unsigned v = (static_cast<unsigned char>(in[i]) << 16) |
+                       (static_cast<unsigned char>(in[i + 1]) << 8) |
+                       static_cast<unsigned char>(in[i + 2]);
+    out += tbl[(v >> 18) & 63];
+    out += tbl[(v >> 12) & 63];
+    out += tbl[(v >> 6) & 63];
+    out += tbl[v & 63];
+    i += 3;
+  }
+  if (i < in.size()) {
+    const unsigned v = static_cast<unsigned char>(in[i]) << 16 |
+                       (i + 1 < in.size() ? static_cast<unsigned char>(in[i + 1]) << 8 : 0);
+    out += tbl[(v >> 18) & 63];
+    out += tbl[(v >> 12) & 63];
+    out += i + 1 < in.size() ? tbl[(v >> 6) & 63] : L'=';
+    out += L'=';
+  }
+  return out;
+}
+
+/* 只取「值里没有转义字符」的字符串字段：base64 与枚举都满足这个前提。 */
+std::wstring Field(const std::wstring& json, const wchar_t* key) {
+  const std::wstring pat = std::wstring(L"\"") + key + L"\":\"";
+  const size_t a = json.find(pat);
+  if (a == std::wstring::npos) return std::wstring();
+  const size_t b = a + pat.size();
+  const size_t e = json.find(L'"', b);
+  return e == std::wstring::npos ? std::wstring() : json.substr(b, e - b);
+}
+
+long long FieldNum(const std::wstring& json, const wchar_t* key) {
+  const std::wstring pat = std::wstring(L"\"") + key + L"\":";
+  const size_t a = json.find(pat);
+  if (a == std::wstring::npos) return 0;
+  size_t b = a + pat.size(), e = b;
+  while (e < json.size() && ((json[e] >= L'0' && json[e] <= L'9') || json[e] == L'-')) ++e;
+  return ::_wcstoi64(json.substr(b, e - b).c_str(), nullptr, 10);
+}
+
+struct FileStat {
+  bool exists = false;
+  long long size = 0;
+  std::wstring mtime = L"0";
+};
+
+FileStat StatOf(const std::wstring& path) {
+  WIN32_FILE_ATTRIBUTE_DATA d = {};
+  if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &d)) return FileStat();
+  ULARGE_INTEGER size = {}, time = {};
+  size.LowPart = d.nFileSizeLow;
+  size.HighPart = d.nFileSizeHigh;
+  time.LowPart = d.ftLastWriteTime.dwLowDateTime;
+  time.HighPart = d.ftLastWriteTime.dwHighDateTime;
+  FileStat s;
+  s.exists = true;
+  s.size = static_cast<long long>(size.QuadPart);
+  s.mtime = std::to_wstring(time.QuadPart);
+  return s;
+}
+
+constexpr DWORD kMaxSkinBytes = 1024 * 1024;
+
+bool ReadBytes(const std::wstring& path, std::string* out, std::wstring* why) {
+  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    *why = L"打不开文件（错误 " + std::to_wstring(::GetLastError()) + L"）";
+    return false;
+  }
+  const FileStat st = StatOf(path);
+  if (!st.exists || st.size > kMaxSkinBytes) {
+    ::CloseHandle(h);
+    *why = L"文件超过 1 MB，按皮肤契约拒绝";
+    return false;
+  }
+  out->resize(static_cast<size_t>(st.size));
+  DWORD got = 0;
+  const bool ok = st.size == 0 ||
+                  (::ReadFile(h, out->data(), static_cast<DWORD>(st.size), &got, nullptr) &&
+                   got == st.size);
+  ::CloseHandle(h);
+  if (!ok) *why = L"读取失败（错误 " + std::to_wstring(::GetLastError()) + L"）";
+  return ok;
+}
+
+bool WriteBytes(const std::wstring& path, const std::string& bytes, std::wstring* why) {
+  // 上级目录可能还不存在（首次另存为到用户皮肤目录时）。
+  const size_t cut = path.find_last_of(L"\\/");
+  if (cut != std::wstring::npos) {
+    const std::wstring dir = path.substr(0, cut);
+    if (!DirExists(dir)) ::SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
+  }
+  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    *why = L"无法写入（错误 " + std::to_wstring(::GetLastError()) + L"）";
+    return false;
+  }
+  DWORD put = 0;
+  const bool ok = bytes.empty() ||
+                  (::WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &put, nullptr) &&
+                   put == bytes.size());
+  ::CloseHandle(h);
+  if (!ok) *why = L"写入失败（错误 " + std::to_wstring(::GetLastError()) + L"）";
+  return ok;
+}
+
+/* 内置模板随程序分发，不能被编辑器改写：保存到 assets\skins\ 一律拒绝。 */
+bool IsBuiltinPath(const std::wstring& path) {
+  const std::wstring root = Join(g_webDir, L"skins") + L"\\";
+  if (path.size() < root.size()) return false;
+  return ::_wcsnicmp(path.c_str(), root.c_str(), root.size()) == 0;
+}
+
+std::wstring PickFile(bool save, const std::wstring& defaultName, bool* cancel) {
+  *cancel = false;
+  ComPtr<IFileDialog> dlg;
+  if (FAILED(::CoCreateInstance(save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog, nullptr,
+                                CLSCTX_ALL, IID_PPV_ARGS(dlg.GetAddressOf())))) {
+    *cancel = true;
+    return std::wstring();
+  }
+  COMDLG_FILTERSPEC spec = {L"皮肤文件 (*.css)", L"*.css"};
+  dlg->SetFileTypes(1, &spec);
+  dlg->SetFileTypeIndex(1);
+  dlg->SetDefaultExtension(L"css");
+  if (!g_skinsDir.empty() && DirExists(g_skinsDir)) {
+    ComPtr<IShellItem> folder;
+    if (SUCCEEDED(::SHCreateItemFromParsingName(g_skinsDir.c_str(), nullptr,
+                                                IID_PPV_ARGS(folder.GetAddressOf())))) {
+      dlg->SetFolder(folder.Get());
+    }
+  }
+  if (save && !defaultName.empty()) dlg->SetFileName(defaultName.c_str());
+  if (FAILED(dlg->Show(g_hwnd))) {
+    *cancel = true;
+    return std::wstring();
+  }
+  ComPtr<IShellItem> item;
+  if (FAILED(dlg->GetResult(item.GetAddressOf()))) {
+    *cancel = true;
+    return std::wstring();
+  }
+  LPWSTR path = nullptr;
+  if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) || !path) {
+    *cancel = true;
+    return std::wstring();
+  }
+  std::wstring out(path);
+  ::CoTaskMemFree(path);
+  return out;
+}
+
+bool PickColor(const std::wstring& hex, std::wstring* out) {
+  static COLORREF custom[16] = {};
+  unsigned rgb = 0;
+  if (hex.size() == 7 && hex[0] == L'#') {
+    rgb = static_cast<unsigned>(::_wcstoui64(hex.c_str() + 1, nullptr, 16));
+  }
+  CHOOSECOLORW cc = {};
+  cc.lStructSize = sizeof(cc);
+  cc.hwndOwner = g_hwnd;
+  cc.lpCustColors = custom;
+  cc.Flags = CC_FULLOPEN | CC_RGBINIT | CC_ANYCOLOR;
+  cc.rgbResult = RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+  if (!::ChooseColorW(&cc)) return false;
+  wchar_t buf[16] = {};
+  ::_snwprintf_s(buf, _TRUNCATE, L"#%02X%02X%02X", GetRValue(cc.rgbResult),
+                 GetGValue(cc.rgbResult), GetBValue(cc.rgbResult));
+  *out = buf;
+  return true;
+}
+
+void Push(const std::wstring& json) {
+  if (!g_ready || !g_web) return;
+  g_web->PostWebMessageAsJson(json.c_str());
+}
+
+void HandleMessage(const std::wstring& json) {
+  const std::wstring op = Field(json, L"op");
+  const long long id = FieldNum(json, L"id");
+  const std::wstring head = L"{\"id\":" + std::to_wstring(id) + L",";
+  const auto error = [&](const wchar_t* code, const std::wstring& why) {
+    Push(L"{\"type\":\"error\",\"id\":" + std::to_wstring(id) + L",\"op\":" + JsonStr(op) +
+         L",\"code\":" + JsonStr(code) + L",\"message\":" + JsonStr(why) + L"}");
+  };
+  const std::wstring path = FromUtf8(Base64Decode(Field(json, L"path")));
+
+  if (op == L"list") {
+    std::wstring items = L"[";
+    WIN32_FIND_DATAW fd = {};
+    HANDLE h = ::FindFirstFileW(Join(g_skinsDir, L"*.css").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+      do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        const std::wstring full = Join(g_skinsDir, fd.cFileName);
+        const FileStat st = StatOf(full);
+        ULARGE_INTEGER sz = {};
+        sz.QuadPart = static_cast<ULONGLONG>(st.size);
+        items += L"{\"name\":" + JsonStr(fd.cFileName) + L",\"path\":" + JsonStr(full) +
+                 L",\"size\":" + std::to_wstring(sz.QuadPart) + L",\"mtime\":" +
+                 JsonStr(st.mtime) + L"},";
+      } while (::FindNextFileW(h, &fd));
+      ::FindClose(h);
+    }
+    if (items.back() == L',') items.pop_back();
+    items += L"]";
+    Push(head + L"\"type\":\"dir\",\"dir\":" + JsonStr(g_skinsDir) + L",\"items\":" + items + L"}");
+    return;
+  }
+
+  if (op == L"stat") {
+    const FileStat st = StatOf(path);
+    Push(head + L"\"type\":\"stat\",\"path\":" + JsonStr(path) + L",\"exists\":" +
+         (st.exists ? L"true" : L"false") + L",\"size\":" + std::to_wstring(st.size) +
+         L",\"mtime\":" + JsonStr(st.mtime) + L"}");
+    return;
+  }
+
+  if (op == L"read") {
+    std::string bytes;
+    std::wstring why;
+    if (!ReadBytes(path, &bytes, &why)) return error(L"READ_FAILED", why);
+    const FileStat st = StatOf(path);
+    Push(head + L"\"type\":\"file\",\"path\":" + JsonStr(path) + L",\"bytes\":" +
+         JsonStr(Base64Encode(bytes)) + L",\"size\":" + std::to_wstring(st.size) +
+         L",\"mtime\":" + JsonStr(st.mtime) + L"}");
+    return;
+  }
+
+  if (op == L"write") {
+    if (IsBuiltinPath(path)) return error(L"READONLY", L"内置模板只读，请另存为一份新皮肤");
+    const std::wstring expect = Field(json, L"expectMtime");
+    if (!expect.empty()) {
+      const FileStat st = StatOf(path);
+      if (st.exists && st.mtime != expect) {
+        return error(L"EXTERNAL_MODIFIED", L"文件已被外部修改");
+      }
+    }
+    const std::string bytes = Base64Decode(Field(json, L"bytes"));
+    std::wstring why;
+    if (!WriteBytes(path, bytes, &why)) return error(L"WRITE_FAILED", why);
+    const FileStat st = StatOf(path);
+    Push(head + L"\"type\":\"saved\",\"path\":" + JsonStr(path) + L",\"size\":" +
+         std::to_wstring(st.size) + L",\"mtime\":" + JsonStr(st.mtime) + L"}");
+    return;
+  }
+
+  if (op == L"dialog") {
+    const std::wstring kind = Field(json, L"kind");
+    const std::wstring name = FromUtf8(Base64Decode(Field(json, L"name")));
+    bool cancel = false;
+    const std::wstring picked = PickFile(kind == L"save", name, &cancel);
+    Push(head + L"\"type\":\"dialog\",\"kind\":" + JsonStr(kind) + L",\"cancel\":" +
+         (cancel ? L"true" : L"false") + L",\"path\":" + JsonStr(picked) + L"}");
+    return;
+  }
+
+  if (op == L"color") {
+    std::wstring picked;
+    const bool ok = PickColor(Field(json, L"hex"), &picked);
+    Push(head + L"\"type\":\"color\",\"cancel\":" + (ok ? L"false" : L"true") +
+         L",\"hex\":" + JsonStr(picked) + L"}");
+    return;
+  }
+
+  error(L"UNKNOWN_OP", L"未知操作：" + op);
+}
+
 /* ---------------- 页面通道 ---------------- */
 
 /* 路径推给页面。页面拿它去列皮肤、拼标题、出错时显示。 */
@@ -304,10 +621,13 @@ void StartWebView() {
                                   -> HRESULT {
                                 LPWSTR raw = nullptr;
                                 if (args && SUCCEEDED(args->get_WebMessageAsJson(&raw)) && raw) {
-                                  std::wstring msg(raw);
+                                  const std::wstring msg(raw);
                                   ::CoTaskMemFree(raw);
-                                  if (msg.size() > 400) msg.resize(400);
-                                  Log(L"MSG %s", msg.c_str());
+                                  // 日志只留短前缀：写皮肤的 base64 有几十 KB，全记下来没意义。
+                                  const std::wstring brief = msg.size() > 200
+                                      ? msg.substr(0, 200) + L"…" : msg;
+                                  Log(L"MSG %s", brief.c_str());
+                                  if (msg.find(L"\"op\":") != std::wstring::npos) HandleMessage(msg);
                                 }
                                 return S_OK;
                               })

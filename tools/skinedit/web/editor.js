@@ -1,7 +1,7 @@
 /* 皮肤编辑器主体（票 11）。由窗口交互原型 D 变体移植而来，去掉原型壳与假数据。
-   左栏 108 项表单 + 右栏自渲染预览；文件动作由宿主通道提供，见后续阶段。 */
+   左栏 108 项表单 + 右栏自渲染预览；文件读写与本机对话框走宿主通道。 */
 
-import { GROUPS, DEFAULTS, parseSkin } from './skinfile.mjs'
+import { GROUPS, DEFAULTS, parseSkin, emitSkin, decodeSkinBytes } from './skinfile.mjs'
 
 
 
@@ -238,6 +238,12 @@ const HL_CSS = `
 const S = {
   assetRoot: '',
   sample: 'samples/skin-preview.md',
+  /* 当前来源：path 为空表示内置模板（只读）。stamp 是载入时的 size/mtime，
+     保存前拿它跟宿主重新 stat 的结果比，用来发现外部改写。 */
+  file: { path: '', size: 0, mtime: '', name: '', id: '',
+          extra: '', unknown: [], filled: [], duplicates: [], builtin: true },
+  users: [],
+  status: { text: '', kind: 'info' },
   variant: 'D',
   skin: 'light',
   w: 1180,
@@ -259,6 +265,50 @@ const S = {
   open: {},
   frame: null,
   hoverVarName: null,
+}
+
+/* ---------------- 宿主桥 ----------------
+   路径与文件字节一律 base64：请求里就不会出现引号、反斜杠与控制字符，宿主按固定
+   格式取值即可。文件编码的 UTF-8 / GB18030 兜底留在 JS 侧，宿主只搬字节。 */
+
+const B64 = {
+  encText(s) { return B64.encBytes(new TextEncoder().encode(s)) },
+  encBytes(bytes) {
+    let out = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+    }
+    return btoa(out)
+  },
+  decBytes(b64) {
+    const bin = atob(b64 || '')
+    const out = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+    return out
+  },
+}
+
+let hostSeq = 0
+const hostPending = new Map()
+
+function hostCall(op, extra = {}) {
+  return new Promise((resolve, reject) => {
+    const wv = window.chrome && window.chrome.webview
+    if (!wv) return reject(new Error('宿主通道不可用'))
+    const id = ++hostSeq
+    hostPending.set(id, resolve)
+    wv.postMessage({ op, id, ...extra })
+  })
+}
+
+function onHostMessage(msg) {
+  if (!msg || typeof msg !== 'object') return
+  if (msg.type === 'hello') window.__skinedit = msg
+  if (msg.id && hostPending.has(msg.id)) {
+    const done = hostPending.get(msg.id)
+    hostPending.delete(msg.id)
+    done(msg)
+  }
 }
 
 /* ---------------- 小工具 ---------------- */
@@ -460,20 +510,22 @@ async function loadSkin(id) {
   try {
     const res = await fetch(S.assetRoot + 'skins/' + id + '.css')
     if (res.ok) text = await res.text()
-  } catch { /* prototype: 读不到就落回 DEFAULTS */ }
-  if (text) {
-    const sk = parseSkin(text)
-    S.values = sk.vars
-    S.scheme = sk.scheme
-    // 皮肤没写 color-scheme 时，初值是按 --md-bg 亮度推的；记下来好在界面上标注
-    S.schemeAuto = sk.scheme
-    S.schemeInferred = !sk.schemeExplicit
-  } else {
-    S.values = { ...DEFAULTS }
-    S.scheme = 'light'
-    S.schemeAuto = 'light'
-    S.schemeInferred = true
+  } catch { /* 模板读不到就落回 DEFAULTS */ }
+  const sk = text ? parseSkin(text) : null
+  S.values = sk ? sk.vars : { ...DEFAULTS }
+  S.scheme = sk ? sk.scheme : 'light'
+  // 皮肤没写 color-scheme 时，初值是按 --md-bg 亮度推的；记下来好在界面上标注
+  S.schemeAuto = S.scheme
+  S.schemeInferred = sk ? !sk.schemeExplicit : true
+  S.file = {
+    path: '', size: 0, mtime: '',
+    name: (sk && sk.name) || SKIN_LABELS[id] || id,
+    id: (sk && sk.id) || id,
+    extra: sk ? sk.extra : '', unknown: sk ? sk.unknown : [],
+    filled: sk ? sk.filled : [], duplicates: sk ? sk.duplicates : [],
+    builtin: true,
   }
+  reportParse(sk)
 }
 
 /* 载入时的解析值（不看 overrides）：用来判断「值是不是真的变了」。
@@ -503,9 +555,10 @@ function markChanged() {
   })
   const badge = document.getElementById('dirty')
   if (badge) badge.hidden = !dirty
-  // 内置模板只读：原型里没有用户皮肤，所以「保存」一直禁用；
-  // 真编辑器里它只在打开的是用户皮肤时可用。
-  document.querySelectorAll('[data-act="save"]').forEach((b) => { b.disabled = true })
+  // 内置模板随程序分发，只读；只有打开或另存出用户皮肤后才能直接保存。
+  document.querySelectorAll('[data-act="save"]').forEach((b) => {
+    b.disabled = !S.file.path || S.file.builtin
+  })
 }
 
 /* 皮肤里大量默认值是 var(--上级)：色块要显示「最终是什么颜色」，不能显示 var 文本。
@@ -521,6 +574,192 @@ function resolveVar(name, depth = 0) {
   const parent = m[1]
   const r = resolveVar(parent, depth + 1)
   return { raw, value: r.value, from: r.from || parent }
+}
+
+/* ---------------- 文件动作 ---------------- */
+
+function setStatus(text, kind = 'info') {
+  // 状态记在 S 里：render() 会重建状态条，只写 DOM 会被下一次重建抹掉。
+  S.status = { text: text || '', kind }
+  const bar = document.getElementById('status')
+  if (!bar) return
+  bar.textContent = S.status.text
+  bar.dataset.kind = S.status.kind
+  bar.hidden = !S.status.text
+}
+
+function statusBar() {
+  const bar = el('div', 'status')
+  bar.id = 'status'
+  bar.textContent = S.status.text
+  bar.dataset.kind = S.status.kind
+  bar.hidden = !S.status.text
+  return bar
+}
+
+function reportParse(sk) {
+  if (!sk) return setStatus('模板读取失败，已落到 base.css 默认值', 'warn')
+  const bits = []
+  if (sk.filled.length) bits.push('补了 ' + sk.filled.length + ' 项默认值')
+  if (sk.duplicates.length) bits.push('同名变量 ' + sk.duplicates.length + ' 处，取最后一次')
+  setStatus(bits.join('；'), bits.length ? 'warn' : 'info')
+}
+
+function confirmLayer(title, text, labels) {
+  return new Promise((resolve) => {
+    const back = el('div', 'modal')
+    const box = el('div', 'modal-box')
+    box.append(el('div', 'modal-t', title), el('div', 'modal-p', text))
+    const row = el('div', 'modal-r')
+    for (const label of labels) {
+      const b = el('button', 'ghostbtn' +
+        (label === labels[labels.length - 1] ? '' : ' primary'), label)
+      b.type = 'button'
+      b.addEventListener('click', () => { back.remove(); resolve(label) })
+      row.append(b)
+    }
+    box.append(row)
+    back.append(box)
+    document.body.append(back)
+  })
+}
+
+const baseName = (path) => path.replace(/\\/g, '/').split('/').pop().replace(/\.css$/i, '')
+const safeId = (name) => name.length <= 128 && !/[\x00-\x1f\\/:*?"<>|]/.test(name)
+
+function currentSkin(name, id) {
+  const f = S.file
+  return {
+    name: name || f.name || (SKIN_LABELS[S.skin] || S.skin),
+    id: id || f.id || S.skin,
+    scheme: S.scheme,
+    vars: { ...S.values, ...S.overrides },
+    unknown: f.unknown || [],
+    extra: f.extra || '',
+  }
+}
+
+function applyLoaded(text, meta) {
+  const sk = parseSkin(text)  // 找不到 :root 会抛，由调用方提示
+  S.values = sk.vars
+  S.scheme = sk.scheme
+  S.schemeAuto = sk.scheme
+  S.schemeInferred = !sk.schemeExplicit
+  S.overrides = {}
+  S.lastColor = {}
+  S.file = {
+    path: meta.path || '', size: meta.size || 0, mtime: meta.mtime || '',
+    name: sk.name || baseName(meta.path || '') || '未命名',
+    id: sk.id || baseName(meta.path || ''),
+    extra: sk.extra, unknown: sk.unknown, filled: sk.filled, duplicates: sk.duplicates,
+    builtin: !meta.path,
+  }
+  reportParse(sk)
+  render()
+}
+
+async function openPath(path) {
+  try {
+    const r = await hostCall('read', { path: B64.encText(path) })
+    if (r.type === 'error') throw new Error(r.message)
+    applyLoaded(decodeSkinBytes(B64.decBytes(r.bytes)),
+                { path: r.path, size: r.size, mtime: r.mtime })
+    // applyLoaded 里已经报过「补了 N 项 / 同名变量」，这里接在后面而不是盖掉。
+    const note = S.status.text
+    setStatus('已打开 ' + path + (note ? '；' + note : ''))
+  } catch (e) {
+    setStatus('打开失败：' + e.message, 'error')
+  }
+}
+
+async function writeSkin(path, name, id, expectMtime) {
+  const r = await hostCall('write', {
+    path: B64.encText(path),
+    bytes: B64.encText(emitSkin(currentSkin(name, id))),
+    expectMtime,
+  })
+  if (r.type === 'error') throw new Error(r.message + '｜' + r.code)
+  // 保存后当前值成为新基准：「仅改动」与「有改动」徽标才会归零。
+  S.values = { ...S.values, ...S.overrides }
+  S.overrides = {}
+  S.file = { ...S.file, path, size: r.size, mtime: r.mtime, name, id, builtin: false }
+  render()
+  setStatus('已保存 ' + path)
+  refreshUsers()
+}
+
+async function doSave() {
+  if (!S.file.path || S.file.builtin) return
+  try {
+    const st = await hostCall('stat', { path: B64.encText(S.file.path) })
+    let expect = st.exists ? S.file.mtime : ''
+    if (st.exists && st.mtime !== S.file.mtime) {
+      const pick = await confirmLayer('文件已被外部修改',
+        S.file.path + '\n保存会盖掉外部改动。覆盖、重新读取，还是取消？',
+        ['覆盖', '重读', '取消'])
+      if (pick === '取消') return
+      if (pick === '重读') return openPath(S.file.path)
+      expect = ''  // 已确认覆盖，宿主不再校验 mtime
+    }
+    await writeSkin(S.file.path, S.file.name, S.file.id, expect)
+  } catch (e) {
+    setStatus('保存失败：' + e.message, 'error')
+  }
+}
+
+async function doSaveAs() {
+  try {
+    const d = await hostCall('dialog', { kind: 'save',
+      name: B64.encText((S.file.name || 'my-skin') + '.css') })
+    if (d.cancel || !d.path) return
+    const id = baseName(d.path)
+    if (!safeId(id)) return setStatus('文件名含非法字符，未保存', 'error')
+    const st = await hostCall('stat', { path: B64.encText(d.path) })
+    if (st.exists) {
+      const pick = await confirmLayer('目标已存在', d.path + '\n要覆盖这个文件吗？',
+        ['覆盖', '取消'])
+      if (pick !== '覆盖') return
+    }
+    await writeSkin(d.path, id, id, '')
+  } catch (e) {
+    setStatus('另存为失败：' + e.message, 'error')
+  }
+}
+
+async function doOpen() {
+  try {
+    const d = await hostCall('dialog', { kind: 'open', name: B64.encText('') })
+    if (d.cancel || !d.path) return
+    await openPath(d.path)
+  } catch (e) {
+    setStatus('打开失败：' + e.message, 'error')
+  }
+}
+
+function syncUserOptions() {
+  document.querySelectorAll('select.sel').forEach((sel) => {
+    const old = sel.querySelector('optgroup[data-usr]')
+    if (old) old.remove()
+    const g = el('optgroup')
+    g.label = '皮肤（用户目录）'
+    g.dataset.usr = '1'
+    for (const it of S.users) {
+      const o = el('option', null, it.name)
+      o.value = 'usr:' + it.path
+      g.append(o)
+    }
+    sel.append(g)
+    if (S.file.path) sel.value = 'usr:' + S.file.path
+  })
+}
+
+async function refreshUsers() {
+  try {
+    const r = await hostCall('list')
+    if (r.type !== 'dir') return
+    S.users = r.items || []
+    syncUserOptions()
+  } catch { /* 没有宿主通道时（开发服务）列表留空 */ }
 }
 
 /* ---------------- 控件 ---------------- */
@@ -619,7 +858,7 @@ function rowDerivedBg(name, der) {
   sw.type = 'color'
   sw.value = accent && bg ? blendOver(accent, bg, Number(der.pct) / 100) : (accent || '#ffffff')
   sw.dataset.derived = der.from
-  sw.title = '点色块选一个固定颜色 → 断开派生'
+  sw.title = '点色块选一个固定颜色 → 断开派生；右键用系统取色器'
   row.append(sw)
 
   const key = el('span', 'k', NAMES[name] || name)
@@ -652,6 +891,15 @@ function rowDerivedBg(name, der) {
     setValue(name, sw.value)
     row.replaceWith(rowNormal(name))
   })
+  sw.addEventListener('contextmenu', (e) => {
+    if (!(window.chrome && window.chrome.webview)) return
+    e.preventDefault()
+    hostCall('color', { hex: sw.value }).then((r) => {
+      if (r.cancel || !r.hex) return
+      setValue(name, r.hex)
+      row.replaceWith(rowNormal(name))
+    }).catch(() => {})
+  })
   return bindRowLink(row, name)
 }
 
@@ -682,7 +930,8 @@ function rowNormal(name) {
   const sw = el('input', 'sw' + (color ? '' : ' kw'))
   sw.type = 'color'
   sw.value = hexOf(value) || '#ffffff'
-  if (!color) sw.title = '这个值不是颜色（' + value + '）'
+  sw.title = color ? '单击用内建取色器；右键用系统取色器'
+                   : '这个值不是颜色（' + value + '）'
   row.append(sw)
 
   const key = el('span', 'k', NAMES[name] || name)
@@ -702,6 +951,17 @@ function rowNormal(name) {
   sw.addEventListener('input', () => {
     txt.value = sw.value
     setValue(name, sw.value)
+  })
+  // 右键走宿主的 ChooseColorW。单击留给内建取色器，两个入口互不抢事件。
+  sw.addEventListener('contextmenu', (e) => {
+    if (!(window.chrome && window.chrome.webview)) return
+    e.preventDefault()
+    hostCall('color', { hex: sw.value }).then((r) => {
+      if (r.cancel || !r.hex) return
+      sw.value = r.hex
+      txt.value = r.hex
+      setValue(name, r.hex)
+    }).catch(() => {})
   })
   txt.addEventListener('input', () => setValue(name, txt.value.trim()))
 
@@ -785,7 +1045,7 @@ const ACTS = {
   open: ['打开皮肤…', '打开一份 .css 皮肤文件'],
   save: ['保存', '模板是只读的：先「另存为…」存成自己的皮肤，之后才能直接保存'],
   saveAs: ['另存为…', '存成一份新的皮肤文件'],
-  reset: ['恢复模板', '丢掉全部改动，回到所选模板的原始值'],
+  reset: ['重置', '丢掉全部改动，重新读取当前来源'],
   lang: ['中 / EN', '切换界面语言'],
   about: ['关于', '版本、资产目录与第三方许可'],
   drawer: ['☰ 表单', '收起或展开表单栏'],
@@ -900,11 +1160,21 @@ function sourceSelect() {
   for (const [id, label] of Object.entries(SKIN_LABELS)) {
     const o = el('option', null, label)
     o.value = id
-    o.selected = id === S.skin
+    o.selected = !S.file.path && id === S.skin
     tpl.append(o)
   }
-  sel.append(tpl)
+  const usr = el('optgroup')
+  usr.label = '皮肤（用户目录）'
+  usr.dataset.usr = '1'
+  for (const it of S.users) {
+    const o = el('option', null, it.name)
+    o.value = 'usr:' + it.path
+    o.selected = S.file.path === it.path
+    usr.append(o)
+  }
+  sel.append(tpl, usr)
   sel.addEventListener('change', async () => {
+    if (sel.value.startsWith('usr:')) return openPath(sel.value.slice(4))
     await loadSkin(sel.value)
     render()
   })
@@ -1001,11 +1271,21 @@ function schemeRow() {
 /* B 样式的顶栏：所有动作常驻 */
 function topBar() {
   const top = el('div', 'topbar')
-  top.append(sourceSelect(), el('span', 'grow'), linkButton(), widgetsButton(), holdButton())
+  const open = act('open')
+  open.addEventListener('click', doOpen)
+  const save = act('save')
+  save.addEventListener('click', doSave)
+  const saveAs = act('saveAs', true)
+  saveAs.addEventListener('click', doSaveAs)
   const reset = act('reset')
   reset.disabled = false
-  reset.addEventListener('click', async () => { await loadSkin(S.skin); render() })
-  top.append(reset, aboutButton())
+  reset.addEventListener('click', async () => {
+    // 有来源文件时「重置」是重读该文件；模板则回到模板原值。
+    if (S.file.path) await openPath(S.file.path)
+    else { await loadSkin(S.skin); render() }
+  })
+  top.append(sourceSelect(), open, el('span', 'grow'), linkButton(), widgetsButton(),
+             holdButton(), reset, save, saveAs, aboutButton())
   return top
 }
 
@@ -1060,7 +1340,7 @@ function renderD() {
   head.append(fname, dirty, el('span', 'grow'))
   const body = el('div', 'rail-body pane-scroll')
   body.append(buildForm(false))
-  rail.append(head, formTools(), schemeRow(), body)
+  rail.append(head, statusBar(), formTools(), schemeRow(), body)
 
   const splitter = el('div', 'splitter')
   const app2 = el('div', 'appbody')
@@ -1125,9 +1405,7 @@ function boot() {
 
   // 宿主在脚本挂上前就可能推过 hello；再问一次不吃亏，重复推不会出事。
   if (window.chrome && window.chrome.webview) {
-    window.chrome.webview.addEventListener('message', (e) => {
-      if (e.data && e.data.type === 'hello') window.__skinedit = e.data
-    })
+    window.chrome.webview.addEventListener('message', (e) => onHostMessage(e.data))
     window.chrome.webview.postMessage({ type: 'hello?', href: location.href })
   }
 
@@ -1135,6 +1413,7 @@ function boot() {
   loadSkin(S.skin).then(() => {
     Object.assign(S.overrides, pre)
     render()
+    refreshUsers()
     if (hover) setTimeout(() => highlightVar(hover), 2500)
   })
 }
