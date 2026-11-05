@@ -80,6 +80,9 @@ const wchar_t* const kZh[kCount] = {
     /* LinkOpenMode     */ L"文档内链接的打开方式：",
     /* LinkOpenOpus     */ L"Opus 查看器",
     /* LinkOpenSystem   */ L"系统默认程序",
+    /* LinkConfirmWait  */ L"外部链接确认：",
+    /* LinkWaitOn       */ L"弹窗后等 3 秒才能点「打开」",
+    /* LinkWaitOff      */ L"弹窗后直接可点「打开」",
     /* ViewerExts       */ L"扩展名名单…",
     /* ViewerExtsTitle  */ L"Opus 查看器扩展名",
     /* ViewerExtsHint   */

@@ -43,6 +43,10 @@ std::wstring MakeBig(const std::string& table);
 // 确认面板在页面内渲染，这里只推配置。
 std::wstring MakeNetMode(int mode);
 
+// linkwait|<0|1>：外部链接确认弹窗里的「打开」是否要等 3 秒才能点。
+// 0 只是省掉等待，弹窗与确认这一步照旧，没有「关掉弹窗」这个选项。
+std::wstring MakeLinkWait(bool wait);
+
 // cfg|<mermaid>|<katex>|<highlight>|<inlineHtml>|<localImages>|<copyCode>|<copyTable>
 //    |<tableCopyMd>|<findBtn>|<outlineBtn>|<lineNumbers>|<wsMode>|<indentedBlocks>
 //    |<tableWrap>：

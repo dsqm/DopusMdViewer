@@ -1066,7 +1066,8 @@ pre.mermaid-src {
 }
 
 /* ---------------- 外部链接确认（页面内弹窗） ----------------
-   链接可能指向本地程序：弹层提示风险，”打开”按钮倒计时 3 秒。
+   链接可能指向本地程序：弹层提示风险，左侧一条强调色说明这动作有风险；
+   「打开」按设置决定要不要等 3 秒——等待时按钮底色从左往右长满，长满才可点。
    结构由 app.js 动态创建，样式跟皮肤变量。 */
 
 .mdv-modal-overlay {
@@ -1080,8 +1081,10 @@ pre.mermaid-src {
 }
 
 .mdv-modal {
+  position: relative;
   width: min(520px, calc(100vw - 48px));
-  padding: 20px 20px 16px;
+  padding: 18px 20px 16px 22px;
+  overflow: hidden;
   background: var(--md-bg);
   color: var(--md-fg);
   border: 1px solid var(--md-border);
@@ -1092,20 +1095,55 @@ pre.mermaid-src {
   line-height: 1.6;
 }
 
+/* 左侧竖条：第一眼就知道这是有风险的动作 */
+.mdv-modal::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--md-danger);
+}
+
+.mdv-modal-head {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.mdv-modal-head .mdv-modal-ico {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: var(--md-danger);
+}
+
 .mdv-modal-title {
-  margin: 0 0 6px;
+  margin: 0;
+  padding: 0;
+  /* 正文的 h1/h2 带下边框与上外边距，弹窗里的标题要摘掉，否则标题下多一条线 */
+  border-bottom: 0;
   font-size: 15px;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--md-fg-heading);
 }
 
+/* 风险说明给一块浅底色，比灰色小字更容易在第一眼读到；
+   color-mix 不认时退回第二行之前的 --md-bg-alt。 */
 .mdv-modal-warn {
   margin: 0 0 12px;
-  color: var(--md-fg-muted);
+  padding: 7px 10px;
+  border-radius: var(--md-radius);
+  color: var(--md-fg);
+  background: var(--md-bg-alt);
+  background: color-mix(in srgb, var(--md-danger) 7%, transparent);
 }
 
 .mdv-modal-url {
-  margin: 0 0 16px;
+  margin: 0 0 14px;
   padding: 8px 10px;
   max-height: 132px;
   overflow: auto;
@@ -1123,31 +1161,71 @@ pre.mermaid-src {
 .mdv-modal-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
 }
 
 .mdv-modal-actions button {
   font: inherit;
   font-size: 13px;
-  padding: 5px 16px;
-  border: 1px solid var(--md-border);
   border-radius: var(--md-radius);
-  background: var(--md-bg);
-  color: var(--md-fg);
   cursor: pointer;
 }
 
-.mdv-modal-actions button:hover:not(:disabled) { background: var(--md-bg-alt); }
-
-.mdv-modal-actions button.mdv-danger {
-  border-color: var(--md-danger);
-  color: var(--md-danger);
+/* 取消退成纯文字：安全的那个动作不需要视觉重量 */
+.mdv-modal-actions .mdv-cancel {
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--md-fg-muted);
+  border: 1px solid transparent;
 }
 
-.mdv-modal-actions button:disabled {
-  color: var(--md-fg-muted);
+.mdv-modal-actions .mdv-cancel:hover {
+  background: var(--md-bg-alt);
+  color: var(--md-fg);
+}
+
+/* 主按钮自己就是进度条：底色从左往右长满，长满才放开 */
+.mdv-modal-actions .mdv-open {
+  position: relative;
+  overflow: hidden;
+  min-width: 132px;
+  padding: 6px 18px;
+  background: transparent;
+  color: var(--md-danger);
+  border: 1px solid var(--md-danger);
   cursor: default;
-  opacity: 0.6;
+}
+
+.mdv-open .mdv-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: var(--md-bg-alt);
+  background: color-mix(in srgb, var(--md-danger) 20%, transparent);
+}
+
+.mdv-open .mdv-txt {
+  position: relative;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.mdv-open:not(:disabled) {
+  background: var(--md-danger);
+  border-color: var(--md-danger);
+  color: #fff;
+  cursor: pointer;
+}
+
+.mdv-open:not(:disabled) .mdv-fill {
+  display: none;
+}
+
+.mdv-open:not(:disabled):hover {
+  filter: brightness(1.08);
 }
 
 /* ---------------- 图片遮罩放大 ----------------

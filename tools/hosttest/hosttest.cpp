@@ -99,6 +99,7 @@ bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条�
 bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，回流映射与滚动位置
 bool g_settingsClose = false;  // settings 模式：打开 6 秒后关掉设置窗口，验关窗是否干净
 bool g_settingsRender = false; // settings 模式：开窗后切到「渲染」页，便于截图核对布局
+bool g_settingsAdv = false;    // settings 模式：开窗后切到「高级」页
 HWND g_settingsHwnd = nullptr;
 bool g_tableGeom = false;   // 5 秒后回传表格包装层/表体的几何与滚动量
 bool g_tableNowrap = false; // 配合 tables：先把「长内容自动换行」关掉再量
@@ -306,9 +307,10 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       } else if (wParam == kSettingsTimerId) {
         ::KillTimer(hwnd, kSettingsTimerId);
         g_settingsHwnd = SettingsShow(g_hwndMain);
-        if (g_settingsHwnd && g_settingsRender) {
+        if (g_settingsHwnd && (g_settingsRender || g_settingsAdv)) {
           // 页签 id：3001 外观 / 3002 字体 / 3003 渲染 / 3004 高级
-          ::SendMessageW(g_settingsHwnd, WM_COMMAND, MAKEWPARAM(3003, BN_CLICKED), 0);
+          ::SendMessageW(g_settingsHwnd, WM_COMMAND,
+                         MAKEWPARAM(g_settingsAdv ? 3004 : 3003, BN_CLICKED), 0);
         }
         if (g_settingsClose) ::SetTimer(hwnd, kSettingsCloseTimerId, 6000, nullptr);
       } else if (wParam == kSettingsCloseTimerId) {
@@ -804,6 +806,9 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   if (*p && wcsstr(p, L"settingsrender")) {
     g_settings = true;
     g_settingsRender = true;
+  } else if (*p && wcsstr(p, L"settingsadv")) {
+    g_settings = true;
+    g_settingsAdv = true;
   } else if (*p && wcsstr(p, L"settings")) {
     g_settings = true;
   }

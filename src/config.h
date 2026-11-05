@@ -77,6 +77,9 @@ struct Config {
   // 交给 Opus 查看器的额外扩展名：分号/逗号/空格分隔，可带点可不带；
   // `-` 前缀表示排除（能把内置名单里的项摘掉）。空 = 只用内置名单。
   std::wstring viewerExts;
+  // 外部链接确认弹窗里的「打开」是否要等 3 秒才能点。默认开；关掉只是省掉等待，
+  // 弹窗照旧出现——确认这一步不给关闭选项。
+  bool linkConfirmWait;
   // 启动后在后台预热 WebView2（Opus 窗口关闭时释放）。默认关闭。
   bool prewarm;
   // 预热关闭时，最后一次预览结束后空闲多少分钟释放 WebView2；0 = 不释放。
@@ -111,6 +114,9 @@ bool ConfigAllowAbsoluteImages(void);
 
 // 启动时是否预热 WebView2。
 bool ConfigPrewarm(void);
+
+// 外部链接确认弹窗里的「打开」是否要等 3 秒。线程安全。
+bool ConfigLinkConfirmWait(void);
 
 // 预热关闭时的空闲释放分钟数；0 = 不释放。
 int ConfigIdleReleaseMinutes(void);

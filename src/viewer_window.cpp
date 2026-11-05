@@ -264,15 +264,17 @@ void PushChrome(ViewerState* st) {
   const bool ok = WebHostPost(st->hwndSelf, msg::MakeSkin(skinId, css)) &&
                   WebHostPost(st->hwndSelf, msg::MakeFx(cfg.font)) &&
                   WebHostPost(st->hwndSelf, msg::MakeNetMode(cfg.netImageMode)) &&
+                  WebHostPost(st->hwndSelf, msg::MakeLinkWait(cfg.linkConfirmWait)) &&
                   WebHostPost(st->hwndSelf, msg::MakeCfg(cfg));
   if (!ok) LogLine(L"VIEWER: 皮肤/字体推送失败（宿主不在或页面未就绪）");
 
   LogLine(L"VIEWER: 已推送皮肤 \"%s\"（%zu 字符）、字体（%dpx / %.2f / %dem）、网络图档位 %d、"
-          L"渲染开关 %d%d%d%d%d、行号 %d",
+          L"渲染开关 %d%d%d%d%d、行号 %d、链接确认等待 %d",
           skinId.c_str(), css.size(), cfg.font.sizePx, cfg.font.lineHeight, cfg.font.measureEm,
           cfg.netImageMode, cfg.renderMermaid ? 1 : 0, cfg.renderKatex ? 1 : 0,
           cfg.renderHighlight ? 1 : 0, cfg.renderInlineHtml ? 1 : 0,
-          cfg.renderLocalImages ? 1 : 0, cfg.codeLineNumbers ? 1 : 0);
+          cfg.renderLocalImages ? 1 : 0, cfg.codeLineNumbers ? 1 : 0,
+          cfg.linkConfirmWait ? 1 : 0);
 }
 
 void PushBigTable(ViewerState* st) {
@@ -1517,7 +1519,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       return 0;
 
     case WM_MDV_CONFIG_CHANGED:
-      LogLine(L"VIEWER: 设置已更新，重推皮肤/字体/网络图档位");
+      LogLine(L"VIEWER: 设置已更新，重推皮肤/字体/网络图档位/链接确认等待");
       PushChrome(st);
       return 0;
 

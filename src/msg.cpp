@@ -95,6 +95,10 @@ std::wstring MakeNetMode(int mode) {
   return Join({L"net", std::to_wstring(mode)});
 }
 
+std::wstring MakeLinkWait(bool wait) {
+  return Join({L"linkwait", wait ? L"1" : L"0"});
+}
+
 std::wstring MakeCfg(const Config& config) {
   // 空白符档位合成一个数字：0 = 关，1 = 仅选中，2 = 边界，3 = 全部（按常显多少递增）。
   const int wsMode = config.codeWsOn ? config.codeWsRange : 0;

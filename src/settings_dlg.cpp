@@ -84,6 +84,7 @@ enum {
   kIdOpenSkins,
   kIdPrewarm,
   kIdLinkOpenMode,
+  kIdLinkConfirmWait,
   kIdViewerExtsBtn,
   kIdIdle,
   kIdIdleSpin,
@@ -117,7 +118,10 @@ constexpr int kPreviewW = 430;
 constexpr int kPreviewH = 64;
 // 客户区目标尺寸（未缩放单位）与窗口样式：算窗口大小、按工作区裁剪都要用。
 constexpr int kClientW = 560;
-constexpr int kClientH = 558;
+// 高级页在「文档内链接」下面多了一行「外部链接确认」，整页于是高出 24 个单位；
+// 客户区跟着长高，底部那一行按钮从 522 挪到 546，免得内容顶到按钮上。
+constexpr int kClientH = 582;
+constexpr int kButtonRowY = 546;
 constexpr DWORD kDialogStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
 
 struct DialogState {
@@ -173,6 +177,7 @@ struct DialogState {
   HWND hOutsideAbsolute = nullptr;
   HWND hPrewarm = nullptr;
   HWND hLinkMode = nullptr;
+  HWND hLinkWait = nullptr;
   HWND hViewerExts = nullptr;
   HWND hIdle = nullptr;
   HWND hIdleSpin = nullptr;
@@ -1548,6 +1553,9 @@ void LoadUiFromStaged(DialogState* st) {
   if (st->hLinkMode) {
     ::SendMessageW(st->hLinkMode, CB_SETCURSEL, st->staged.openLinksInOpusViewer ? 0 : 1, 0);
   }
+  if (st->hLinkWait) {
+    ::SendMessageW(st->hLinkWait, CB_SETCURSEL, st->staged.linkConfirmWait ? 0 : 1, 0);
+  }
   ::EnableWindow(st->hViewerExts, st->staged.openLinksInOpusViewer ? TRUE : FALSE);
   ::CheckDlgButton(st->hwnd, kIdPrewarm, st->staged.prewarm ? BST_CHECKED : BST_UNCHECKED);
   ::StringCchPrintfW(buf, ARRAYSIZE(buf), L"%d", st->staged.idleReleaseMinutes);
@@ -1616,6 +1624,10 @@ void ReadUiIntoStaged(DialogState* st) {
   if (st->hLinkMode) {
     const int linkSel = static_cast<int>(::SendMessageW(st->hLinkMode, CB_GETCURSEL, 0, 0));
     st->staged.openLinksInOpusViewer = (linkSel != 1);  // 0 = Opus 查看器，1 = 系统默认程序
+  }
+  if (st->hLinkWait) {
+    const int waitSel = static_cast<int>(::SendMessageW(st->hLinkWait, CB_GETCURSEL, 0, 0));
+    st->staged.linkConfirmWait = (waitSel != 1);  // 0 = 等 3 秒，1 = 直接可点
   }
   ActiveWebViewBaseRef(&st->staged) = UtilTrim(ReadText(st->hWebViewDir));
   st->staged.prewarm = ::IsDlgButtonChecked(st->hwnd, kIdPrewarm) == BST_CHECKED;
@@ -2277,7 +2289,26 @@ void BuildUi(DialogState* st) {
                                  kIdViewerExtsBtn);
   }
 
-  y = 288;
+  // 外部链接确认：紧跟着上面那行链接设置。下拉而不是勾选框——勾选框只说明「开」
+  // 是什么，「关」会变成什么（弹窗还在、只是不用等）得靠猜。
+  y = 280;
+  {
+    const wchar_t* label = loc::T(loc::Str::LinkConfirmWait);
+    const int labelW = UnscaleOf(st, TextWidth(st, label)) + 4;
+    AddControl(st, 3, L"STATIC", label, SS_LEFT, 16, y + 4, labelW, 20, 0);
+    const int comboX = 16 + labelW + 6;
+    st->hLinkWait = AddControl(st, 3, L"COMBOBOX", L"",
+                               CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP,
+                               comboX, y, 230, 200, kIdLinkConfirmWait);
+    if (st->hLinkWait) {
+      ::SendMessageW(st->hLinkWait, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(loc::T(loc::Str::LinkWaitOn)));
+      ::SendMessageW(st->hLinkWait, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(loc::T(loc::Str::LinkWaitOff)));
+    }
+  }
+
+  y = 308;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolder), SS_LEFT, 16, y, 200, 20, 0);
   std::wstring dataDir = UtilDataDir();
   if (dataDir.empty()) dataDir = loc::T(loc::Str::NoFolder);
@@ -2342,16 +2373,17 @@ void BuildUi(DialogState* st) {
   st->hWebViewInfo = AddControl(st, 3, L"STATIC", L"", SS_LEFT, 16, y + 66, 532, 20, 0);
 
   // 底部按钮：两个重置在左（本页在前、全部在后），右侧是 应用/确定/取消
-  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::ResetPage), BS_PUSHBUTTON | WS_TABSTOP, 16, 522,
-             88, 28, kIdResetPage);
-  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 112, 522,
-             88, 28, kIdRestore);
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::ResetPage), BS_PUSHBUTTON | WS_TABSTOP, 16,
+             kButtonRowY, 88, 28, kIdResetPage);
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Restore), BS_PUSHBUTTON | WS_TABSTOP, 112,
+             kButtonRowY, 88, 28, kIdRestore);
   st->hApply = AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Apply),
-                          BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, 322, 522, 70, 28, kIdApply);
+                          BS_PUSHBUTTON | WS_TABSTOP | WS_DISABLED, 322, kButtonRowY, 70, 28,
+                          kIdApply);
   AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Ok), BS_DEFPUSHBUTTON | WS_TABSTOP, 400,
-             522, 70, 28, kIdOk);
-  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Cancel), BS_PUSHBUTTON | WS_TABSTOP, 478, 522,
-             70, 28, kIdCancel);
+             kButtonRowY, 70, 28, kIdOk);
+  AddControl(st, -1, L"BUTTON", loc::T(loc::Str::Cancel), BS_PUSHBUTTON | WS_TABSTOP, 478,
+             kButtonRowY, 70, 28, kIdCancel);
 
   ShowPage(st, 0);
 }
@@ -2400,6 +2432,7 @@ void ResetPageSettings(DialogState* st, int page) {
       c.enableLog = def.enableLog;
       c.openLinksInOpusViewer = def.openLinksInOpusViewer;
       c.viewerExts = def.viewerExts;
+      c.linkConfirmWait = def.linkConfirmWait;
       c.prewarm = def.prewarm;
       c.idleReleaseMinutes = def.idleReleaseMinutes;
       c.webviewBaseDir = def.webviewBaseDir;
@@ -2491,6 +2524,10 @@ void OnCommand(DialogState* st, int id, int code) {
         ::EnableWindow(st->hViewerExts, sel != 1);
         SetDirty(st, true);
       }
+      return;
+
+    case kIdLinkConfirmWait:
+      if (code == CBN_SELCHANGE) SetDirty(st, true);
       return;
 
     case kIdViewerExtsBtn:

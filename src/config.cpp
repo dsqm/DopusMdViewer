@@ -62,6 +62,7 @@ void SetDefaults(Config* c) {
   c->webviewBaseDirUsb.clear();
   c->openLinksInOpusViewer = true;
   c->viewerExts.clear();
+  c->linkConfirmWait = true;
   c->prewarm = false;
   c->idleReleaseMinutes = 3;
 }
@@ -142,6 +143,11 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
 
   if (root.contains("viewerExts") && root["viewerExts"].is_string()) {
     c->viewerExts = Utf8ToWide(root["viewerExts"].get<std::string>());
+  }
+
+  // 旧配置没有这一项：保持默认的「等 3 秒」
+  if (root.contains("linkConfirmWait") && root["linkConfirmWait"].is_boolean()) {
+    c->linkConfirmWait = root["linkConfirmWait"].get<bool>();
   }
 
   if (root.contains("prewarm") && root["prewarm"].is_boolean()) {
@@ -352,6 +358,12 @@ bool ConfigPrewarm(void) {
   return g_config.prewarm;
 }
 
+bool ConfigLinkConfirmWait(void) {
+  if (!g_loaded) ConfigLoad();
+  std::lock_guard<std::mutex> lock(g_modeMutex);
+  return g_config.linkConfirmWait;
+}
+
 int ConfigIdleReleaseMinutes(void) {
   if (!g_loaded) ConfigLoad();
   std::lock_guard<std::mutex> lock(g_modeMutex);
@@ -445,6 +457,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   root["webviewBaseDirUsb"] = WideToUtf8(c.webviewBaseDirUsb);
   root["openLinksInOpusViewer"] = c.openLinksInOpusViewer;
   root["viewerExts"] = WideToUtf8(c.viewerExts);
+  root["linkConfirmWait"] = c.linkConfirmWait;
   root["prewarm"] = c.prewarm;
   root["idleReleaseMinutes"] = c.idleReleaseMinutes;
   nlohmann::json render;
@@ -479,7 +492,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   }
   LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
           L"net=%d outside=%d render=%d%d%d%d%d%d copy=%d%d/%d lines=%d ws=%d/%d ind=%d "
-          L"tools=%d%d log=%d opusViewer=%d exts=%d prewarm=%d idle=%d",
+          L"tools=%d%d log=%d opusViewer=%d exts=%d linkWait=%d prewarm=%d idle=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
           c.netImageMode, (c.allowParentImages ? 1 : 0) + (c.allowAbsoluteImages ? 2 : 0),
           c.renderMermaid ? 1 : 0,
@@ -489,6 +502,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
           c.tableCopyMode, c.codeLineNumbers ? 1 : 0, c.codeWsOn ? 1 : 0, c.codeWsRange,
           c.codeIndentedBlocks ? 1 : 0, c.showFindButton ? 1 : 0,
           c.showOutlineButton ? 1 : 0, c.enableLog ? 1 : 0, c.openLinksInOpusViewer ? 1 : 0,
-          static_cast<int>(c.viewerExts.size()), c.prewarm ? 1 : 0, c.idleReleaseMinutes);
+          static_cast<int>(c.viewerExts.size()), c.linkConfirmWait ? 1 : 0, c.prewarm ? 1 : 0,
+          c.idleReleaseMinutes);
   return true;
 }

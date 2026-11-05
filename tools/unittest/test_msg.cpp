@@ -77,6 +77,8 @@ TEST(msg, make_cfg_field_order) {
 TEST(msg, make_misc) {
   CHECK_EQ_STR(msg::MakeClear(), L"clear");
   CHECK_EQ_STR(msg::MakeNetMode(2), L"net|2");
+  CHECK_EQ_STR(msg::MakeLinkWait(true), L"linkwait|1");
+  CHECK_EQ_STR(msg::MakeLinkWait(false), L"linkwait|0");
   CHECK_EQ_STR(msg::MakeIndexFull(120, 118), L"index-full|120|118");
   CHECK_EQ_STR(msg::MakeSkin(L"dark", L"body{}"), L"skin|dark|body{}");
   CHECK_EQ_STR(msg::MakeBig(std::string("3:2500")), L"big|3:2500");

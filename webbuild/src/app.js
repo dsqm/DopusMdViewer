@@ -5483,6 +5483,12 @@ function onHostMessage(event) {
     return
   }
 
+  if (type === 'linkwait') {
+    // 1 = 弹窗后等 3 秒；0 = 只弹窗、直接可点。只影响下一次弹窗。
+    OPEN.wait = rest === '0' ? 0 : kOpenConfirmDelay
+    return
+  }
+
   if (type === 'cfg') {
     const f = rest.split('|')
     // 后加的项：老宿主不发时按「全开、TSV、表格折行」处理
@@ -5529,9 +5535,17 @@ function onHostMessage(event) {
 }
 
 /* ---------------- 外部链接确认 ----------------
-   链接可能指向本地程序，交给宿主前必须人工过目：页面内弹窗 + 3 秒倒计时。
+   链接可能指向本地程序，交给宿主前必须人工过目：页面内弹窗；「打开」要不要等
+   3 秒由设置决定（linkwait 帧），等待只是把按钮填满再放开，弹窗本身没有关闭开关。
    href 只经 textContent 写入，不参与 HTML 拼接。 */
 const kOpenConfirmDelay = 3
+const OPEN = { wait: kOpenConfirmDelay }  // 秒；0 = 不等，弹窗一出现就能点
+
+const kWarnIcon =
+  '<svg class="mdv-modal-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+  'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>' +
+  '<path d="M12 9v4M12 17h.01"/></svg>'
 
 function confirmOpenExternal(href, target) {
   const sendTo = target || href
@@ -5541,12 +5555,14 @@ function confirmOpenExternal(href, target) {
   overlay.className = 'mdv-modal-overlay'
   overlay.innerHTML =
     '<div class="mdv-modal" role="dialog" aria-modal="true">' +
-    '<h2 class="mdv-modal-title"></h2>' +
+    '<div class="mdv-modal-head">' + kWarnIcon +
+    '<h2 class="mdv-modal-title"></h2></div>' +
     '<p class="mdv-modal-warn"></p>' +
     '<div class="mdv-modal-url"></div>' +
     '<div class="mdv-modal-actions">' +
     '<button type="button" class="mdv-cancel"></button>' +
-    '<button type="button" class="mdv-danger mdv-open" disabled></button>' +
+    '<button type="button" class="mdv-open" disabled>' +
+    '<span class="mdv-fill"></span><span class="mdv-txt"></span></button>' +
     '</div></div>'
   const modal = overlay.querySelector('.mdv-modal')
   modal.querySelector('.mdv-modal-title').textContent = '打开外部链接'
@@ -5555,8 +5571,9 @@ function confirmOpenExternal(href, target) {
   modal.querySelector('.mdv-modal-url').textContent = href
   const btnCancel = modal.querySelector('.mdv-cancel')
   const btnOpen = modal.querySelector('.mdv-open')
+  const fill = modal.querySelector('.mdv-fill')
+  const label = modal.querySelector('.mdv-txt')
   btnCancel.textContent = '取消'
-  btnOpen.textContent = '打开（' + kOpenConfirmDelay + '）'
 
   let timer = 0
   const close = (open) => {
@@ -5567,18 +5584,30 @@ function confirmOpenExternal(href, target) {
     if (open) postRaw('open|' + sendTo)
   }
 
-  timer = setInterval(() => {
-    const left = (btnOpen.dataset.left ? parseInt(btnOpen.dataset.left, 10) : kOpenConfirmDelay) - 1
-    if (left > 0) {
-      btnOpen.dataset.left = String(left)
-      btnOpen.textContent = '打开（' + left + '）'
-      return
-    }
-    clearInterval(timer)
-    timer = 0
-    btnOpen.textContent = '打开'
+  // 等待的秒数由宿主下发；0 就是「弹窗照旧、直接可点」。进度用按钮自身的填充表达，
+  // 长满那一刻才放开按钮，比单纯换数字更能看出还要多久。
+  const wait = OPEN.wait > 0 ? OPEN.wait : 0
+  if (wait > 0) {
+    const total = wait * 1000
+    const t0 = performance.now()
+    label.textContent = wait + ' 秒后可打开'
+    timer = setInterval(() => {
+      const p = Math.min(1, (performance.now() - t0) / total)
+      fill.style.width = (p * 100).toFixed(2) + '%'
+      if (p < 1) {
+        label.textContent = Math.max(1, Math.ceil(wait * (1 - p))) + ' 秒后可打开'
+        return
+      }
+      clearInterval(timer)
+      timer = 0
+      fill.style.width = '100%'
+      label.textContent = '打开'
+      btnOpen.disabled = false
+    }, 16)
+  } else {
+    label.textContent = '打开'
     btnOpen.disabled = false
-  }, 1000)
+  }
 
   btnCancel.addEventListener('click', () => close(false))
   btnOpen.addEventListener('click', () => {
