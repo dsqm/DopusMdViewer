@@ -6,13 +6,14 @@
    类型：一律取 --fx-* 变量（三槽位 / px 字号 / 倍数行高 / em 行宽），
          由 <style id="fx"> 最后覆盖，皮肤改不动。
    字面色值集中在 :root 默认块，供"皮肤只写两三行"时兜底。
-   语法高亮的 token 配色不在本文件，由皮肤以选择器提供。
+   语法高亮的 token 配色也走变量（--md-syn-*）：规则写在本文件，皮肤只给值。
    ============================================================ */
 
 :root {
-  /* —— 变量契约（31 个）——
+  /* —— 变量契约（46 个）——
      另有 10 个 --md-alert-*（note / tip / important / warning / caution 各带
-     一组 -bg），由各自的 .markdown-alert-* 规则局部覆盖，皮肤也要给全。 */
+     一组 -bg），由各自的 .markdown-alert-* 规则局部覆盖，皮肤也要给全。
+     合计 56 个。 */
   --md-bg: #ffffff;
   --md-bg-alt: #f6f8fa;
   --md-fg: #1f2328;
@@ -48,6 +49,23 @@
   --md-icon-bg: #ffffff;
 
   --md-danger: #cf222e;
+
+  /* —— 语法高亮 token（颜色；斜体/加粗是结构，写在下面的规则里） —— */
+  --md-syn-keyword: #cf222e;
+  --md-syn-string: #0a3069;
+  --md-syn-comment: #6e7781;
+  --md-syn-number: #0550ae;
+  --md-syn-builtin: #0550ae;
+  --md-syn-title: #8250df;
+  --md-syn-type: #953800;
+  --md-syn-variable: #953800;
+  --md-syn-name: #116329;
+  --md-syn-selector: #116329;
+  --md-syn-meta: #6e7781;
+  --md-syn-deletion: #82071e;
+  --md-syn-deletion-bg: #ffebe9;
+  --md-syn-addition: #116329;
+  --md-syn-addition-bg: #dafbe1;
 
   --md-radius: 6px;
   --md-space-block: 1em;
@@ -448,6 +466,27 @@ pre > code {
 }
 
 .hljs { background: transparent; }
+
+/* ---------------- 语法高亮 token ----------------
+   规则集中在 base.css，皮肤只提供 --md-syn-* 的值，因此一套皮肤可以完全是
+   变量、没有一条选择器。层叠上 base 先、皮肤后：皮肤若自己再写 .hljs-* 选择器，
+   它会赢——契约之外的自由，不阻止，但编辑器改变量对它不生效。
+   增删的底色用 transparent 兜底：不给底色的皮肤（dark / solarized）不用写。 */
+.hljs-keyword, .hljs-selector-tag, .hljs-doctag { color: var(--md-syn-keyword); }
+.hljs-string, .hljs-regexp { color: var(--md-syn-string); }
+.hljs-comment, .hljs-quote { color: var(--md-syn-comment); font-style: italic; }
+.hljs-number, .hljs-literal { color: var(--md-syn-number); }
+.hljs-built_in, .hljs-attr, .hljs-attribute, .hljs-property { color: var(--md-syn-builtin); }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--md-syn-title); }
+.hljs-type { color: var(--md-syn-type); }
+.hljs-variable, .hljs-template-variable { color: var(--md-syn-variable); }
+.hljs-name, .hljs-tag { color: var(--md-syn-name); }
+.hljs-selector-class, .hljs-selector-id { color: var(--md-syn-selector); }
+.hljs-meta, .hljs-symbol, .hljs-bullet, .hljs-link { color: var(--md-syn-meta); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+.hljs-deletion { color: var(--md-syn-deletion); background: var(--md-syn-deletion-bg); }
+.hljs-addition { color: var(--md-syn-addition); background: var(--md-syn-addition-bg); }
 
 /* ---------------- 代码块行号 ----------------
    格子是空元素 + CSS 计数器：数字由 ::before 生成，不是文本节点，所以复制拿到的是

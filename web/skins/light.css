@@ -1,6 +1,6 @@
 /* name: GitHub Light
    id: light — 默认皮肤，同时是皮肤模板。
-   41 个变量全部列出；只想要配色时改这里就够，
+   56 个变量全部列出；只想要配色时改这里就够，
    要改排版再往下写选择器。字体不归皮肤：font-family / font-size /
    line-height / 行宽由 <style id="fx"> 最后写出并压住。 */
 
@@ -60,24 +60,29 @@
   --md-icon-hover: #0969da;
   --md-icon-bg: #ffffff;
 
+  /* —— 语法高亮 token —— */
+  --md-syn-keyword: #cf222e;
+  --md-syn-string: #0a3069;
+  --md-syn-comment: #6e7781;
+  --md-syn-number: #0550ae;
+  --md-syn-builtin: #0550ae;
+  --md-syn-title: #8250df;
+  --md-syn-type: #953800;
+  --md-syn-variable: #953800;
+  --md-syn-name: #116329;
+  --md-syn-selector: #116329;
+  --md-syn-meta: #6e7781;
+  --md-syn-deletion: #82071e;
+  --md-syn-deletion-bg: #ffebe9;
+  --md-syn-addition: #116329;
+  --md-syn-addition-bg: #dafbe1;
+
   /* —— 形状 —— */
   --md-radius: 6px;
   --md-space-block: 1em;
 }
 
-/* —— 语法高亮 token（不在变量契约内，由皮肤以选择器提供） —— */
-.hljs-keyword, .hljs-selector-tag, .hljs-doctag { color: #cf222e; }
-.hljs-string, .hljs-regexp { color: #0a3069; }
-.hljs-comment, .hljs-quote { color: #6e7781; font-style: italic; }
-.hljs-number, .hljs-literal, .hljs-built_in, .hljs-attr, .hljs-attribute { color: #0550ae; }
-.hljs-title, .hljs-title.function_, .hljs-section { color: #8250df; }
-.hljs-type, .hljs-variable, .hljs-template-variable { color: #953800; }
-.hljs-name, .hljs-tag, .hljs-selector-class, .hljs-selector-id { color: #116329; }
-.hljs-meta, .hljs-symbol, .hljs-bullet, .hljs-link { color: #6e7781; }
-.hljs-emphasis { font-style: italic; }
-.hljs-strong { font-weight: 600; }
-.hljs-deletion { color: #82071e; background: #ffebe9; }
-.hljs-addition { color: #116329; background: #dafbe1; }
+/* 语法高亮的 .hljs-* 规则在 base.css，皮肤只给 --md-syn-* 的值。 */
 
 /* —— 皮肤可以改的排版细节 —— */
 .measure { padding-top: 2em; }

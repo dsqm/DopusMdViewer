@@ -54,21 +54,25 @@
 
   --md-radius: 6px;
   --md-space-block: 1em;
+
+  /* —— 语法高亮 token —— */
+  --md-syn-keyword: #c678dd;
+  --md-syn-string: #98c379;
+  --md-syn-comment: #5c6370;
+  --md-syn-number: #d19a66;
+  --md-syn-builtin: #d19a66;
+  --md-syn-title: #61afef;
+  --md-syn-type: #e5c07b;
+  --md-syn-variable: #e06c75;
+  --md-syn-name: #e06c75;
+  --md-syn-selector: #e5c07b;
+  --md-syn-meta: #56b6c2;
+  --md-syn-deletion: #e06c75;
+  --md-syn-deletion-bg: transparent;
+  --md-syn-addition: #98c379;
+  --md-syn-addition-bg: transparent;
 }
 
-.hljs-keyword, .hljs-selector-tag, .hljs-doctag { color: #c678dd; }
-.hljs-string, .hljs-regexp { color: #98c379; }
-.hljs-comment, .hljs-quote { color: #5c6370; font-style: italic; }
-.hljs-number, .hljs-literal { color: #d19a66; }
-.hljs-built_in, .hljs-attr, .hljs-attribute, .hljs-property { color: #d19a66; }
-.hljs-title, .hljs-title.function_, .hljs-section { color: #61afef; }
-.hljs-type { color: #e5c07b; }
-.hljs-variable, .hljs-template-variable, .hljs-name, .hljs-tag { color: #e06c75; }
-.hljs-selector-class, .hljs-selector-id { color: #e5c07b; }
-.hljs-meta, .hljs-symbol, .hljs-bullet, .hljs-link { color: #56b6c2; }
-.hljs-emphasis { font-style: italic; }
-.hljs-strong { font-weight: 600; }
-.hljs-deletion { color: #e06c75; }
-.hljs-addition { color: #98c379; }
+/* 语法高亮的 .hljs-* 规则在 base.css，皮肤只给 --md-syn-* 的值。 */
 
 .measure { padding-top: 2em; }
