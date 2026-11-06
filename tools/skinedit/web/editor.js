@@ -511,6 +511,7 @@ function installLink(d) {
   d.addEventListener('mousemove', (e) => {
     if (!S.link) return
     last = { target: e.target, x: e.clientX, y: e.clientY }
+    placeChip(e.clientX, e.clientY)
     if (queued) return
     queued = true
     requestAnimationFrame(() => {
@@ -599,33 +600,45 @@ function highlightVar(name) {
 }
 
 /* 预览上方的浮动提示。位置只改 transform（合成层，不触发重排），
-   容器尺寸缓存到 resize 才重量，文本没变就不写 DOM、不重置定时器。 */
+   容器尺寸缓存到 resize 才重量，文本没变就不写 DOM。
+   位置在 mousemove 里当场写：等到下一帧才挪，指针快时看起来就是「拖在后面」。 */
 let chipTimer = 0
 let chipText = ''
 let chipBox = null
-function showChip(text, x, y, pin) {
+
+function placeChip(x, y) {
   const chip = document.getElementById('chip')
-  if (!text) {
-    if (!pin) { chip.hidden = true; chipText = '' }
-    return
-  }
+  if (!chip || chip.hidden) return
   if (chipBox === null) {
     const box = document.getElementById('preview-box')
     chipBox = box ? box.getBoundingClientRect() : { width: 600 }
+  }
+  const lx = Math.min(chipBox.width - 220, Math.max(8, x + 14))
+  const ly = Math.max(6, y - 30)
+  chip.style.transform = 'translate(' + lx + 'px, ' + ly + 'px)'
+}
+
+function showChip(text, x, y, pin) {
+  const chip = document.getElementById('chip')
+  if (!text) {
+    if (!pin) { chip.hidden = true; chipText = ''; clearTimeout(chipTimer) }
+    return
   }
   if (chip.hidden) chip.hidden = false
   if (text !== chipText) {
     chip.textContent = text
     chipText = text
     chip.classList.toggle('pin', !!pin)
-    if (!pin) {
-      clearTimeout(chipTimer)
-      chipTimer = setTimeout(() => { chip.hidden = true; chipText = '' }, 2200)
-    }
   }
-  const lx = Math.min(chipBox.width - 220, Math.max(8, x + 14))
-  const ly = Math.max(6, y - 30)
-  chip.style.transform = 'translate(' + lx + 'px, ' + ly + 'px)'
+  if (!pin) {
+    // 指针还在元素上就不该自己消失：每次移动都把计时重来一遍
+    clearTimeout(chipTimer)
+    chipTimer = setTimeout(() => { chip.hidden = true; chipText = '' }, 2200)
+  } else {
+    // 点住的那条不再自动消失，否则悬停遗留的计时会把它带走
+    clearTimeout(chipTimer)
+  }
+  placeChip(x, y)
 }
 
 /* ---------------- 皮肤 ---------------- */
