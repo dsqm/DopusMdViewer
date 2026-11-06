@@ -190,9 +190,14 @@ select.sel {
   padding: 0;
   border: 1px solid #b9bfc5;
   border-radius: 4px;
-  background: none;
+  /* 棋盘格垫底 + --c 叠上去：带 alpha 时才看得出「里面是空的」 */
+  background-image:
+    linear-gradient(var(--c, transparent), var(--c, transparent)),
+    conic-gradient(#d7dbe0 0 25%, #fff 0 50%, #d7dbe0 0 75%, #fff 0 100%);
+  background-size: auto, 8px 8px;
   cursor: pointer;
 }
+.row .sw:disabled { cursor: default; }
 .row .sw.kw {
   border-style: dashed;
   background-image: linear-gradient(45deg, #eee 25%, transparent 25%, transparent 75%, #eee 75%),
@@ -594,3 +599,131 @@ select.sel {
   word-break: break-all;
 }
 .modal-r { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* —— 自绘取色器 ——
+   WebView2 的 input[type=color] 没有 alpha（Chromium 把 alpha/colorspace 两个属性
+   挂在 runtime flag 后面），所以取色器自己画：HSV 面板 + 色相条 + 透明条 + hex + 吸管。
+   位置由 JS 算成 fixed 的 left/top，跟行浮出，可以盖到右侧预览上方。 */
+.pick {
+  position: fixed;
+  z-index: 60;
+  width: 312px;
+  padding: 10px;
+  border: 1px solid #c9cfd5;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .2);
+}
+
+.pick-sv {
+  position: relative;
+  height: 150px;
+  border-radius: 6px;
+  cursor: crosshair;
+  touch-action: none;
+}
+.pick-sv .dot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35);
+  pointer-events: none;
+}
+
+.pick-hue,
+.pick-alpha {
+  position: relative;
+  height: 12px;
+  margin-top: 10px;
+  border-radius: 6px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+/* 透明条要看得出「越来越透明」：棋盘格垫底，渐变由脚本画在上面一层 */
+.pick-alpha {
+  background-image: conic-gradient(#d7dbe0 0 25%, #fff 0 50%, #d7dbe0 0 75%, #fff 0 100%);
+  background-size: 8px 8px;
+}
+.pick-alpha .grad {
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+}
+.pick-hue .knob,
+.pick-alpha .knob {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 18px;
+  margin: -9px 0 0 -5px;
+  border: 2px solid #fff;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35);
+  pointer-events: none;
+}
+
+.pick-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+.pick-drop {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #c4c9ce;
+  border-radius: 5px;
+  background: #fff;
+  color: #3a4149;
+  cursor: pointer;
+}
+.pick-drop:hover { background: #f2f4f6; border-color: #a8aeb4; }
+.pick-drop-i {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: middle;
+}
+.pick-hex {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid #d6dade;
+  border-radius: 5px;
+  background: #fff;
+  color: #24292f;
+}
+.pick-hex:focus { outline: 2px solid #9dc2ee; outline-offset: -1px; }
+.pick-pct { flex: 0 0 40px; text-align: right; font-size: 11px; color: #57606a; }
+
+.pick-recent {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+  margin-top: 10px;
+}
+.pick-recent-c {
+  height: 18px;
+  padding: 0;
+  border: 1px solid #b9bfc5;
+  border-radius: 3px;
+  background-image:
+    linear-gradient(var(--c, transparent), var(--c, transparent)),
+    conic-gradient(#d7dbe0 0 25%, #fff 0 50%, #d7dbe0 0 75%, #fff 0 100%);
+  background-size: auto, 6px 6px;
+  cursor: pointer;
+}
+.pick-recent-c:hover { border-color: #7aa7dd; }

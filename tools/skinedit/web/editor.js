@@ -428,6 +428,276 @@ const alphaPct = (v) => {
   return c ? Math.round(c.a * 100) : null
 }
 
+/* ---------------- 自绘取色器 ----------------
+   WebView2 里的 input[type=color] 没有 alpha（Chromium 把 alpha/colorspace 两个属性
+   挂在 runtime flag 后面，MDN 上 Chrome/Edge 是 No support），所以取色器自己画：
+   HSV 面板 + 色相条 + 透明条 + hex 输入 + 吸管。 */
+
+function rgbToHsv(c) {
+  const r = c.r / 255, g = c.g / 255, b = c.b / 255
+  const max = Math.max(r, g, b), min = Math.min(r, g, b)
+  const d = max - min
+  let h = 0
+  if (d) {
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0)
+    else if (max === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+    h *= 60
+  }
+  return { h, s: max ? d / max : 0, v: max }
+}
+
+function hsvToRgb(h, s, v) {
+  const c = v * s
+  const hp = (((h % 360) + 360) % 360) / 60
+  const x = c * (1 - Math.abs((hp % 2) - 1))
+  let rgb
+  if (hp < 1) rgb = [c, x, 0]
+  else if (hp < 2) rgb = [x, c, 0]
+  else if (hp < 3) rgb = [0, c, x]
+  else if (hp < 4) rgb = [0, x, c]
+  else if (hp < 5) rgb = [x, 0, c]
+  else rgb = [c, 0, x]
+  const m = v - c
+  return {
+    r: Math.round((rgb[0] + m) * 255),
+    g: Math.round((rgb[1] + m) * 255),
+    b: Math.round((rgb[2] + m) * 255),
+  }
+}
+
+/* 最近用过的颜色：本会话记在 RECENT，落盘那份由 settings 通道在载入时灌进来 */
+const RECENT_MAX = 8
+const RECENT = []
+
+function rememberColor(c) {
+  const hex = fmtColor(c)
+  const i = RECENT.indexOf(hex)
+  if (i >= 0) RECENT.splice(i, 1)
+  RECENT.unshift(hex)
+  if (RECENT.length > RECENT_MAX) RECENT.length = RECENT_MAX
+}
+
+/* 色块自带棋盘格底：半透明时才看得出「里面是空的」 */
+function paintSwatch(btn, value) {
+  const c = parseColor(value)
+  if (!c) { btn.style.removeProperty('--c'); return }
+  btn.style.setProperty('--c', fmtColor(c))
+  btn.title = fmtColor(c) + (c.a < 1 ? '（' + Math.round(c.a * 100) + '% 不透明）' : '')
+}
+
+let picker = null
+
+function closePicker() {
+  if (!picker) return
+  // 关掉时记一次「用过」：这一行最终落下来的颜色
+  const c = picker.name ? parseColor(resolveVar(picker.name).value) : null
+  if (c) rememberColor(c)
+  picker.root.remove()
+  document.removeEventListener('pointerdown', picker.onOutside, true)
+  document.removeEventListener('keydown', picker.onKey, true)
+  picker = null
+}
+
+/* 弹层跟着色块浮出：默认贴在色块下方，右边出界就往左收，下面放不下就翻到上面。 */
+function placePicker(root, anchor) {
+  const a = anchor.getBoundingClientRect()
+  const w = root.offsetWidth || 312
+  const h = root.offsetHeight || 300
+  let left = a.left
+  let top = a.bottom + 6
+  if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8
+  if (left < 8) left = 8
+  if (top + h > window.innerHeight - 8) top = Math.max(8, a.top - h - 6)
+  root.style.left = Math.round(left) + 'px'
+  root.style.top = Math.round(top) + 'px'
+}
+
+function openPicker(anchor, name) {
+  if (picker && picker.name === name) { closePicker(); return }
+  closePicker()
+
+  const row = anchor.closest('.row')
+  const txt = row && row.querySelector('.v')
+  const alphaInput = row && row.querySelector('.alpha')
+  const cur = parseColor(resolveVar(name).value) || { r: 255, g: 255, b: 255, a: 1 }
+  const start = rgbToHsv(cur)
+
+  const root = el('div', 'pick')
+  root.id = '__pick'
+  const sv = el('div', 'pick-sv')
+  const svDot = el('i', 'dot')
+  sv.append(svDot)
+  const hue = el('div', 'pick-hue')
+  const hueKnob = el('i', 'knob')
+  hue.append(hueKnob)
+  const alpha = el('div', 'pick-alpha')
+  const alphaGrad = el('div', 'grad')
+  const alphaKnob = el('i', 'knob')
+  alpha.append(alphaGrad, alphaKnob)
+  const line = el('div', 'pick-line')
+  const drop = el('button', 'pick-drop')
+  drop.type = 'button'
+  drop.title = '吸管：从屏幕上取一个颜色'
+  // 编辑器外壳页没有 sprite（那是预览页的），图标直接内联
+  drop.innerHTML = '<svg class="pick-drop-i" viewBox="0 0 24 24" aria-hidden="true">' +
+    '<path d="M19.5 4.5a3.5 3.5 0 0 0-5 0L13 6l-1.5-1.5-1.4 1.4 1.5 1.5-8.1 8.1-.5 3.9 3.9-.5 8.1-8.1 1.5 1.5 1.4-1.4L16 10l1.5-1.5a3.5 3.5 0 0 0 2-4z"/>' +
+    '</svg>'
+  const hex = el('input', 'pick-hex')
+  hex.type = 'text'
+  hex.spellcheck = false
+  hex.maxLength = 9
+  const pct = el('span', 'pick-pct')
+  line.append(drop, hex, pct)
+  const recentBox = el('div', 'pick-recent')
+  root.append(sv, hue, alpha, line, recentBox)
+
+  const st = { name, h: start.h, s: start.s, v: start.v, a: cur.a }
+
+  const currentColor = () => {
+    const rgb = hsvToRgb(st.h, st.s, st.v)
+    return { ...rgb, a: st.a }
+  }
+
+  const paint = () => {
+    const rgb = hsvToRgb(st.h, st.s, st.v)
+    const solid = fmtColor({ ...rgb, a: 1 })
+    sv.style.background =
+      'linear-gradient(to top, #000, rgba(0,0,0,0)), ' +
+      'linear-gradient(to right, #fff, ' + solid + ')'
+    svDot.style.left = (st.s * 100) + '%'
+    svDot.style.top = ((1 - st.v) * 100) + '%'
+    svDot.style.background = solid
+    hue.style.background =
+      'linear-gradient(to right, #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%)'
+    hueKnob.style.left = (st.h / 360 * 100) + '%'
+    const c = currentColor()
+    alphaGrad.style.backgroundImage = 'linear-gradient(to right, rgba(' + c.r + ',' + c.g + ',' + c.b +
+      ',0), rgba(' + c.r + ',' + c.g + ',' + c.b + ',1))'
+    alphaKnob.style.left = (st.a * 100) + '%'
+    const out = fmtColor(c)
+    if (document.activeElement !== hex) hex.value = out
+    pct.textContent = Math.round(st.a * 100) + '%'
+    if (anchor.isConnected) paintSwatch(anchor, out)
+    if (txt) txt.value = out
+    if (alphaInput) alphaInput.value = String(Math.round(st.a * 100))
+  }
+
+  const emit = () => {
+    const c = currentColor()
+    setValue(name, fmtColor(c))
+    paint()
+  }
+
+  // 拖拽：按下即捕获，抬起才松手，指针移出元素也继续跟着走
+  const drag = (node, onMove) => {
+    node.addEventListener('pointerdown', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      // 合成事件没有真实 pointerId，捕获会抛；真机上这一步能保证指针移出元素也继续拖
+      try { node.setPointerCapture(e.pointerId) } catch { /* 无指针捕获也能用 */ }
+      onMove(e)
+      const move = (ev2) => onMove(ev2)
+      const up = () => {
+        node.removeEventListener('pointermove', move)
+        node.removeEventListener('pointerup', up)
+        node.removeEventListener('pointercancel', up)
+      }
+      node.addEventListener('pointermove', move)
+      node.addEventListener('pointerup', up)
+      node.addEventListener('pointercancel', up)
+    })
+  }
+
+  drag(sv, (e) => {
+    const r = sv.getBoundingClientRect()
+    st.s = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+    st.v = 1 - Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))
+    emit()
+  })
+  drag(hue, (e) => {
+    const r = hue.getBoundingClientRect()
+    st.h = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * 360
+    emit()
+  })
+  drag(alpha, (e) => {
+    const r = alpha.getBoundingClientRect()
+    st.a = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+    emit()
+  })
+
+  hex.addEventListener('input', () => {
+    const c = parseColor(hex.value)
+    if (!c) return
+    const hsv = rgbToHsv(c)
+    // 色相/饱和度在灰色上算不出来，保留原来的，免得拖动时跳一下
+    if (hsv.s > 0.001) { st.h = hsv.h; st.s = hsv.s }
+    st.v = hsv.v
+    st.a = c.a
+    setValue(name, fmtColor(c))
+    paint()
+  })
+  hex.addEventListener('blur', () => {
+    const c = parseColor(resolveVar(name).value)
+    if (c) { hex.value = fmtColor(c); paint() }
+  })
+  hex.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); hex.blur() }
+  })
+
+  drop.addEventListener('click', async (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!window.EyeDropper) return
+    try {
+      const r = await new window.EyeDropper().open()
+      const c = parseColor(r.sRGBHex)
+      if (!c) return
+      const hsv = rgbToHsv(c)
+      st.h = hsv.h; st.s = hsv.s; st.v = hsv.v
+      emit()
+    } catch { /* 用户按 Esc 取消 */ }
+  })
+
+  const fillRecent = () => {
+    recentBox.replaceChildren()
+    for (const hexVal of RECENT) {
+      const b = el('button', 'pick-recent-c')
+      b.type = 'button'
+      b.title = hexVal
+      b.style.setProperty('--c', hexVal)
+      b.addEventListener('click', (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        const c = parseColor(hexVal)
+        if (!c) return
+        const hsv = rgbToHsv(c)
+        if (hsv.s > 0.001) { st.h = hsv.h; st.s = hsv.s }
+        st.v = hsv.v
+        st.a = c.a
+        emit()
+      })
+      recentBox.append(b)
+    }
+    recentBox.hidden = RECENT.length === 0
+  }
+
+  const onOutside = (e) => {
+    if (picker && !picker.root.contains(e.target) && !e.target.closest('.sw')) closePicker()
+  }
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); closePicker() }
+  }
+
+  document.body.append(root)
+  paint()
+  fillRecent()
+  placePicker(root, anchor)
+  document.addEventListener('pointerdown', onOutside, true)
+  document.addEventListener('keydown', onKey, true)
+  picker = { root, name, onOutside, onKey }
+}
+
 function frameDoc() {
   try {
     const d = S.frame && S.frame.contentDocument
@@ -1406,11 +1676,19 @@ function rowNormal(name) {
   row.title = tipOf(name, from)
 
   const color = isColorVal(value)
-  const sw = el('input', 'sw' + (color ? '' : ' kw'))
-  sw.type = 'color'
-  sw.value = hexOf(value) || '#ffffff'
-  sw.title = color ? '单击用内建取色器；右键用系统取色器'
-                   : '这个值不是颜色（' + value + '）'
+  const sw = el('button', 'sw' + (color ? '' : ' kw'))
+  sw.type = 'button'
+  if (color) {
+    paintSwatch(sw, value)
+    sw.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()   // 点色块只是开取色器，不要顺带触发整行的跳转
+      openPicker(sw, name)
+    })
+  } else {
+    sw.disabled = true
+    sw.title = '这个值不是颜色（' + value + '）'
+  }
   row.append(sw)
 
   const key = el('span', 'k', NAMES[name] || name)
@@ -1428,26 +1706,18 @@ function rowNormal(name) {
   txt.title = from ? raw : ''
   txt.spellcheck = false
 
-  sw.addEventListener('input', () => {
-    // 原生取色器只认 RGB：alpha 沿用这一行当前的值，别因为换个颜色就把透明度抹平
-    const c = parseColor(sw.value)
-    if (!c) return
-    c.a = alphaPct(resolveVar(name).value) === null ? 1 : alphaPct(resolveVar(name).value) / 100
-    const next = fmtColor(c)
-    txt.value = next
-    setValue(name, next)
-  })
-  // 右键走宿主的 ChooseColorW。单击留给内建取色器，两个入口互不抢事件。
+  // 右键走宿主的 ChooseColorW（系统调色板）。单击留给自绘取色器，两个入口互不抢事件。
   sw.addEventListener('contextmenu', (e) => {
-    if (!(window.chrome && window.chrome.webview)) return
+    if (!color || !(window.chrome && window.chrome.webview)) return
     e.preventDefault()
-    hostCall('color', { hex: hexOf(sw.value) || '#ffffff' }).then((r) => {
+    hostCall('color', { hex: hexOf(resolveVar(name).value) || '#ffffff' }).then((r) => {
       if (r.cancel || !r.hex) return
       const c = parseColor(r.hex)
       if (!c) return
-      c.a = alphaPct(resolveVar(name).value) === null ? 1 : alphaPct(resolveVar(name).value) / 100
+      const a = alphaPct(resolveVar(name).value)
+      c.a = a === null ? 1 : a / 100
       const next = fmtColor(c)
-      sw.value = hexOf(next)
+      paintSwatch(sw, next)
       txt.value = next
       setValue(name, next)
     }).catch(() => {})
@@ -1458,8 +1728,13 @@ function rowNormal(name) {
     const c = parseColor(txt.value.trim())
     const box = row.querySelector('.alpha')
     if (c && box) box.value = String(Math.round(c.a * 100))
+    if (c) paintSwatch(sw, fmtColor(c))
     // 从 currentColor 打成具体颜色（或反过来）：这一行的控件形态变了，重画这一行
     if (!!c !== !!box) rebuildRow(name)
+  })
+  txt.addEventListener('blur', () => {
+    const c = parseColor(resolveVar(name).value)
+    if (c) rememberColor(c)
   })
 
   row.append(txt)
@@ -1503,6 +1778,8 @@ function alphaBox(name, txt) {
     c.a = Math.max(0, Math.min(100, n)) / 100
     const next = fmtColor(c)
     txt.value = next
+    const sw = document.querySelector('[data-var="' + name + '"] .sw')
+    if (sw) paintSwatch(sw, next)
     setValue(name, next)
   }
   inp.addEventListener('input', apply)
