@@ -478,6 +478,19 @@ function rememberColor(c) {
   if (RECENT.length > RECENT_MAX) RECENT.length = RECENT_MAX
 }
 
+/* 吸管：EyeDropper 只能给 RGB（屏幕像素本身不透明），alpha 由调用方决定。 */
+async function eyedrop(name, apply) {
+  if (!window.EyeDropper) {
+    setStatus('这个 WebView2 里没有吸管（EyeDropper 不可用）', 'warn')
+    return
+  }
+  try {
+    const r = await new window.EyeDropper().open()
+    const c = parseColor(r.sRGBHex)
+    if (c) apply(c)
+  } catch { /* 用户按 Esc 取消取色 */ }
+}
+
 /* 色块自带棋盘格底：半透明时才看得出「里面是空的」 */
 function paintSwatch(btn, value) {
   const c = parseColor(value)
@@ -645,18 +658,16 @@ function openPicker(anchor, name) {
     if (e.key === 'Enter') { e.preventDefault(); hex.blur() }
   })
 
-  drop.addEventListener('click', async (e) => {
+  drop.addEventListener('click', (e) => {
     e.preventDefault()
     e.stopPropagation()
-    if (!window.EyeDropper) return
-    try {
-      const r = await new window.EyeDropper().open()
-      const c = parseColor(r.sRGBHex)
-      if (!c) return
+    eyedrop(name, (c) => {
       const hsv = rgbToHsv(c)
-      st.h = hsv.h; st.s = hsv.s; st.v = hsv.v
+      st.h = hsv.h
+      st.s = hsv.s
+      st.v = hsv.v
       emit()
-    } catch { /* 用户按 Esc 取消 */ }
+    })
   })
 
   const fillRecent = () => {
@@ -1706,21 +1717,21 @@ function rowNormal(name) {
   txt.title = from ? raw : ''
   txt.spellcheck = false
 
-  // 右键走宿主的 ChooseColorW（系统调色板）。单击留给自绘取色器，两个入口互不抢事件。
+  // 右键直接开吸管：系统调色板不认 alpha，还得多点一次对话框
   sw.addEventListener('contextmenu', (e) => {
-    if (!color || !(window.chrome && window.chrome.webview)) return
+    if (!color) return
     e.preventDefault()
-    hostCall('color', { hex: hexOf(resolveVar(name).value) || '#ffffff' }).then((r) => {
-      if (r.cancel || !r.hex) return
-      const c = parseColor(r.hex)
-      if (!c) return
+    eyedrop(name, (c) => {
       const a = alphaPct(resolveVar(name).value)
       c.a = a === null ? 1 : a / 100
       const next = fmtColor(c)
       paintSwatch(sw, next)
       txt.value = next
+      const box = row.querySelector('.alpha')
+      if (box) box.value = String(Math.round(c.a * 100))
       setValue(name, next)
-    }).catch(() => {})
+      rememberColor(c)
+    })
   })
   txt.addEventListener('input', () => {
     setValue(name, txt.value.trim())
@@ -1831,10 +1842,19 @@ function rowCompact(name) {
   const { raw, value, from } = resolveVar(name)
   const row = el('label', 'prow')
   row.dataset.var = name
-  const sw = el('input', 'psw' + (isColorVal(value) ? '' : ' kw'))
-  sw.type = 'color'
-  sw.value = hexOf(value) || '#ffffff'
-  sw.addEventListener('input', () => setValue(name, sw.value))
+  const color = isColorVal(value)
+  const sw = el('button', 'psw' + (color ? '' : ' kw'))
+  sw.type = 'button'
+  if (color) {
+    paintSwatch(sw, value)
+    sw.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      openPicker(sw, name)
+    })
+  } else {
+    sw.disabled = true
+  }
   row.append(sw, el('span', 'pn', NAMES[name] || name))
   row.title = '--md-' + name + ': ' + raw + (from ? '（继承 --md-' + from + '）' : '')
   row.addEventListener('mouseenter', () => highlightVar(name))

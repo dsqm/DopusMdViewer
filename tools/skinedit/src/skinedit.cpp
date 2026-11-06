@@ -384,26 +384,6 @@ std::wstring PickFile(bool save, const std::wstring& defaultName, bool* cancel) 
   return out;
 }
 
-bool PickColor(const std::wstring& hex, std::wstring* out) {
-  static COLORREF custom[16] = {};
-  unsigned rgb = 0;
-  if (hex.size() == 7 && hex[0] == L'#') {
-    rgb = static_cast<unsigned>(::_wcstoui64(hex.c_str() + 1, nullptr, 16));
-  }
-  CHOOSECOLORW cc = {};
-  cc.lStructSize = sizeof(cc);
-  cc.hwndOwner = g_hwnd;
-  cc.lpCustColors = custom;
-  cc.Flags = CC_FULLOPEN | CC_RGBINIT | CC_ANYCOLOR;
-  cc.rgbResult = RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
-  if (!::ChooseColorW(&cc)) return false;
-  wchar_t buf[16] = {};
-  ::_snwprintf_s(buf, _TRUNCATE, L"#%02X%02X%02X", GetRValue(cc.rgbResult),
-                 GetGValue(cc.rgbResult), GetBValue(cc.rgbResult));
-  *out = buf;
-  return true;
-}
-
 void Push(const std::wstring& json) {
   if (!g_ready || !g_web) return;
   g_web->PostWebMessageAsJson(json.c_str());
@@ -486,14 +466,6 @@ void HandleMessage(const std::wstring& json) {
     const std::wstring picked = PickFile(kind == L"save", name, &cancel);
     Push(head + L"\"type\":\"dialog\",\"kind\":" + JsonStr(kind) + L",\"cancel\":" +
          (cancel ? L"true" : L"false") + L",\"path\":" + JsonStr(picked) + L"}");
-    return;
-  }
-
-  if (op == L"color") {
-    std::wstring picked;
-    const bool ok = PickColor(Field(json, L"hex"), &picked);
-    Push(head + L"\"type\":\"color\",\"cancel\":" + (ok ? L"false" : L"true") +
-         L",\"hex\":" + JsonStr(picked) + L"}");
     return;
   }
 
