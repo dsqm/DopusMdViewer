@@ -82,6 +82,19 @@ const HINT = {
   'space-block': '块与块之间的垂直间距（段落、列表、表格、提示框的上下外边距）',
 }
 
+/* 只在「某种状态」下才看得见的项：静态预览里没有那个状态，光看「影响」列不出来。
+   这不参与 RULES 反查，只是在提示末尾补一句「要先把状态摆出来」。 */
+const STATE_NOTE = {
+  'icon-active': '搜索条里 Aa / 整词 / 正则三个开关按下时的边框与文字颜色；预览已把 Aa 置为按下',
+  'icon-hover': '图标按钮悬停时的图标色',
+  'copy-hover-fg': '复制按钮悬停时的字与图标颜色',
+  'link-hover': '链接悬停时的字色',
+  'table-row-hover': '表格行悬停时的单元格底色',
+  'outline-hover-bg': '大纲条目悬停时的底色',
+  'scrollbar-hover': '自绘滚动条滑块悬停时的颜色',
+  'hit-current': '搜索「当前命中的那一个」的高亮底色（预览里第三处 mark 就是它）',
+}
+
 
 /* 表单里的分组标题：只影响显示，皮肤文件里的分组注释仍是契约里的原名。
    改名是为了跟「字在前、背景在后」的命名对上，并去掉中英混写。 */
@@ -1048,6 +1061,7 @@ function tipOf(name, from) {
   const els = VAR_TIPS[name]
   if (els) bits.push('影响：' + els.join('、'))
   else if (HINT[name]) bits.push(HINT[name])
+  if (STATE_NOTE[name]) bits.push(STATE_NOTE[name])
   return bits.join('\n')
 }
 
