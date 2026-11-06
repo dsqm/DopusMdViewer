@@ -325,6 +325,9 @@ const B64 = {
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
     return out
   },
+  decText(b64) {
+    return new TextDecoder().decode(B64.decBytes(b64))
+  },
 }
 
 let hostSeq = 0
@@ -470,12 +473,16 @@ function hsvToRgb(h, s, v) {
 const RECENT_MAX = 8
 const RECENT = []
 
+/* 写进 skinedit.ini 的那份状态（窗口位置归宿主，不在这里） */
+const SETTINGS = { source: '' }
+
 function rememberColor(c) {
   const hex = fmtColor(c)
   const i = RECENT.indexOf(hex)
   if (i >= 0) RECENT.splice(i, 1)
   RECENT.unshift(hex)
   if (RECENT.length > RECENT_MAX) RECENT.length = RECENT_MAX
+  saveSettingsSoon()
 }
 
 /* 吸管：EyeDropper 只能给 RGB（屏幕像素本身不透明），alpha 由调用方决定。 */
@@ -1260,6 +1267,8 @@ async function loadSkin(id) {
   applyAll()
   refresh()
   reportParse(sk)
+  SETTINGS.source = 'tpl:' + id
+  saveSettingsSoon()
 }
 
 /* 载入时的解析值（不看 overrides）：用来判断「值是不是真的变了」。
@@ -1432,6 +1441,8 @@ function applyLoaded(text, meta) {
   applyAll()
   refresh()
   reportParse(sk)
+  SETTINGS.source = meta.path ? 'usr:' + meta.path : 'tpl:' + S.skin
+  saveSettingsSoon()
 }
 
 async function openPath(path) {
@@ -2355,12 +2366,72 @@ function boot() {
   }
 
   const pre = { ...S.overrides }
-  loadSkin(S.skin).then(() => {
-    Object.assign(S.overrides, pre)
-    render()
-    refreshUsers()
-    if (hover) setTimeout(() => highlightVar(hover), 2500)
-  })
+  runBoot(pre, hover)
+}
+
+async function runBoot(pre, hover) {
+  // 先读 ini 再决定从哪份皮肤起步：模板能直接开局，不用先亮一下默认皮再切过去
+  const saved = await readSettings()
+  if (saved) {
+    SETTINGS.source = saved.src
+    if (saved.src.startsWith('tpl:')) {
+      const id = saved.src.slice(4)
+      if (id) S.skin = id
+    }
+  }
+  await loadSkin(S.skin)
+  Object.assign(S.overrides, pre)
+  render()
+  refreshUsers()
+  if (hover) setTimeout(() => highlightVar(hover), 2500)
+  if (saved && saved.src.startsWith('usr:')) await reopenSaved(saved.src.slice(4))
+}
+
+/* 用户皮肤要等 DOM 就绪才开得起来（要 read + 表单重画），所以放在 render 之后。
+   文件没了或解析失败就落回默认模板，并且这条提示要写在载入之后——先写会被
+   loadSkin 的「补了 N 项」盖掉。 */
+async function reopenSaved(path) {
+  await openPath(path)
+  if (S.file.path !== path) {
+    await loadSkin('light')
+    setStatus('上次打开的皮肤读不到，已回到默认模板：' + path, 'warn')
+  }
+}
+
+/* ---------------- 设置文件 ----------------
+   「上次来源」「最近用过」交给宿主写 skinedit.ini（窗口位置也那份，但归宿主自己管）。
+   页面改动一律防抖 500 ms 再送：拖透明条时每帧一次写盘没有必要。 */
+
+let settingsTimer = 0
+
+function saveSettingsSoon() {
+  if (!(window.chrome && window.chrome.webview)) return
+  clearTimeout(settingsTimer)
+  settingsTimer = setTimeout(() => {
+    hostCall('settings', {
+      mode: 'set',
+      src: B64.encText(SETTINGS.source),
+      rec: B64.encText(RECENT.join(',')),
+    }).catch(() => { /* 写不进就算，不值当打断编辑 */ })
+  }, 500)
+}
+
+/* 读 ini：没装宿主（dev-server 下跑页面）时返回 null，一切按默认走。
+   这里带 1.5 秒超时——启动路径不能因为一次没回话就整片白屏。 */
+async function readSettings() {
+  if (!(window.chrome && window.chrome.webview)) return null
+  let r = null
+  try {
+    r = await Promise.race([
+      hostCall('settings', { mode: 'get' }),
+      new Promise((res) => setTimeout(() => res(null), 1500)),
+    ])
+  } catch { return null }
+  if (!r || r.type !== 'settings') return null
+  const recent = B64.decText(r.rec || '')
+  RECENT.length = 0
+  for (const one of recent.split(',')) if (parseColor(one)) RECENT.push(one)
+  return { src: B64.decText(r.src || ''), rec: recent }
 }
 
 boot()

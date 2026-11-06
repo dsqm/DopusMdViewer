@@ -59,6 +59,11 @@ std::wstring g_logPath;
 LARGE_INTEGER g_tickFreq = {};
 LARGE_INTEGER g_tickStart = {};
 
+/* 设置文件（skinedit.ini）的读写：定义体在文件末尾，这里先声明给消息处理用。 */
+std::wstring IniGet(const wchar_t* sec, const wchar_t* key);
+void IniSet(const wchar_t* sec, const wchar_t* key, const std::wstring& val);
+void SaveWindowRect();
+
 /* ---------------- 小工具 ---------------- */
 
 bool FileExists(const std::wstring& path) {
@@ -384,8 +389,10 @@ std::wstring PickFile(bool save, const std::wstring& defaultName, bool* cancel) 
   return out;
 }
 
+/* 回页面发来的请求时不看 g_ready：它由 NavigationCompleted 置位，而页面脚本在
+   那之前就能发消息（读设置就是启动第一件事），这时回包被吞掉，页面会一直等下去。 */
 void Push(const std::wstring& json) {
-  if (!g_ready || !g_web) return;
+  if (!g_web) return;
   g_web->PostWebMessageAsJson(json.c_str());
 }
 
@@ -466,6 +473,49 @@ void HandleMessage(const std::wstring& json) {
     const std::wstring picked = PickFile(kind == L"save", name, &cancel);
     Push(head + L"\"type\":\"dialog\",\"kind\":" + JsonStr(kind) + L",\"cancel\":" +
          (cancel ? L"true" : L"false") + L",\"path\":" + JsonStr(picked) + L"}");
+    return;
+  }
+
+  /* settings：页面读写「上次来源」与「最近用过」，值一律 base64(UTF-8)。
+     窗口位置不在这里，宿主自己在 WM_EXITSIZEMOVE / WM_CLOSE 时写。 */
+  if (op == L"settings") {
+    if (Field(json, L"mode") == L"get") {
+      const std::wstring src = IniGet(L"state", L"source");
+      std::wstring rec;
+      for (int i = 0; i < 8; ++i) {
+        const std::wstring key = L"c" + std::to_wstring(i);
+        const std::wstring one = IniGet(L"recent", key.c_str());
+        if (one.empty()) break;
+        if (!rec.empty()) rec += L",";
+        rec += one;
+      }
+      Push(head + L"\"type\":\"settings\",\"src\":" +
+           JsonStr(Base64Encode(ToUtf8(src))) + L",\"rec\":" +
+           JsonStr(Base64Encode(ToUtf8(rec))) + L"}");
+      return;
+    }
+    // set：页面送来的是合并好的整段，直接覆盖
+    const std::wstring src = FromUtf8(Base64Decode(Field(json, L"src")));
+    const std::wstring rec = FromUtf8(Base64Decode(Field(json, L"rec")));
+    IniSet(L"state", L"source", src);
+    for (int i = 0; i < 8; ++i) {
+      const std::wstring key = L"c" + std::to_wstring(i);
+      IniSet(L"recent", key.c_str(), L"");
+    }
+    size_t pos = 0;
+    int idx = 0;
+    while (idx < 8) {
+      const size_t comma = rec.find(L',', pos);
+      const std::wstring one =
+          rec.substr(pos, comma == std::wstring::npos ? std::wstring::npos : comma - pos);
+      if (!one.empty()) {
+        const std::wstring key = L"c" + std::to_wstring(idx++);
+        IniSet(L"recent", key.c_str(), one);
+      }
+      if (comma == std::wstring::npos) break;
+      pos = comma + 1;
+    }
+    Push(head + L"\"type\":\"settings\",\"ok\":true}");
     return;
   }
 
@@ -627,6 +677,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SIZE:
       ResizeWeb();
       return 0;
+    case WM_EXITSIZEMOVE:
+      // 拖完/缩完才写一次，拖动过程中不碰磁盘
+      SaveWindowRect();
+      return 0;
+    case WM_CLOSE:
+      SaveWindowRect();
+      return ::DefWindowProcW(hwnd, msg, wp, lp);
     case WM_DESTROY:
       ::PostQuitMessage(0);
       return 0;
@@ -671,6 +728,87 @@ bool TakeArg(int argc, wchar_t** argv, const wchar_t* name, std::wstring* out) {
     return true;
   }
   return false;
+}
+
+/* ---------------- 设置文件 ----------------
+   窗口位置、上次来源、最近用过的颜色都写在程序旁边的 skinedit.ini（便携铁律：
+   一切写入都在程序目录内）。窗口位置只有宿主知道，最近颜色只有页面知道，
+   所以页面通过 settings op 读写后两者，窗口段由宿主自己维护。 */
+
+std::wstring IniPath() {
+  return Join(g_exeDir, L"skinedit.ini");
+}
+
+std::wstring IniGet(const wchar_t* sec, const wchar_t* key) {
+  wchar_t buf[1024] = {};
+  ::GetPrivateProfileStringW(sec, key, L"", buf, 1024, IniPath().c_str());
+  return buf;
+}
+
+void IniSet(const wchar_t* sec, const wchar_t* key, const std::wstring& val) {
+  const std::wstring path = IniPath();
+  // 新文件先写 BOM：Windows 才按 UTF-16 处理，路径里的中文才不会走丢
+  if (::GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    HANDLE f = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+      const wchar_t bom = 0xFEFF;
+      DWORD wrote = 0;
+      ::WriteFile(f, &bom, sizeof(bom), &wrote, nullptr);
+      ::CloseHandle(f);
+    }
+  }
+  ::WritePrivateProfileStringW(sec, key, val.c_str(), path.c_str());
+}
+
+int IniInt(const wchar_t* sec, const wchar_t* key, int fallback) {
+  const std::wstring s = IniGet(sec, key);
+  if (s.empty()) return fallback;
+  return static_cast<int>(::_wcstoi64(s.c_str(), nullptr, 10));
+}
+
+/* 读回上次的窗口矩形。落在已经被拔掉的副屏上时按主屏工作区居中，
+   否则窗口会开在看不见的地方。 */
+bool LoadWindowRect(RECT* out) {
+  const int x = IniInt(L"window", L"x", INT_MIN);
+  const int y = IniInt(L"window", L"y", INT_MIN);
+  const int w = IniInt(L"window", L"w", 0);
+  const int h = IniInt(L"window", L"h", 0);
+  if (x == INT_MIN || y == INT_MIN || w < 400 || h < 300) return false;
+
+  RECT want = {x, y, x + w, y + h};
+  RECT work = {};
+  MONITORINFO mi = {sizeof(mi)};
+  HMONITOR mon = ::MonitorFromRect(&want, MONITOR_DEFAULTTONULL);
+  if (mon && ::GetMonitorInfoW(mon, &mi)) {
+    work = mi.rcWork;
+    // 至少要有 120×60 的可抓取区域，否则算「跑出去了」
+    const int l = want.left > work.left ? want.left : work.left;
+    const int t = want.top > work.top ? want.top : work.top;
+    const int r = want.right < work.right ? want.right : work.right;
+    const int b = want.bottom < work.bottom ? want.bottom : work.bottom;
+    if (r - l >= 120 && b - t >= 60) { *out = want; return true; }
+  }
+  ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+  const int ww = work.right - work.left;
+  const int wh = work.bottom - work.top;
+  const int cw = w < ww - 40 ? w : ww - 40;
+  const int ch = h < wh - 40 ? h : wh - 40;
+  out->left = work.left + (ww - cw) / 2;
+  out->top = work.top + (wh - ch) / 2;
+  out->right = out->left + cw;
+  out->bottom = out->top + ch;
+  return true;
+}
+
+void SaveWindowRect() {
+  if (!g_hwnd) return;
+  RECT rc = {};
+  if (!::GetWindowRect(g_hwnd, &rc)) return;
+  IniSet(L"window", L"x", std::to_wstring(rc.left));
+  IniSet(L"window", L"y", std::to_wstring(rc.top));
+  IniSet(L"window", L"w", std::to_wstring(rc.right - rc.left));
+  IniSet(L"window", L"h", std::to_wstring(rc.bottom - rc.top));
 }
 
 }  // namespace
@@ -731,9 +869,19 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, LPWSTR, int) {
     return 5;
   }
 
+  // 上次关在哪里就开在哪里；没有记录（或记录已经不在任何屏幕上）才用默认位置
+  RECT wrc = {};
+  const bool hasRect = LoadWindowRect(&wrc);
+  Log(L"WINDOW 位置 %s", hasRect ? (std::to_wstring(wrc.left) + L"," + std::to_wstring(wrc.top) +
+                                    L" " + std::to_wstring(wrc.right - wrc.left) + L"×" +
+                                    std::to_wstring(wrc.bottom - wrc.top)).c_str()
+                                  : L"默认");
   g_hwnd = ::CreateWindowExW(0, kClassName, L"皮肤编辑器 — DopusMdViewer", WS_OVERLAPPEDWINDOW,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 1180, 820, nullptr, nullptr, inst,
-                             nullptr);
+                             hasRect ? wrc.left : CW_USEDEFAULT,
+                             hasRect ? wrc.top : CW_USEDEFAULT,
+                             hasRect ? wrc.right - wrc.left : 1180,
+                             hasRect ? wrc.bottom - wrc.top : 820,
+                             nullptr, nullptr, inst, nullptr);
   if (!g_hwnd) {
     Log(L"ABORT 建窗口失败 err=%lu", ::GetLastError());
     ::UnregisterClassW(kClassName, inst);
