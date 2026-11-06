@@ -287,8 +287,12 @@ const S = {
   scheme: 'light',
   schemeAuto: 'light',
   widgets: false,
-  /* 只为一类变量临时亮起的界面件（tools / outline / sb）：预览窄，大纲一弹就盖住
-     大半正文，点「滚动条」把大纲带出来纯属干扰。 */
+  /* 工具条上两个图标开关的面板：与插件里一致，搜索条与大纲由图标开关，
+     不跟「界面元素」总开关绑在一起。 */
+  uiFind: false,
+  uiOutline: false,
+  /* 只为一类变量临时亮起的界面件（tools / find / outline / sb）：预览窄，
+     大纲一弹就盖住大半正文，点「滚动条」把大纲带出来纯属干扰。 */
   widgetPeek: null,
   hold: false,
   link: true,
@@ -402,12 +406,14 @@ function applyAll() {
   // color-scheme 不是 --md-* 变量，它得真的落在文档上才会影响原生控件
   root.style.colorScheme = S.hold ? '' : S.scheme
 
-  // 界面件默认全关；点「只在界面件里出现的变量」时只亮那一个（widgetPeek）。
-  // 三个一起开不行：大纲是覆盖式面板，窄预览里会盖掉大半正文，反而看不见颜色变化。
-  // 界面件默认全关。总开关只亮三条横条（工具条 / 搜索条 / 自绘滚动条）；
-  // 大纲是覆盖式面板，在窄预览里一开就盖掉大半正文，只在点到大纲相关变量时单独亮。
-  const shown = { tools: S.widgets, find: S.widgets, outline: false, sb: S.widgets }
-  if (S.widgetPeek) shown[S.widgetPeek] = true
+  // 界面件可见性：工具条常驻（插件里也一直在，图标就是开关），搜索条与大纲由图标开，
+  // 「界面元素」是「把界面件全摊开看颜色」的模式。点左侧变量时还能临时亮目标那一件。
+  const shown = {
+    tools: true,
+    find: S.widgets || S.uiFind || S.widgetPeek === 'find',
+    outline: S.widgets || S.uiOutline || S.widgetPeek === 'outline',
+    sb: S.widgets || S.widgetPeek === 'sb',
+  }
   for (const id of ['tools', 'find', 'outline', 'sb']) {
     const node = d.getElementById(id)
     if (node) node.hidden = !shown[id]
@@ -423,6 +429,7 @@ function applyAll() {
     }
   }
   installLink(d)
+  installDemo(d)
 }
 
 function fillOutline(d) {
@@ -580,12 +587,13 @@ function installLink(d) {
     hideChip()
   }, true)
 
-  d.addEventListener('click', (e) => {
+  // 跳转走右键：左键整个留给控件本身（图标、复制、图片、链接、任务框），
+  // 这样右侧点起来跟插件里一样，不会点个搜索图标就跳去改左栏。
+  d.addEventListener('contextmenu', (e) => {
+    e.preventDefault()
     if (!S.link) return
     const r = ruleOfCached(e.target, d)
     if (!r) return
-    e.preventDefault()
-    e.stopPropagation()
     clearTimeout(hoverTimer)
     if (selNode) selNode.classList.remove('__sel')
     selNode = r.node
@@ -606,6 +614,145 @@ function selectVars(rule) {
     if (row) { row.classList.add('used'); usedRows.push(row) }
   }
   if (usedRows[0]) revealRow(usedRows[0])
+}
+
+/* 预览里的界面件按真实行为接电：左键点搜索/大纲图标开关对应面板、复制按钮真复制、
+   图片点开是放大遮罩、任务框能勾、外链不导航（预览只有一页，点走就回不来）。
+   跳转已经在 installLink 里挪到右键，这里只接控件本身。 */
+function installDemo(d) {
+  if (d.__protoDemo) return
+  d.__protoDemo = true
+
+  // 工具条的按钮顺序就是 shell 里 sprites 的顺序：搜索、大纲
+  const tools = d.getElementById('tools')
+  const tbtns = tools ? [...tools.querySelectorAll('button')] : []
+  if (tbtns[0]) {
+    tbtns[0].addEventListener('click', () => {
+      S.uiFind = !S.uiFind
+      if (S.uiFind) S.widgetPeek = null
+      applyAll()
+      if (S.uiFind) {
+        const input = d.getElementById('find-input')
+        if (input) input.focus()
+      }
+    })
+  }
+  if (tbtns[1]) {
+    tbtns[1].addEventListener('click', () => {
+      S.uiOutline = !S.uiOutline
+      if (S.uiOutline) S.widgetPeek = null
+      applyAll()
+    })
+  }
+
+  // 搜索条：三个开关能按，关闭按钮收起整条
+  const find = d.getElementById('find')
+  if (find) {
+    for (const b of find.querySelectorAll('button.tog')) {
+      b.addEventListener('click', (e) => {
+        e.preventDefault()
+        b.classList.toggle('on')
+      })
+    }
+    const close = d.getElementById('find-close')
+    if (close) {
+      close.addEventListener('click', (e) => {
+        e.preventDefault()
+        S.uiFind = false
+        if (S.widgetPeek === 'find') S.widgetPeek = null
+        applyAll()
+      })
+    }
+  }
+
+  // 大纲条目：按顺序对应 #doc 里的 h1–h3
+  const list = d.getElementById('outline-list')
+  if (list) {
+    list.addEventListener('click', (e) => {
+      const item = e.target.closest && e.target.closest('.outline-item')
+      if (!item || item.parentElement !== list) return
+      const heads = [...d.querySelectorAll('#doc h1, #doc h2, #doc h3')].slice(0, 40)
+      const h = heads[[...list.children].indexOf(item)]
+      if (h) scrollPreviewIntoView(d, h)
+    })
+  }
+
+  d.addEventListener('click', (e) => {
+    const t = e.target
+    if (!t || !t.closest) return
+    const copy = t.closest('.mdv-copy')
+    if (copy) { e.preventDefault(); copyCode(d, copy); return }
+    const img = t.closest('#doc img')
+    if (img) { e.preventDefault(); openZoom(d, img); return }
+    const a = t.closest('a[href]')
+    if (!a) return
+    // 锚点（脚注引用与回链）在本文档内跳，照旧交给浏览器
+    if (!(a.getAttribute('href') || '').startsWith('#')) {
+      e.preventDefault()
+      showChip('预览里不打开链接：' + a.getAttribute('href'), e.clientX, e.clientY, true)
+    }
+  }, true)
+}
+
+/* 复制代码：行号是空 span + CSS 伪元素，textContent 取到的正好是源码原文。 */
+async function copyCode(d, btn) {
+  const cb = btn.closest('.mdv-cb')
+  const code = cb && cb.querySelector('code')
+  const text = code ? code.textContent : ''
+  let ok = false
+  try {
+    await navigator.clipboard.writeText(text)
+    ok = true
+  } catch { /* 没有剪贴板权限就退到 execCommand */ }
+  if (!ok) {
+    const ta = d.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0'
+    d.body.append(ta)
+    ta.select()
+    try { ok = d.execCommand('copy') } catch { /* 两条路都失败就只报状态 */ }
+    ta.remove()
+  }
+  const use = btn.querySelector('use')
+  const old = btn.getAttribute('title') || '复制代码'
+  if (use) use.setAttribute('href', ok ? '#i-check' : '#i-close')
+  btn.setAttribute('title', ok ? '已复制' : '复制失败')
+  setTimeout(() => {
+    if (use) use.setAttribute('href', '#i-copy')
+    btn.setAttribute('title', old)
+  }, 900)
+}
+
+/* 图片：点开铺满视口的遮罩，再点一下（或点关闭）收起。尺寸按视口算，
+   与插件一样只做「看清」，不做缩放与平移。 */
+function openZoom(d, img) {
+  const old = d.getElementById('mdv-zoom')
+  if (old) old.remove()
+  const layer = d.createElement('div')
+  layer.id = 'mdv-zoom'
+  const big = d.createElement('img')
+  big.src = img.currentSrc || img.src
+  big.alt = img.alt || ''
+  const vw = d.documentElement.clientWidth || 800
+  const vh = d.documentElement.clientHeight || 600
+  const nw = img.naturalWidth || 480
+  const nh = img.naturalHeight || 180
+  const k = Math.min((vw * 0.9) / nw, (vh * 0.9) / nh, 3)
+  big.style.width = Math.round(nw * k) + 'px'
+  big.style.height = Math.round(nh * k) + 'px'
+  big.style.left = Math.round((vw - nw * k) / 2) + 'px'
+  big.style.top = Math.round((vh - nh * k) / 2) + 'px'
+  const close = d.createElement('button')
+  close.type = 'button'
+  close.className = 'mdv-zoom-close'
+  close.title = '关闭'
+  close.innerHTML = '<svg class="mdv-i" aria-hidden="true"><use href="#i-close"></use></svg>'
+  layer.append(big, close)
+  layer.addEventListener('click', (e) => {
+    e.stopPropagation()
+    layer.remove()
+  })
+  d.body.append(layer)
 }
 
 /* 跳转的滚动自己走一小段动画。原生 behavior:'smooth' 不能直接用：连续点击会排队，
@@ -1506,7 +1653,7 @@ function widgetsButton() {
   const b = el('button', 'ghostbtn', '界面元素')
   b.type = 'button'
   b.dataset.act = 'widgets'
-  b.title = '显示工具条、搜索条与自绘滚动条；大纲是覆盖式面板，点到大纲相关变量时才出现'
+  b.title = '把搜索条、大纲、自绘滚动条一起摊开看颜色；平时搜索条与大纲用工具条上的图标开关'
   b.setAttribute('aria-pressed', String(S.widgets))
   b.addEventListener('click', () => {
     S.widgets = !S.widgets
@@ -1521,7 +1668,7 @@ function widgetsButton() {
 function linkButton() {
   const b = el('button', 'ghostbtn', '联动')
   b.type = 'button'
-  b.title = '悬停左侧变量点亮右侧元素；点右侧元素定位左侧变量'
+  b.title = '悬停左侧变量点亮右侧元素；右键点右侧元素定位左侧变量（左键留给控件本身）'
   b.setAttribute('aria-pressed', String(S.link))
   b.addEventListener('click', () => {
     S.link = !S.link

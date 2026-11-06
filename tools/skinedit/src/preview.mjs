@@ -49,6 +49,12 @@ const md = new MarkdownIt({ html: true, linkify: true })
     katexOptions: { throwOnError: false, strict: 'ignore' },
   })
 
+/* markdown-it 默认只放行 data:image/(gif|png|jpeg|webp)：样例里的图片是
+   data:image/svg+xml，会被当成普通文字吐出来。这里只多放行 data:image/，
+   其余协议仍按它的黑白名单走（输出还要过 DOMPurify）。 */
+const baseValidateLink = md.validateLink.bind(md)
+md.validateLink = (url) => /^data:image\//i.test(url) || baseValidateLink(url)
+
 /* 行号只由空 <span> + CSS 计数器画：伪元素内容不进 textContent，
    复制按钮取的仍是源码原文。格子挂在 <code> 里，避开 .code-note 推低首行。 */
 const displayLines = (text) => {

@@ -2,8 +2,9 @@
      点了表单里任何一个颜色，右边都该有东西跟着变。改 base.css 的选择器时顺手改
      这里，否则会冒出一批"改了没反应"的变量。
 
-     不放的东西：图片（渲染时会被改写成 __asset 地址，预览侧没有那条路由）、
-     Mermaid（异步渲染，且不吃 --md-* 变量）。 -->
+     图片只放一张 data: URI 的：外链图片会被渲染器换成 1x1 占位（预览侧没有
+     __asset 路由），而 data: 的能留着，用来验证「左键点开看放大遮罩」。
+     不放 Mermaid（异步渲染，且不吃 --md-* 变量）。 -->
 
 # 一、标题与正文
 
@@ -21,6 +22,10 @@
 以及一个[链接](https://example.com)、一个自动链接 <https://example.com>、
 一键"搜索命中"的两种状态：<mark class="hit">普通命中</mark>
 与 <mark class="hit hit--current">当前命中</mark>。
+
+正文里插一张图，左键点开是放大遮罩：
+
+![图片示例：左键点开看放大遮罩](data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0ODAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgNDgwIDE4MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNGM4ZGZmIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjOGY1YmZmIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjQ4MCIgaGVpZ2h0PSIxODAiIHJ4PSIxMCIgZmlsbD0idXJsKCNnKSIvPjxjaXJjbGUgY3g9Ijg2IiBjeT0iOTIiIHI9IjQ0IiBmaWxsPSIjZmZmIiBmaWxsLW9wYWNpdHk9IjAuMTgiLz48Y2lyY2xlIGN4PSI4NiIgY3k9IjkyIiByPSIyNCIgZmlsbD0iI2ZmZiIgZmlsbC1vcGFjaXR5PSIwLjMyIi8+PHRleHQgeD0iMjcwIiB5PSI4NiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1mYW1pbHk9IlNlZ29lIFVJLE1pY3Jvc29mdCBZYUhlaSBVSSxzYW5zLXNlcmlmIiBmb250LXNpemU9IjIwIiBmaWxsPSIjZmZmIj7lm77niYfnpLrkvos8L3RleHQ+PHRleHQgeD0iMjcwIiB5PSIxMTYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJTZWdvZSBVSSxNaWNyb3NvZnQgWWFIZWkgVUksc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxNSIgZmlsbD0iI2ZmZmZmZiIgZmlsbC1vcGFjaXR5PSIwLjg1Ij7lt6bplK7ngrnlvIDnnIvmlL7lpKfpga7nvak8L3RleHQ+PC9zdmc+)
 
 行内代码带特殊符号 `if (a < b && c > d) {}`，还有一个变量名 `--md-bg`。
 
