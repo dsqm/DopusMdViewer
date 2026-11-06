@@ -110,34 +110,14 @@ select.sel {
 }
 .minibtn:hover { background: #f2f4f6; border-color: #a8aeb4; }
 
-/* 特殊值（transparent / currentColor）的勾选槽：所有行都占同样宽度，列才对得齐 */
+/* 槽位：只有 currentColor 行的「跟随」勾选会占它，颜色行与派生行留空；
+   所有行都占同样宽度，值框的右边界才对得齐。 */
 .row .slot {
   flex: 0 0 46px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
 }
-
-/* 透明度：0–100 的整数，和色块一样挂在槽位里，列不会因为有没有 alpha 而错位 */
-.row .awrap {
-  display: flex;
-  align-items: center;
-  gap: 1px;
-}
-.row .alpha {
-  width: 28px;
-  font: inherit;
-  font-family: Consolas, monospace;
-  font-size: 11px;
-  text-align: right;
-  padding: 1px 2px;
-  border: 1px solid #d6dade;
-  border-radius: 4px;
-  background: #fff;
-  color: #24292f;
-}
-.row .alpha:focus { outline: 2px solid #9dc2ee; outline-offset: -1px; }
-.row .awrap .pc { font-size: 10px; color: #8a9199; }
 
 .row .tgl {
   flex: 0 0 auto;
@@ -707,7 +687,16 @@ select.sel {
   color: #24292f;
 }
 .pick-hex:focus { outline: 2px solid #9dc2ee; outline-offset: -1px; }
-.pick-pct { flex: 0 0 40px; text-align: right; font-size: 11px; color: #57606a; }
+
+/* 确定 / 取消：弹层里的改动是实时的，这两个按钮决定要不要把它记作一步编辑 */
+.pick-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #e6e9ec;
+}
 
 .pick-recent {
   display: grid;

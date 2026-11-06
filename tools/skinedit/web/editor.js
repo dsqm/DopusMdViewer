@@ -508,15 +508,29 @@ function paintSwatch(btn, value) {
 
 let picker = null
 
-function closePicker() {
+/* 弹层里的改动是实时的：拖色板时就直接写进 overrides，右侧跟着变。
+   「确定」才把这一轮记成一步历史；其余关法（取消按钮 / Esc / 点外面 / 点别的色块）
+   一律回滚到打开弹层之前。回滚只重画受影响的那一行，左栏不整片重建——切换到
+   另一个色块时还要用原 anchor 定位弹层，整栏重建会让它脱离文档。 */
+function closePicker(commit = false) {
   if (!picker) return
-  // 关掉时记一次「用过」：这一行最终落下来的颜色
-  const c = picker.name ? parseColor(resolveVar(picker.name).value) : null
-  if (c) rememberColor(c)
-  picker.root.remove()
-  document.removeEventListener('pointerdown', picker.onOutside, true)
-  document.removeEventListener('keydown', picker.onKey, true)
+  const p = picker
   picker = null
+  p.root.remove()
+  document.removeEventListener('pointerdown', p.onOutside, true)
+  document.removeEventListener('keydown', p.onKey, true)
+  if (commit) {
+    const c = p.name ? parseColor(resolveVar(p.name).value) : null
+    if (c) rememberColor(c)
+    return
+  }
+  S.overrides = { ...p.before }
+  applyAll()
+  const row = document.querySelector('[data-var="' + p.name + '"]')
+  if (row) row.replaceWith(rowNormal(p.name))
+  markChanged()
+  applyFilter()
+  syncDerivedSwatches()
 }
 
 /* 弹层跟着色块浮出：默认贴在色块下方，右边出界就往左收，下面放不下就翻到上面。 */
@@ -534,12 +548,13 @@ function placePicker(root, anchor) {
 }
 
 function openPicker(anchor, name) {
-  if (picker && picker.name === name) { closePicker(); return }
-  closePicker()
+  if (picker && picker.name === name) { closePicker(false); return }
+  closePicker(false)
 
   const row = anchor.closest('.row')
   const txt = row && row.querySelector('.v')
-  const alphaInput = row && row.querySelector('.alpha')
+  // 旧弹层可能是被「取消」关掉的，回滚完再记基准，才是这一行真正开始编辑前的状态
+  const before = { ...S.overrides }
   const cur = parseColor(resolveVar(name).value) || { r: 255, g: 255, b: 255, a: 1 }
   const start = rgbToHsv(cur)
 
@@ -567,10 +582,29 @@ function openPicker(anchor, name) {
   hex.type = 'text'
   hex.spellcheck = false
   hex.maxLength = 9
-  const pct = el('span', 'pick-pct')
-  line.append(drop, hex, pct)
+  const actions = el('div', 'pick-actions')
+  const cancel = el('button', 'ghostbtn', '取消')
+  cancel.type = 'button'
+  cancel.title = '丢弃本次调整，回到打开取色器之前的颜色（Esc 或点弹层外同效）'
+  const ok = el('button', 'ghostbtn primary', '确定')
+  ok.type = 'button'
+  ok.title = '写入当前颜色；之后可用撤销退回'
+  cancel.addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    closePicker(false)
+  })
+  ok.addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    closePicker(true)
+    commitEdit()
+  })
+  actions.append(cancel, ok)
+
+  line.append(drop, hex)
   const recentBox = el('div', 'pick-recent')
-  root.append(sv, hue, alpha, line, recentBox)
+  root.append(sv, hue, alpha, line, recentBox, actions)
 
   const st = { name, h: start.h, s: start.s, v: start.v, a: cur.a }
 
@@ -597,10 +631,8 @@ function openPicker(anchor, name) {
     alphaKnob.style.left = (st.a * 100) + '%'
     const out = fmtColor(c)
     if (document.activeElement !== hex) hex.value = out
-    pct.textContent = Math.round(st.a * 100) + '%'
     if (anchor.isConnected) paintSwatch(anchor, out)
     if (txt) txt.value = out
-    if (alphaInput) alphaInput.value = String(Math.round(st.a * 100))
   }
 
   const emit = () => {
@@ -701,10 +733,10 @@ function openPicker(anchor, name) {
   }
 
   const onOutside = (e) => {
-    if (picker && !picker.root.contains(e.target) && !e.target.closest('.sw')) closePicker()
+    if (picker && !picker.root.contains(e.target) && !e.target.closest('.sw')) closePicker(false)
   }
   const onKey = (e) => {
-    if (e.key === 'Escape') { e.preventDefault(); closePicker() }
+    if (e.key === 'Escape') { e.preventDefault(); closePicker(false) }
   }
 
   document.body.append(root)
@@ -713,7 +745,7 @@ function openPicker(anchor, name) {
   placePicker(root, anchor)
   document.addEventListener('pointerdown', onOutside, true)
   document.addEventListener('keydown', onKey, true)
-  picker = { root, name, onOutside, onKey }
+  picker = { root, name, onOutside, onKey, before }
 }
 
 function frameDoc() {
@@ -729,25 +761,38 @@ function frameDoc() {
   }
 }
 
-/* ---------------- 应用到预览 ---------------- */
+/* ---------------- 应用到预览 ----------------
+
+   清掉预览页根元素上所有内联 --md-* 变量。不能只按 S.overrides 的键清：重置、
+   换皮肤都会先把 overrides 清空，那些键就没了，旧内联值会继续盖住 <style id="skin">，
+   于是左侧表单已是默认值、右侧还停在改动后的颜色。倒序遍历是因为 removeProperty
+   会让 style.length 变小。 */
+function clearInlineVars(root) {
+  const st = root.style
+  for (let i = st.length - 1; i >= 0; i--) {
+    const prop = st.item(i)
+    if (prop.startsWith('--md-')) st.removeProperty(prop)
+  }
+}
 
 function applyAll() {
   const d = frameDoc()
   if (!d) return
   const root = d.documentElement
 
-  for (const k of Object.keys(S.overrides)) root.style.removeProperty('--md-' + k)
+  clearInlineVars(root)
   if (!S.hold) {
     for (const [k, v] of Object.entries(S.overrides)) root.style.setProperty('--md-' + k, v)
   }
 
-  // 「按住看原皮」= 摘掉皮肤、回到 base.css 默认层。
-  // 用 media="not all" 而不是 disabled：后者在 style 元素上关不掉（实测）。
+  // 「按住看默认」= 保留当前这份皮肤/模板，只摘掉本次会话写进根元素的内联改动。
+  // 摘掉整份皮肤（media="not all"）会露出 base.css 的底层默认，深色模板按住会
+  // 突然变灰白，看不出改了什么。
   const skinEl = d.getElementById('skin')
-  if (skinEl) skinEl.media = S.hold ? 'not all' : ''
+  if (skinEl) skinEl.media = ''
 
   // color-scheme 不是 --md-* 变量，它得真的落在文档上才会影响原生控件
-  root.style.colorScheme = S.hold ? '' : S.scheme
+  root.style.colorScheme = S.scheme
 
   // 界面件可见性：工具条常驻（插件里也一直在，图标就是开关），搜索条与大纲由图标开，
   // 「界面元素」是「把界面件全摊开看颜色」的模式。点左侧变量时还能临时亮目标那一件。
@@ -1266,6 +1311,7 @@ async function loadSkin(id) {
   applySkinText(text)
   applyAll()
   refresh()
+  historyReset()
   reportParse(sk)
   SETTINGS.source = 'tpl:' + id
   saveSettingsSoon()
@@ -1341,6 +1387,97 @@ function markChanged(only) {
   document.querySelectorAll('[data-act="save"]').forEach((b) => {
     b.disabled = !S.file.path || S.file.builtin
   })
+}
+
+/* ---------------- 撤销 / 重做 ----------------
+   一步 = 一次完整动作：取色弹层（点确定）、一段连续输入（到失焦或回车）、一次勾选。
+   栈里存整份 overrides 的绝对值快照加 color-scheme，撤销只是把预览与表单整体换回
+   那份状态；不存 diff，就不必追「哪个变量、原来是什么」。 */
+const HIST_MAX = 80
+const HIST = []
+let histAt = -1
+
+const snapNow = () => ({
+  overrides: { ...S.overrides },
+  scheme: S.scheme,
+  schemeInferred: S.schemeInferred,
+})
+
+function sameSnap(a, b) {
+  if (!a || !b) return false
+  if (a.scheme !== b.scheme || a.schemeInferred !== b.schemeInferred) return false
+  const ka = Object.keys(a.overrides), kb = Object.keys(b.overrides)
+  return ka.length === kb.length && ka.every((k) => a.overrides[k] === b.overrides[k])
+}
+
+function syncHistoryButtons() {
+  document.querySelectorAll('[data-act="undo"]').forEach((b) => { b.disabled = histAt <= 0 })
+  document.querySelectorAll('[data-act="redo"]').forEach((b) => {
+    b.disabled = histAt >= HIST.length - 1
+  })
+}
+
+/* 打开 / 换皮肤 / 保存会改掉比较基准（S.values），旧快照回放后不再等价于当时看到的
+   样子，所以这三处把历史清成只有当前状态。重置不清，它本身要能撤销。 */
+function historyReset() {
+  HIST.length = 0
+  HIST.push(snapNow())
+  histAt = 0
+  syncHistoryButtons()
+}
+
+function commitEdit() {
+  const cur = snapNow()
+  if (sameSnap(HIST[histAt], cur)) return
+  HIST.length = histAt + 1
+  HIST.push(cur)
+  if (HIST.length > HIST_MAX) HIST.shift()
+  histAt = HIST.length - 1
+  syncHistoryButtons()
+}
+
+/* 整体换回一份状态：预览清掉旧内联变量重设，左栏重画。重画会重置滚动位置，
+   所以先记下来再放回去。 */
+function restoreView() {
+  const body = document.querySelector('.rail-body')
+  const top = body ? body.scrollTop : 0
+  applyAll()
+  refresh()
+  const box = document.querySelector('.rail-body')
+  if (box) box.scrollTop = top
+}
+
+/* 快捷键触发时焦点可能还在输入框里：先 blur，让这一段输入成为完整的一步，
+   再撤销它——否则会把「没提交的一半」留在表单上、却把预览退回去了。 */
+function flushPending() {
+  const a = document.activeElement
+  if (a && /^(INPUT|TEXTAREA)$/.test(a.tagName)) a.blur()
+}
+
+function undo() {
+  flushPending()
+  if (histAt <= 0) return
+  closePicker(false)
+  histAt--
+  const s = HIST[histAt]
+  S.overrides = { ...s.overrides }
+  S.scheme = s.scheme
+  S.schemeInferred = s.schemeInferred
+  restoreView()
+  syncHistoryButtons()
+}
+
+function redo() {
+  flushPending()
+  if (histAt >= HIST.length - 1) return
+  closePicker(false)
+  histAt++
+  const s = HIST[histAt]
+  S.overrides = { ...s.overrides }
+  S.scheme = s.scheme
+  S.schemeInferred = s.schemeInferred
+  restoreView()
+  syncHistoryButtons()
 }
 
 /* 皮肤里大量默认值是 var(--上级)：色块要显示「最终是什么颜色」，不能显示 var 文本。
@@ -1440,6 +1577,7 @@ function applyLoaded(text, meta) {
   applySkinText(text)
   applyAll()
   refresh()
+  historyReset()
   reportParse(sk)
   SETTINGS.source = meta.path ? 'usr:' + meta.path : 'tpl:' + S.skin
   saveSettingsSoon()
@@ -1471,6 +1609,7 @@ async function writeSkin(path, name, id, expectMtime) {
   S.file = { ...S.file, path, size: r.size, mtime: r.mtime, name, id, builtin: false }
   pushSkin()
   refresh()
+  historyReset()
   setStatus('已保存 ' + path)
   refreshUsers()
 }
@@ -1651,10 +1790,14 @@ function rowDerivedBg(name, der) {
       '值：' + v].join(NL)
   }
   pct.addEventListener('input', writePct)
-  pct.addEventListener('blur', () => { pct.value = (derivedOf(rawOf(name)) || der).pct + '%' })
+  pct.addEventListener('blur', () => {
+    pct.value = (derivedOf(rawOf(name)) || der).pct + '%'
+    commitEdit()
+  })
   sw.addEventListener('input', () => {
     setValue(name, sw.value)
     row.replaceWith(rowNormal(name))
+    commitEdit()
   })
   sw.addEventListener('contextmenu', (e) => {
     if (!(window.chrome && window.chrome.webview)) return
@@ -1663,6 +1806,7 @@ function rowDerivedBg(name, der) {
       if (r.cancel || !r.hex) return
       setValue(name, r.hex)
       row.replaceWith(rowNormal(name))
+      commitEdit()
     }).catch(() => {})
   })
   return bindRowLink(row, name)
@@ -1684,6 +1828,7 @@ function relinkBtn(name) {
       row.replaceWith(rowDerivedBg(name, der))
       applyFilter()
     }
+    commitEdit()
   })
   return b
 }
@@ -1698,6 +1843,7 @@ function rowNormal(name) {
   row.title = tipOf(name, from)
 
   const color = isColorVal(value)
+  const wasFollow = /^currentColor$/i.test(String(value).trim())
   const sw = el('button', 'sw' + (color ? '' : ' kw'))
   sw.type = 'button'
   if (color) {
@@ -1738,35 +1884,37 @@ function rowNormal(name) {
       const next = fmtColor(c)
       paintSwatch(sw, next)
       txt.value = next
-      const box = row.querySelector('.alpha')
-      if (box) box.value = String(Math.round(c.a * 100))
       setValue(name, next)
       rememberColor(c)
+      commitEdit()
     })
   })
   txt.addEventListener('input', () => {
-    setValue(name, txt.value.trim())
-    // 六位 hex 按「完整值」理解：alpha 归 100%，透明度框跟着改，别让人以为还是半透明
-    const c = parseColor(txt.value.trim())
-    const box = row.querySelector('.alpha')
-    if (c && box) box.value = String(Math.round(c.a * 100))
+    const next = txt.value.trim()
+    setValue(name, next)
+    const c = parseColor(next)
     if (c) paintSwatch(sw, fmtColor(c))
-    // 从 currentColor 打成具体颜色（或反过来）：这一行的控件形态变了，重画这一行
-    if (!!c !== !!box) rebuildRow(name)
+    // 只有「跟随文字色」与普通颜色之间切换才换控件形态。输入到一半的 hex 不算：
+    // 每敲一个字符就重画这一行会弄丢焦点，blur 不触发，那一段编辑也进不了撤销历史。
+    const nowFollow = /^currentColor$/i.test(next)
+    if (nowFollow !== wasFollow && (nowFollow || !!c)) rebuildRow(name)
   })
   txt.addEventListener('blur', () => {
     const c = parseColor(resolveVar(name).value)
     if (c) rememberColor(c)
+    commitEdit()
+  })
+  txt.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); txt.blur() }
   })
 
   row.append(txt)
 
-  // 槽位固定宽度：普通行放透明度，currentColor 行放「跟随」，非颜色行留空，
-  // 三种情况都占同样宽度，同组的值框右边界才对得齐。
+  // 槽位固定宽度：只有 currentColor 行放「跟随」勾选，其余行留空，
+  // 几种形态都占同样宽度，同组的值框右边界才对得齐。
   const slot = el('span', 'slot')
   row.append(slot)
-  if (color) slot.append(alphaBox(name, txt))
-  else followRow(slot, name, value, txt, sw)
+  if (!color) followRow(slot, name, value, txt, sw)
   if (ALERT_BG_RE.test(name)) row.insertBefore(relinkBtn(name), txt)
 
   return bindRowLink(row, name)
@@ -1781,43 +1929,8 @@ function rebuildRow(name) {
   applyFilter()
 }
 
-/* 透明度：0–100 的整数，改的是同一个颜色的 alpha，RGB 不动。
-   0 就是透明（等价于原来的 transparent），100 不透明。 */
-function alphaBox(name, txt) {
-  const wrap = el('span', 'awrap')
-  const inp = el('input', 'alpha')
-  inp.type = 'text'
-  inp.inputMode = 'numeric'
-  inp.maxLength = 3
-  inp.value = String(alphaPct(resolveVar(name).value) ?? 100)
-  inp.title = '透明度 0–100：0 等于 transparent，100 不透明'
-  inp.spellcheck = false
-  const apply = () => {
-    const n = Number(inp.value)
-    if (inp.value === '' || !Number.isFinite(n)) return
-    const c = parseColor(resolveVar(name).value)
-    if (!c) return
-    c.a = Math.max(0, Math.min(100, n)) / 100
-    const next = fmtColor(c)
-    txt.value = next
-    const sw = document.querySelector('[data-var="' + name + '"] .sw')
-    if (sw) paintSwatch(sw, next)
-    setValue(name, next)
-  }
-  inp.addEventListener('input', apply)
-  inp.addEventListener('blur', () => {
-    const c = parseColor(resolveVar(name).value)
-    if (c) inp.value = String(Math.round(c.a * 100))
-  })
-  inp.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); inp.blur() }
-  })
-  wrap.append(inp, el('span', 'pc', '%'))
-  return wrap
-}
-
-/* currentColor 不是颜色（没有 RGB），透明度表达不了它：
-   这一行保留「跟随」勾选，取消即回到上一个颜色。 */
+/* currentColor 不是颜色（没有 RGB），槽位里只能放「跟随」勾选，
+   取消即回到上一个颜色。 */
 function followRow(slot, name, value, txt, sw) {
   if (!/^currentColor$/i.test(String(value).trim())) return
   sw.disabled = true
@@ -1843,8 +1956,9 @@ function followRow(slot, name, value, txt, sw) {
       txt.value = back
     }
     sw.disabled = chk.checked
-    // 取消「跟随」后这一行就是普通颜色行，槽位要换成透明度
+    // 取消「跟随」后这一行就是普通颜色行，控件形态要换回来
     rebuildRow(name)
+    commitEdit()
   })
   slot.append(lbl)
 }
@@ -1927,7 +2041,9 @@ const ACTS = {
   open: ['打开皮肤…', '打开一份 .css 皮肤文件'],
   save: ['保存', '模板是只读的：先「另存为…」存成自己的皮肤，之后才能直接保存'],
   saveAs: ['另存为…', '存成一份新的皮肤文件'],
-  reset: ['重置', '丢掉全部改动，重新读取当前来源'],
+  reset: ['重置', '丢掉全部改动，回到这份皮肤刚打开（或上次保存）时的值'],
+  undo: ['撤销', '退回上一步改动（Ctrl+Z）'],
+  redo: ['重做', '恢复被撤销的改动（Ctrl+Y / Ctrl+Shift+Z）'],
   lang: ['中 / EN', '切换界面语言'],
   about: ['关于', '版本、资产目录与第三方许可'],
   drawer: ['☰ 表单', '收起或展开表单栏'],
@@ -1940,7 +2056,7 @@ function act(kind, primary) {
   b.type = 'button'
   b.title = title
   b.dataset.act = kind
-  if (kind === 'save') b.disabled = true
+  if (kind === 'save' || kind === 'undo' || kind === 'redo') b.disabled = true
   return b
 }
 
@@ -2066,7 +2182,7 @@ function sourceSelect() {
 function holdButton() {
   const b = el('button', 'ghostbtn', '按住看默认')
   b.type = 'button'
-  b.title = '按住时暂时摘掉皮肤，看 base.css 的默认样式（松开还原）'
+  b.title = '按住时忽略当前改动，看这份皮肤/模板原本的样子（松开还原）'
   const on = (e) => { e.preventDefault(); S.hold = true; applyAll(); b.setAttribute('aria-pressed', 'true') }
   const off = () => { S.hold = false; applyAll(); b.setAttribute('aria-pressed', 'false') }
   b.addEventListener('pointerdown', on)
@@ -2140,6 +2256,7 @@ function schemeRow() {
         x.setAttribute('aria-pressed', String(x.dataset.v === v)))
       row.querySelector('.shint').textContent = '已指定'
       applyAll()
+      commitEdit()
     })
     seg.append(b)
   }
@@ -2162,15 +2279,24 @@ function topBar() {
   save.addEventListener('click', doSave)
   const saveAs = act('saveAs', true)
   saveAs.addEventListener('click', doSaveAs)
+  const undoBtn = act('undo')
+  undoBtn.addEventListener('click', () => undo())
+  const redoBtn = act('redo')
+  redoBtn.addEventListener('click', () => redo())
   const reset = act('reset')
   reset.disabled = false
-  reset.addEventListener('click', async () => {
-    // 有来源文件时「重置」是重读该文件；模板则回到模板原值。
-    if (S.file.path) await openPath(S.file.path)
-    else await loadSkin(S.skin)
+  reset.addEventListener('click', () => {
+    // 重置就是丢掉本次会话的内联改动，回到 S.values 这份基准（打开或上次保存时）。
+    // 不再重新读文件：外部改动由「打开」与保存前的 mtime 校验负责；这样重置本身
+    // 也是一步可撤销的编辑。
+    closePicker(false)
+    S.overrides = {}
+    S.lastColor = {}
+    restoreView()
+    commitEdit()
   })
   top.append(sourceSelect(), open, el('span', 'grow'), linkButton(), widgetsButton(),
-             holdButton(), reset, save, saveAs, aboutButton())
+             holdButton(), undoBtn, redoBtn, reset, save, saveAs, aboutButton())
   return top
 }
 
@@ -2308,7 +2434,7 @@ function pushSkin() {
   applySkinText(emitSkin(currentSkin()))
   const d = frameDoc()
   if (!d) return
-  for (const k of Object.keys(S.overrides)) d.documentElement.style.removeProperty('--md-' + k)
+  clearInlineVars(d.documentElement)
   applyQueue.clear()
   S.overrides = {}
 }
@@ -2328,6 +2454,7 @@ function render() {
   host.append(renderD())
   markChanged()
   applyFilter()
+  syncHistoryButtons()
 }
 
 function boot() {
@@ -2359,6 +2486,15 @@ function boot() {
   })
   window.addEventListener('resize', () => { chipBox = null })
 
+  // 应用级撤销：即使在输入框里也接管 Ctrl+Z，撤销的是「一段编辑」而不是一个字符。
+  // 捕获阶段拦，免得预览页或控件先消费掉按键。
+  document.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+    const k = e.key.toLowerCase()
+    if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo() }
+    else if (k === 'y') { e.preventDefault(); redo() }
+  }, true)
+
   // 宿主在脚本挂上前就可能推过 hello；再问一次不吃亏，重复推不会出事。
   if (window.chrome && window.chrome.webview) {
     window.chrome.webview.addEventListener('message', (e) => onHostMessage(e.data))
@@ -2381,6 +2517,7 @@ async function runBoot(pre, hover) {
   }
   await loadSkin(S.skin)
   Object.assign(S.overrides, pre)
+  historyReset()   // URL 上的 override 属于起始状态，不该被撤销掉
   render()
   refreshUsers()
   if (hover) setTimeout(() => highlightVar(hover), 2500)
