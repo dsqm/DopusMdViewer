@@ -185,6 +185,17 @@ const RULES = [
 
 /* 变量 → 用到它的元素中文名。悬停行的提示框里显示「影响：…」。
    RULES 改了这里自动跟着改——这是「不手写 108 条说明」换到的东西。 */
+/* 同一层上多条规则都命中时取最具体的一条：先比 CSS 特异度，同分再比选择器长度。
+   否则 #doc mark 会抢走 mark.hit--current，.markdown-alert 会抢走 -note 之类。
+   只在启动时算一次，mousemove 里不再碰字符串解析。 */
+const RULE_SPEC = RULES.map((r) => Math.max(...r.sel.split(',').map((part) => {
+  const s = part.trim()
+  const ids = (s.match(/#[\w-]+/g) || []).length
+  const cls = (s.match(/\.[\w-]+|\[[^\]]+\]/g) || []).length
+  const tag = (s.match(/(^|[\s>+~])([a-z][\w-]*)/gi) || []).length
+  return ids * 10000 + cls * 100 + tag * 10 + s.length
+})))
+
 const VAR_TIPS = (() => {
   const m = {}
   for (const r of RULES) {
@@ -229,8 +240,8 @@ function syncDerivedSwatches() {
 }
 
 const HL_CSS = `
-  .__hl { outline: 2px solid #f59f00 !important; outline-offset: 1px;
-          box-shadow: 0 0 0 4px rgba(245, 159, 0, .18) !important; }
+  /* 悬停一次可能点亮几十个元素，只用 outline：box-shadow 会让这一片一起重绘 */
+  .__hl { outline: 2px solid #f59f00 !important; outline-offset: 1px; }
   .__sel { outline: 2px solid #1f6feb !important; outline-offset: 1px;
            box-shadow: 0 0 0 5px rgba(31, 111, 235, .16) !important; }
 `
@@ -244,6 +255,7 @@ const S = {
           extra: '', unknown: [], filled: [], duplicates: [], builtin: true },
   users: [],
   status: { text: '', kind: 'info' },
+  ruleIndex: null,
   variant: 'D',
   skin: 'light',
   w: 1180,
@@ -336,7 +348,12 @@ function hexOf(v) {
 
 function frameDoc() {
   try {
-    return S.frame && S.frame.contentDocument
+    const d = S.frame && S.frame.contentDocument
+    if (!d) return null
+    // 预览页异步 fetch 样例后自渲染，iframe 的 load 往往早于正文就绪。
+    // 任何一次联动操作都顺手补齐索引，不依赖 postMessage 的到达顺序。
+    if (!d.__protoIndex && d.documentElement.dataset.previewReady === '1') buildRuleIndex(d)
+    return d
   } catch {
     return null
   }
@@ -406,18 +423,61 @@ function pollOutline() {
 
 /* ---------------- 左右联动 ---------------- */
 
-/* 从被点的元素往上找，最近的、能对上规则的祖先说了算。 */
+/* 这些是「到处都是」的泛化规则。点提示框 / 引用块 / 表格里的文字时，最近祖先
+   往往先命中它们，真正要定位的却是那个容器对应的变量。 */
+const GENERIC_SELS = new Set(['#doc p', '#doc li', '#doc code', '#doc a'])
+
+/* 从被点的元素往上找，最近的、能对上规则的祖先说了算（票 05 定的方向）。
+   两条例外：同层取特异度最高的；只命中泛化规则时，向上两层若有更具体的容器
+   （提示框、引用、代码块等），容器优先。 */
 function ruleOf(target, d) {
   let node = target
   while (node && node !== d.body && node.nodeType === 1) {
-    let hit = null
-    for (const r of RULES) {
-      if (node.matches(r.sel)) hit = r
+    const hit = bestRuleAt(node, 0)
+    if (hit) {
+      if (hit.best > 0 && GENERIC_SELS.has(hit.rule.sel)) {
+        let up = node.parentElement
+        for (let k = 0; k < 2 && up && up !== d.body; k++, up = up.parentElement) {
+          const upper = bestRuleAt(up, hit.best, true)
+          if (upper) return { rule: upper.rule, node: up }
+        }
+      }
+      return { rule: hit.rule, node }
     }
-    if (hit) return { rule: hit, node }
     node = node.parentElement
   }
   return null
+}
+
+function bestRuleAt(node, minScore, skipGeneric = false) {
+  let rule = null
+  let best = minScore
+  for (let i = 0; i < RULES.length; i++) {
+    if (skipGeneric && GENERIC_SELS.has(RULES[i].sel)) continue
+    if (RULE_SPEC[i] > best && node.matches(RULES[i].sel)) {
+      rule = RULES[i]
+      best = RULE_SPEC[i]
+    }
+  }
+  return rule ? { rule, best } : null
+}
+
+/* 预览文档只在换皮肤时重建，规则→元素、变量→元素两张表建一次即可。
+   以前每次悬停都对 iframe 做几十次全文档查询，且 box-shadow 高亮会连带重绘。 */
+function buildRuleIndex(d) {
+  const byVar = new Map()
+  const byRule = new Map()
+  for (const r of RULES) {
+    let nodes = []
+    try { nodes = [...d.querySelectorAll(r.sel)] } catch { /* 选择器失效就当没命中 */ }
+    byRule.set(r, nodes)
+    for (const v of r.vars) {
+      if (!byVar.has(v)) byVar.set(v, new Set())
+      for (const n of nodes) byVar.get(v).add(n)
+    }
+  }
+  S.ruleIndex = { byVar, byRule }
+  d.__protoIndex = true
 }
 
 function installLink(d) {
@@ -427,16 +487,31 @@ function installLink(d) {
     st.textContent = HL_CSS
     d.head.append(st)
   }
+  // 正文还没渲染完时不建空索引：留给 ready 消息或 frameDoc() 的懒补齐。
+  if (!d.__protoIndex && d.documentElement.dataset.previewReady === '1') buildRuleIndex(d)
   if (d.__protoLink) return
   d.__protoLink = true
 
+  // mousemove 一秒能来上百次：按帧合并，一帧最多做一次 ruleOf + 一次气泡更新。
+  let last = null
+  let queued = false
   d.addEventListener('mousemove', (e) => {
     if (!S.link) return
-    const r = ruleOf(e.target, d)
-    showChip(r ? r.rule.name : '', e.clientX, e.clientY, false)
+    last = { target: e.target, x: e.clientX, y: e.clientY }
+    if (queued) return
+    queued = true
+    requestAnimationFrame(() => {
+      queued = false
+      if (!last) return
+      const r = ruleOf(last.target, d)
+      showChip(r ? r.rule.name : '', last.x, last.y, false)
+    })
   }, true)
 
-  d.addEventListener('mouseleave', () => showChip('', 0, 0, false), true)
+  d.addEventListener('mouseleave', () => {
+    last = null
+    showChip('', 0, 0, false)
+  }, true)
 
   d.addEventListener('click', (e) => {
     if (!S.link) return
@@ -444,60 +519,78 @@ function installLink(d) {
     if (!r) return
     e.preventDefault()
     e.stopPropagation()
-    d.querySelectorAll('.__sel').forEach((n) => n.classList.remove('__sel'))
-    r.node.classList.add('__sel')
+    if (selNode) selNode.classList.remove('__sel')
+    selNode = r.node
+    selNode.classList.add('__sel')
     selectVars(r.rule)
     showChip(r.rule.name + ' · 左侧 ' + r.rule.vars.length + ' 项',
              e.clientX, e.clientY, true)
   }, true)
 }
 
+let usedRows = []
 function selectVars(rule) {
-  document.querySelectorAll('[data-var]').forEach((row) => {
-    row.classList.toggle('used', rule.vars.includes(row.dataset.var))
-  })
-  const first = document.querySelector('[data-var].used')
-  if (first) first.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  for (const r of usedRows) r.classList.remove('used')
+  usedRows = []
+  for (const v of rule.vars) {
+    const row = document.querySelector('[data-var="' + v + '"]')
+    if (row) { row.classList.add('used'); usedRows.push(row) }
+  }
+  // 平滑滚动在连续点击时会排队，看起来像「跳了又弹回去」。
+  if (usedRows[0]) usedRows[0].scrollIntoView({ block: 'center' })
 }
 
 function clearUsed() {
-  document.querySelectorAll('[data-var].used').forEach((r) => r.classList.remove('used'))
+  for (const r of usedRows) r.classList.remove('used')
+  usedRows = []
 }
 
-/* 悬停左侧变量 → 点亮预览里用到它的元素 */
+/* 悬停左侧变量 → 点亮预览里用到它的元素。索引与上次高亮的节点都缓存，
+   不再每次对 iframe 做全文档查询。 */
+let hlNodes = []
+let selNode = null
 function highlightVar(name) {
-  const d = frameDoc()
-  if (!d) return
-  d.querySelectorAll('.__hl').forEach((n) => n.classList.remove('__hl'))
+  for (const n of hlNodes) n.classList.remove('__hl')
+  hlNodes = []
   if (!name) return
+  const set = S.ruleIndex && S.ruleIndex.byVar.get(name)
+  if (!set) return
   let budget = 80
-  for (const r of RULES) {
-    if (!r.vars.includes(name)) continue
-    for (const node of d.querySelectorAll(r.sel)) {
-      node.classList.add('__hl')
-      if (--budget <= 0) return
-    }
+  for (const n of set) {
+    n.classList.add('__hl')
+    hlNodes.push(n)
+    if (--budget <= 0) break
   }
 }
 
-/* 预览上方的浮动提示（中文名） */
+/* 预览上方的浮动提示。位置只改 transform（合成层，不触发重排），
+   容器尺寸缓存到 resize 才重量，文本没变就不写 DOM、不重置定时器。 */
 let chipTimer = 0
+let chipText = ''
+let chipBox = null
 function showChip(text, x, y, pin) {
   const chip = document.getElementById('chip')
   if (!text) {
-    if (!pin) chip.hidden = true
+    if (!pin) { chip.hidden = true; chipText = '' }
     return
   }
-  chip.hidden = false
-  chip.textContent = text
-  chip.classList.toggle('pin', !!pin)
-  const box = document.getElementById('preview-box').getBoundingClientRect()
-  chip.style.left = Math.min(box.width - 220, Math.max(8, x + 14)) + 'px'
-  chip.style.top = Math.max(6, y - 30) + 'px'
-  if (!pin) {
-    clearTimeout(chipTimer)
-    chipTimer = setTimeout(() => { chip.hidden = true }, 2200)
+  if (chipBox === null) {
+    const box = document.getElementById('preview-box')
+    chipBox = box ? box.getBoundingClientRect() : { width: 600 }
   }
+  if (chip.hidden) chip.hidden = false
+  if (text !== chipText) {
+    chip.textContent = text
+    chipText = text
+    chip.classList.toggle('pin', !!pin)
+    if (!pin) {
+      clearTimeout(chipTimer)
+      chipTimer = setTimeout(() => { chip.hidden = true; chipText = '' }, 2200)
+    }
+  }
+  const lx = Math.min(chipBox.width - 220, Math.max(8, x + 14))
+  const ly = Math.max(6, y - 30)
+  chip.style.transform = 'translate(' + lx + 'px, ' + ly + 'px)'
 }
 
 /* ---------------- 皮肤 ---------------- */
@@ -538,21 +631,36 @@ function resolvedBase(name, depth = 0) {
   return resolvedBase(m[1], depth + 1)
 }
 
+/* 逐字符输入走这里：只动一个自定义属性。以前每次改值都把全部 overrides
+   先删再写，改动 20 处后每敲一个字符就是 40 次全文档样式失效。 */
+function applyOne(name) {
+  const d = frameDoc()
+  if (!d) return
+  const v = S.overrides[name]
+  if (v === undefined || S.hold) d.documentElement.style.removeProperty('--md-' + name)
+  else d.documentElement.style.setProperty('--md-' + name, v)
+}
+
 function setValue(name, value) {
   const v = String(value).trim()
   if (v === resolvedBase(name)) delete S.overrides[name]
   else S.overrides[name] = v
-  applyAll()
-  markChanged()
+  applyOne(name)
+  markChanged(name)
   // 派生行的色块是按「主色 × 页面背景」算出来的，主色一动就要重画
   syncDerivedSwatches()
 }
 
-function markChanged() {
+function markChanged(only) {
   const dirty = Object.keys(S.overrides).length > 0
-  document.querySelectorAll('[data-var]').forEach((row) => {
-    row.classList.toggle('changed', row.dataset.var in S.overrides)
-  })
+  if (only) {
+    const row = document.querySelector('[data-var="' + only + '"]')
+    if (row) row.classList.toggle('changed', only in S.overrides)
+  } else {
+    document.querySelectorAll('[data-var]').forEach((row) => {
+      row.classList.toggle('changed', row.dataset.var in S.overrides)
+    })
+  }
   const badge = document.getElementById('dirty')
   if (badge) badge.hidden = !dirty
   // 内置模板随程序分发，只读；只有打开或另存出用户皮肤后才能直接保存。
@@ -826,17 +934,21 @@ function bindRowLink(row, name) {
   row.addEventListener('click', () => {
     const d = frameDoc()
     if (!d) return
-    d.querySelectorAll('.__sel').forEach((n) => n.classList.remove('__sel'))
-    let first = null
-    for (const r of RULES) {
-      if (!r.vars.includes(name)) continue
-      const node = d.querySelector(r.sel)
-      if (node) { node.classList.add('__hl'); first = first || { r, node } }
+    if (selNode) selNode.classList.remove('__sel')
+    selNode = null
+    const set = S.ruleIndex && S.ruleIndex.byVar.get(name)
+    const first = set && set.values().next().value
+    if (!first) {
+      // 总开关与只在插件界面出现的变量，预览里本来就没有可跳的元素。
+      clearUsed()
+      setStatus('--md-' + name + ' 在预览里没有对应元素，无法跳转', 'warn')
+      return
     }
-    if (first) {
-      first.node.classList.add('__sel')
-      first.node.scrollIntoView({ block: 'center' })
-    }
+    if (S.status.text.startsWith('--md-')) setStatus('')
+    highlightVar(name)
+    selNode = first
+    selNode.classList.add('__sel')
+    selNode.scrollIntoView({ block: 'center' })
   })
   return row
 }
@@ -1376,6 +1488,12 @@ function dragSplitter(rail, host, splitW) {
 }
 
 function render() {
+  // 表单与预览 iframe 都重建了，缓存的节点与索引一律作废。
+  hlNodes = []
+  usedRows = []
+  selNode = null
+  S.ruleIndex = null
+  chipBox = null
   const host = document.getElementById('app')
   host.replaceChildren()
   host.append(renderD())
@@ -1402,6 +1520,15 @@ function boot() {
   S.openInit = p.get('fold') || 'first'
   S.onlyChanged = p.get('only') === '1'
   const hover = p.get('hover')
+
+  // 预览页是异步 fetch 样例后自渲染的，iframe 的 load 早于正文就绪。
+  // 它渲染完主动发一条消息，父页面这时才建联动索引（否则会建成空表）。
+  window.addEventListener('message', (e) => {
+    if (!e.data || e.data.type !== 'skinedit-preview-ready') return
+    const d = frameDoc()
+    if (d) buildRuleIndex(d)
+  })
+  window.addEventListener('resize', () => { chipBox = null })
 
   // 宿主在脚本挂上前就可能推过 hello；再问一次不吃亏，重复推不会出事。
   if (window.chrome && window.chrome.webview) {

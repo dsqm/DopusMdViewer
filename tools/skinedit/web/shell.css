@@ -476,6 +476,8 @@ select.sel {
 /* 预览里的中文名提示 */
 .chip {
   position: absolute;
+  left: 0;
+  top: 0;
   z-index: 5;
   max-width: 300px;
   padding: 3px 8px;
@@ -487,6 +489,8 @@ select.sel {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* 位置只走 transform：单独合成层，鼠标移动时不触发父页面重排与重绘 */
+  will-change: transform;
 }
 .chip.pin { background: rgba(31, 111, 235, .95); }
 

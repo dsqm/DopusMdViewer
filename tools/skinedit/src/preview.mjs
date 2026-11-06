@@ -109,6 +109,21 @@ const sanitize = (html) => DOMPurify.sanitize(html, {
   FORBID_ATTR: ['srcset'],
 })
 
+/* 大纲面板在预览里是静态占位，但联动表有 #outline .outline-item 这条规则。
+   不填的话 outline-* 变量永远找不到可跳的元素。 */
+function fillOutline(docEl) {
+  const list = document.getElementById('outline-list')
+  if (!list) return
+  const frag = document.createDocumentFragment()
+  for (const h of docEl.querySelectorAll('h1, h2, h3')) {
+    const item = document.createElement('div')
+    item.className = 'outline-item'
+    item.textContent = h.textContent
+    frag.append(item)
+  }
+  list.append(frag)
+}
+
 async function boot() {
   document.body.classList.add('dev')
   const p = new URLSearchParams(location.search)
@@ -138,8 +153,14 @@ async function boot() {
   try {
     const r = await fetch(docUrl)
     if (!r.ok) throw new Error('HTTP ' + r.status)
-    document.getElementById('doc').innerHTML = sanitize(md.render(await r.text()))
+    const docEl = document.getElementById('doc')
+    docEl.innerHTML = sanitize(md.render(await r.text()))
+    fillOutline(docEl)
     document.documentElement.dataset.previewReady = '1'
+    // iframe 的 load 早于这段异步渲染；父页面等这条消息才建联动索引。
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: 'skinedit-preview-ready' }, location.origin)
+    }
   } catch (e) {
     document.getElementById('doc').textContent = '预览样例读取失败：' + e.message
     document.documentElement.dataset.previewReady = 'error'
