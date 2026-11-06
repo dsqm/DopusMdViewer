@@ -6,7 +6,7 @@
 //   ① 每主机档：同一篇里每个主机各问一次，允许与拒绝在本篇内都算数
 //   ② 切走再切回：同一篇仍然记得；换到别的文档同一主机要重新问
 //   ③ 每文档档：整篇只问一次，答复覆盖这篇里的所有主机，切回来仍有效
-//   ④ 会话 id 变了（DO 重启）：整份记忆作废，重新问
+//   ④ 会话 id 变了（DOpus 重启）：整份记忆作废，重新问
 //   ⑤ 页面被回收重建（localStorage 还在）：记忆恢复，不重复问
 //   ⑥ 超过 64 篇：按最近使用淘汰，被淘汰的那篇重问
 //
@@ -167,7 +167,7 @@ console.log('网络图片确认')
   M.ensureNetConsent('a.com')
   M.decideNetConsent(true)
 
-  M.netOpenDoc('docA', 's2')  // DO 重启：同一个文件、新的会话
+  M.netOpenDoc('docA', 's2')  // DOpus 重启：同一个文件、新的会话
   M.ensureNetConsent('a.com')
   check('换会话：同一篇同一主机重新问', pump.length === 2, pump)
   check('换会话：旧答复没被当真', !M.netAllowedNow('a.com'))

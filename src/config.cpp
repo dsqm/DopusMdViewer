@@ -39,7 +39,7 @@ void SetDefaults(Config* c) {
   c->font.sizePx = 15;
   c->font.lineHeight = 1.65;
   c->font.measureEm = 40;
-  c->netImageMode = 1;  // 每主机一次（DO 运行期间记住）
+  c->netImageMode = 1;  // 每主机一次（DOpus 运行期间记住）
   c->allowParentImages = false;
   c->allowAbsoluteImages = false;
   c->renderMermaid = true;
@@ -492,7 +492,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   }
   LogLine(L"CONFIG: 已写入 %s skin=\"%s\" size=%dpx lh=%.2f measure=%dem "
           L"net=%d outside=%d render=%d%d%d%d%d%d copy=%d%d/%d lines=%d ws=%d/%d ind=%d "
-          L"tools=%d%d log=%d opusViewer=%d exts=%d linkWait=%d prewarm=%d idle=%d",
+          L"tools=%d%d log=%d dopusViewer=%d exts=%d linkWait=%d prewarm=%d idle=%d",
           path, c.skin.c_str(), c.font.sizePx, c.font.lineHeight, c.font.measureEm,
           c.netImageMode, (c.allowParentImages ? 1 : 0) + (c.allowAbsoluteImages ? 2 : 0),
           c.renderMermaid ? 1 : 0,

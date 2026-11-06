@@ -184,57 +184,57 @@ TEST(util, win32_error_text) {
   CHECK(text.back() != L'\n' && text.back() != L'\r');
 }
 
-TEST(util, opus_viewer_ext) {
+TEST(util, dopus_viewer_ext) {
   // 带点、大小写不敏感；名单覆盖图片（含 RAW/JPEG2000/旧格式）、文本/代码、
   // Office、影音与 PDF
-  CHECK(UtilOpusViewerHandlesExt(L".png", L""));
-  CHECK(UtilOpusViewerHandlesExt(L".PNG", L""));
-  CHECK(UtilOpusViewerHandlesExt(L".cr2", L""));
-  CHECK(UtilOpusViewerHandlesExt(L".jp2", L""));
-  CHECK(UtilOpusViewerHandlesExt(L".docx", L""));
-  CHECK(UtilOpusViewerHandlesExt(L".mp4", L""));
-  CHECK(UtilOpusViewerHandlesExt(L".md", L""));
-  CHECK(UtilOpusViewerHandlesExt(L".Markdown", L""));
-  CHECK(UtilOpusViewerHandlesExt(L".pdf", L""));
+  CHECK(UtilDOpusViewerHandlesExt(L".png", L""));
+  CHECK(UtilDOpusViewerHandlesExt(L".PNG", L""));
+  CHECK(UtilDOpusViewerHandlesExt(L".cr2", L""));
+  CHECK(UtilDOpusViewerHandlesExt(L".jp2", L""));
+  CHECK(UtilDOpusViewerHandlesExt(L".docx", L""));
+  CHECK(UtilDOpusViewerHandlesExt(L".mp4", L""));
+  CHECK(UtilDOpusViewerHandlesExt(L".md", L""));
+  CHECK(UtilDOpusViewerHandlesExt(L".Markdown", L""));
+  CHECK(UtilDOpusViewerHandlesExt(L".pdf", L""));
   // 名单外与非法输入：交回系统默认程序
-  CHECK(!UtilOpusViewerHandlesExt(L".exe", L""));
-  CHECK(!UtilOpusViewerHandlesExt(L".7z", L""));
-  CHECK(!UtilOpusViewerHandlesExt(L"png", L""));  // 没点
-  CHECK(!UtilOpusViewerHandlesExt(L"", L""));
-  CHECK(!UtilOpusViewerHandlesExt(nullptr, L""));
+  CHECK(!UtilDOpusViewerHandlesExt(L".exe", L""));
+  CHECK(!UtilDOpusViewerHandlesExt(L".7z", L""));
+  CHECK(!UtilDOpusViewerHandlesExt(L"png", L""));  // 没点
+  CHECK(!UtilDOpusViewerHandlesExt(L"", L""));
+  CHECK(!UtilDOpusViewerHandlesExt(nullptr, L""));
 }
 
-TEST(util, opus_viewer_ext_list) {
+TEST(util, dopus_viewer_ext_list) {
   // 名单非空时完全替代内置：只认名单里的（带点不带点、分号/逗号/空格分隔都行）
-  CHECK(UtilOpusViewerHandlesExt(L".epub", L".epub"));
-  CHECK(UtilOpusViewerHandlesExt(L".epub", L"epub"));
-  CHECK(UtilOpusViewerHandlesExt(L".epub", L".dds;.epub"));
-  CHECK(UtilOpusViewerHandlesExt(L".epub", L".dds,.epub"));
-  CHECK(UtilOpusViewerHandlesExt(L".epub", L".dds .epub"));
-  CHECK(UtilOpusViewerHandlesExt(L".EPUB", L".epub"));
+  CHECK(UtilDOpusViewerHandlesExt(L".epub", L".epub"));
+  CHECK(UtilDOpusViewerHandlesExt(L".epub", L"epub"));
+  CHECK(UtilDOpusViewerHandlesExt(L".epub", L".dds;.epub"));
+  CHECK(UtilDOpusViewerHandlesExt(L".epub", L".dds,.epub"));
+  CHECK(UtilDOpusViewerHandlesExt(L".epub", L".dds .epub"));
+  CHECK(UtilDOpusViewerHandlesExt(L".EPUB", L".epub"));
   // 名单里没有就是没有——包括内置有的项，改名单就能把它们摘掉
-  CHECK(!UtilOpusViewerHandlesExt(L".png", L".epub"));
-  CHECK(!UtilOpusViewerHandlesExt(L".html", L".epub"));
+  CHECK(!UtilDOpusViewerHandlesExt(L".png", L".epub"));
+  CHECK(!UtilDOpusViewerHandlesExt(L".html", L".epub"));
   // 空名单 = 内置
-  CHECK(UtilOpusViewerHandlesExt(L".png", L""));
-  CHECK(!UtilOpusViewerHandlesExt(L".epub", L""));
+  CHECK(UtilDOpusViewerHandlesExt(L".png", L""));
+  CHECK(!UtilDOpusViewerHandlesExt(L".epub", L""));
 }
 
-TEST(util, opus_viewer_default_exts) {
-  const std::wstring def = UtilOpusViewerDefaultExts();
+TEST(util, dopus_viewer_default_exts) {
+  const std::wstring def = UtilDOpusViewerDefaultExts();
   CHECK(!def.empty());
   CHECK(def.find(L".png") != std::wstring::npos);
   CHECK(def.find(L".md") != std::wstring::npos);
   // 默认串本身必须能被判定函数认出来（设置页「恢复默认」就填它）
-  CHECK(UtilOpusViewerHandlesExt(L".png", def));
-  CHECK(UtilOpusViewerHandlesExt(L".pdf", def));
-  CHECK(!UtilOpusViewerHandlesExt(L".exe", def));
+  CHECK(UtilDOpusViewerHandlesExt(L".png", def));
+  CHECK(UtilDOpusViewerHandlesExt(L".pdf", def));
+  CHECK(!UtilDOpusViewerHandlesExt(L".exe", def));
 }
 
-TEST(util, opus_viewer_show_missing_file) {
+TEST(util, dopus_viewer_show_missing_file) {
   // 不存在的文件不进 CreateProcess：直接 false，调用方回退系统默认程序
-  CHECK(!UtilOpusViewerShow(L""));
-  CHECK(!UtilOpusViewerShow(L"Z://definitely-not-here//x.png"));
+  CHECK(!UtilDOpusViewerShow(L""));
+  CHECK(!UtilDOpusViewerShow(L"Z://definitely-not-here//x.png"));
 }
 
 TEST(util, webview_base_follows_config) {

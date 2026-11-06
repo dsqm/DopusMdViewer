@@ -587,13 +587,13 @@ const TRANSPARENT_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAA
 // 网络图片的确认状态。键是 URL.host（域名 + 非默认端口，不含协议）。
 // 答复按「文档 + 主机」记：同一篇里重复出现不再问，换到别的文档要重新问，
 // 切回原来的文档仍然记得。文档由 index 帧的文档键标识（小写路径+字节数+写入时间），
-// 会话由 sessionId 标识——两者任一不符就是上一轮 DO 留下的，整份作废。
+// 会话由 sessionId 标识——两者任一不符就是上一轮 DOpus 留下的，整份作废。
 //
 //   allowed / denied —— "每主机"档按主机记的答复；
 //   decided         —— "每文档"档的整篇答复（一篇只有一个，不看主机）。
 //
 // 记忆落在 localStorage：页面被回收重建（关光预览窗格后空闲释放、渲染进程崩溃、
-// 插件重载）之后仍然在，只有 DO 重启换了 sessionId 才清空。
+// 插件重载）之后仍然在，只有 DOpus 重启换了 sessionId 才清空。
 const NET = {
   mode: 1,             // 0 不询问 / 1 每主机一次 / 2 每文档一次
   session: '',         // 宿主给的会话 id；空 = 还没收到 index
@@ -1336,7 +1336,7 @@ function netHash(text) {
 }
 
 // 从 localStorage 读回记忆。会话 id 不符、版本不符、解析失败都当成"没有"——
-// 宁可从零开始问，也不要拿上一轮 DO 的答复放行。
+// 宁可从零开始问，也不要拿上一轮 DOpus 的答复放行。
 function netStoreLoad() {
   const docs = new Map()
   NET.used = 0
@@ -1403,7 +1403,7 @@ function netEntry() {
 function netOpenDoc(docKey, session) {
   if (session !== NET.session) {
     NET.session = session || ''
-    NET.docs = null  // 上一轮 DO 留下的，读都不用读
+    NET.docs = null  // 上一轮 DOpus 留下的，读都不用读
     NET.key = ''
     NET.cur = null
   }
@@ -1500,7 +1500,7 @@ function setNetMode(mode) {
 
 function dropNetPrompts() {
   // 换文档：在排队的问答作废（答了也不是这篇的），记忆本身留着——切回来还要用。
-  // 真正的失效只有两种：换了会话（DO 重启）、或这一篇被 64 篇的上限淘汰掉。
+  // 真正的失效只有两种：换了会话（DOpus 重启）、或这一篇被 64 篇的上限淘汰掉。
   for (const item of NET.queue) item.resolve(false)
   if (NET.current) NET.current.resolve(false)
   NET.queue = []
@@ -5429,7 +5429,7 @@ function onHostMessage(event) {
       parseInt(f[5], 10) || 0,
       f[6] === '1',
       f[7] || '',   // 文档键：路径*大小*写入时间，网络图答复按它记
-      f[8] || '')   // 会话 id：换了它说明 DO 重启过，旧记忆整份作废
+      f[8] || '')   // 会话 id：换了它说明 DOpus 重启过，旧记忆整份作废
     return
   }
 
@@ -5445,7 +5445,7 @@ function onHostMessage(event) {
   }
 
   if (type === 'copy') {
-    // Opus 菜单的「复制」：有选区就只复制选区，没有就整篇渲染文本
+    // DOpus 菜单的「复制」：有选区就只复制选区，没有就整篇渲染文本
     const picked = String(window.getSelection() || '')
     if (picked) postRaw('copyset|0|' + picked)
     else copyRendered()
@@ -5566,7 +5566,7 @@ function confirmOpenExternal(href, target) {
     '</div></div>'
   const modal = overlay.querySelector('.mdv-modal')
   modal.querySelector('.mdv-modal-title').textContent = '打开外部链接'
-  // 不写「交给系统」：走 Opus 查看器那一档时并不经过系统默认程序，
+  // 不写「交给系统」：走 DOpus 查看器那一档时并不经过系统默认程序，
   // 而页面也无从知道宿主最后用了哪条路，所以只说「本机程序」。
   modal.querySelector('.mdv-modal-warn').textContent =
     '此链接会交给本机程序打开，可能是程序或脚本。请确认来源可信。'

@@ -1,6 +1,6 @@
 // 手写 UI 扩展（不属于 app.js bundle）：
 //   docerror|<文本>：打开失败，清空旧页面并居中显示原因。
-//   右键：WebView2 默认菜单已关，右键事件转给宿主，让 Opus 显示查看器菜单
+//   右键：WebView2 默认菜单已关，右键事件转给宿主，让 DOpus 显示查看器菜单
 //        （其中有插件加的「编码」子菜单）。
 (function () {
   var host = window.chrome && window.chrome.webview

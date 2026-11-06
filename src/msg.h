@@ -25,7 +25,7 @@ std::wstring MakeFx(const FontSettings& font);
 // index|<docBase>|<prefixBlocks>|<estTotal>|<fileSize>|<encoding>|<lastVisible>|<complete>
 //      |<docKey>|<sessionId>
 // 后两个字段给网络图片确认用：docKey 决定答复按哪篇文档记，sessionId 决定这批记忆
-// 还能不能沿用（换了它就是上一轮 DO 留下的，整份丢弃）。
+// 还能不能沿用（换了它就是上一轮 DOpus 留下的，整份丢弃）。
 std::wstring MakeIndex(const std::wstring& docBase, uint32_t prefixBlocks,
                        uint32_t estTotal, uint64_t fileSize, int encoding,
                        uint32_t lastVisible, bool complete, const std::wstring& docKey,
@@ -39,7 +39,7 @@ std::wstring MakeBig(const std::string& table);
 
 // net|<mode>：网络图片确认粒度（0 不询问 / 1 每主机一次 / 2 每文档一次）。
 // 答复按「文档 + 主机」记：同一篇里重复出现不再问，换到别的文档要重新问，
-// 切回原来的文档仍然记得。记忆跟 index 帧的 sessionId 走，换一轮 DO 即作废。
+// 切回原来的文档仍然记得。记忆跟 index 帧的 sessionId 走，换一轮 DOpus 即作废。
 // 确认面板在页面内渲染，这里只推配置。
 std::wstring MakeNetMode(int mode);
 

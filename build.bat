@@ -41,7 +41,7 @@ set "RC=%SDK_ROOT%\bin\%SDK_VER%\x64\rc.exe"
 set "DUMPBIN=%MSVC%\bin\Hostx64\x64\dumpbin.exe"
 set "W2INC=%PROJ%sdk\webview2\include"
 set "W2LIB=%PROJ%sdk\webview2\x64\WebView2LoaderStatic.lib"
-set "OPUSINC=%PROJ%..\SDK\Headers"
+set "DOPUSINC=%PROJ%..\SDK\Headers"
 set "ESBUILD=%PROJ%webbuild\node_modules\@esbuild\win32-x64\esbuild.exe"
 
 echo.
@@ -51,7 +51,7 @@ if not exist "%LINK_EXE%"      echo   找不到 link.exe %LINK_EXE%      & goto 
 if not exist "%RC%"        echo   找不到 rc.exe   %RC%        & goto :fail
 if not exist "%W2INC%\WebView2.h" echo   缺少 WebView2 SDK 头文件 %W2INC% & goto :fail
 if not exist "%W2LIB%"     echo   缺少 WebView2LoaderStatic.lib %W2LIB% & goto :fail
-if not exist "%OPUSINC%\viewer plugins.h" echo   缺少 Opus 插件头文件 %OPUSINC% & goto :fail
+if not exist "%DOPUSINC%\viewer plugins.h" echo   缺少 DOpus 插件头文件 %DOPUSINC% & goto :fail
 if not exist "%PROJ%webbuild\src\app.js" echo   缺少 webbuild\src\app.js & goto :fail
 if not exist "%PROJ%webbuild\src\mermaid.entry.mjs" echo   缺少 webbuild\src\mermaid.entry.mjs & goto :fail
 if not exist "%ESBUILD%" echo   缺少 esbuild，先在 webbuild 跑 npm install & goto :fail
@@ -59,7 +59,7 @@ if not exist "%PROJ%webbuild\node_modules\katex\dist\katex.min.css" echo   缺�
 if not exist "%PROJ%tools\gen-version.ps1" echo   缺少 tools\gen-version.ps1 & goto :fail
 
 rem 源文件是 UTF-8 无 BOM 且含中文注释：/utf-8 不可省，否则按 936 解读会报一堆假语法错误
-set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%SDKINC%\winrt;%OPUSINC%;%W2INC%;%PROJ%third_party;%PROJ%third_party\compact_enc_det"
+set "INCLUDE=%MSVC%\include;%SDKINC%\ucrt;%SDKINC%\shared;%SDKINC%\um;%SDKINC%\winrt;%DOPUSINC%;%W2INC%;%PROJ%third_party;%PROJ%third_party\compact_enc_det"
 set "LIB=%MSVC%\lib\x64;%SDKLIB%\ucrt\x64;%SDKLIB%\um\x64"
 
 pushd "%PROJ%"

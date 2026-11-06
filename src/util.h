@@ -1,6 +1,6 @@
 // util.h - 路径、文件、编码这些杂事。
 //
-// 只依赖 Windows API 与标准库；不引用 Opus 头文件，也不引用 WebView2 SDK。
+// 只依赖 Windows API 与标准库；不引用 DOpus 头文件，也不引用 WebView2 SDK。
 
 #pragma once
 
@@ -26,7 +26,7 @@ void UtilUsbExportFiles(std::vector<std::wstring>* out);
 constexpr wchar_t kDataAliasName[] = L"DopusMdViewerData";
 
 // 数据根目录：优先 /DopusMdViewerData 别名，否则 /dopusdata\User Data\DopusMdViewer。
-// 走 Opus 的内置别名而不是 %APPDATA%：U 盘版的 /dopusdata 指向 U 盘，环境变量不会。
+// 走 DOpus 的内置别名而不是 %APPDATA%：U 盘版的 /dopusdata 指向 U 盘，环境变量不会。
 // 解析成功一次即固定；失败不缓存，下次调用重试。皮肤、config.json、logs 同根。
 // WebView2 缓存默认在本机 %LOCALAPPDATA%\DopusMdViewer\WebView2，可在设置里覆盖。
 std::wstring UtilDataDir(void);
@@ -38,9 +38,9 @@ void UtilDataDirInto(wchar_t* buf, size_t cch);
 void UtilSetUsbMode(bool usb);
 bool UtilIsUsbMode(void);
 
-// Plugin Support API 的 IsUSBInstall()：Opus 是否从 U 盘运行。
+// Plugin Support API 的 IsUSBInstall()：DOpus 是否从 U 盘运行。
 // 返回 1 / 0，接口取不到时返回 -1（未知）。
-int UtilOpusIsUsbInstall(void);
+int UtilDOpusIsUsbInstall(void);
 
 // a + "\\" + b；a 允许带或不带尾随反斜杠。
 std::wstring UtilJoin(const std::wstring& a, const wchar_t* b);
@@ -111,7 +111,7 @@ std::wstring UtilParentDir(const std::wstring& path);
 const wchar_t* UtilLeafName(const wchar_t* path);
 
 // 本进程的会话标识："<pid>-<进程创建时间的 FILETIME tick>"。同一次启动恒定，
-// DO 重启即变。页面拿它判断磁盘上的记忆是不是上一轮的，用于「只到 DO 关闭为止」。
+// DOpus 重启即变。页面拿它判断磁盘上的记忆是不是上一轮的，用于「只到 DOpus 关闭为止」。
 std::wstring UtilProcessSessionId(void);
 
 // 文档键：小写路径 + '*' + 字节数 + '*' + 最后写入时间的 tick。
@@ -125,21 +125,21 @@ std::wstring UtilModuleVersion(void);
 // 任意可执行文件/模块的版本资源（"1.2.3.4"）；不存在或没有版本资源时返回空串。
 std::wstring UtilFileVersion(const std::wstring& path);
 
-// dopusrt.exe 的完整路径（Opus 对外唯一的"打开查看器"入口）；找不到返回空串。
+// dopusrt.exe 的完整路径（DOpus 对外唯一的"打开查看器"入口）；找不到返回空串。
 // 顺序：宿主 exe 同目录（插件总跑在 dopus.exe 里）→ DLL 的上级目录（Viewers\ 的父目录）
 // → %ProgramFiles%\GPSoftware\Directory Opus。便携版靠前两条命中。
-std::wstring UtilOpusViewerExe(void);
+std::wstring UtilDOpusViewerExe(void);
 
-// 用 Opus 独立查看器显示文件：dopusrt.exe /show "<path>"。
-// Viewer Plugin SDK 没有这个能力（DVP_InitEx 只给消息窗口与版本号），Opus 只对外
+// 用 DOpus 独立查看器显示文件：dopusrt.exe /show "<path>"。
+// Viewer Plugin SDK 没有这个能力（DVP_InitEx 只给消息窗口与版本号），DOpus 只对外
 // 提供 dopusrt 命令行。找不到 dopusrt、文件不存在或进程起不来时返回 false，
 // 调用方自行回退到系统默认程序。
-bool UtilOpusViewerShow(const std::wstring& path);
+bool UtilDOpusViewerShow(const std::wstring& path);
 
 // 内置名单（分号分隔，带点），给设置里的「扩展名名单」当初始值与「恢复默认」用。
-std::wstring UtilOpusViewerDefaultExts(void);
+std::wstring UtilDOpusViewerDefaultExts(void);
 
-// 这个扩展名是否该交给 Opus 查看器。list 是用户编辑过的完整名单（分号/逗号/空白
+// 这个扩展名是否该交给 DOpus 查看器。list 是用户编辑过的完整名单（分号/逗号/空白
 // 分隔，带不带点都认）；**空串表示用内置名单**。名单外的类型交回系统默认程序，
-// 免得 Opus 弹「无法显示」。
-bool UtilOpusViewerHandlesExt(const wchar_t* ext, const std::wstring& list);
+// 免得 DOpus 弹「无法显示」。
+bool UtilDOpusViewerHandlesExt(const wchar_t* ext, const std::wstring& list);

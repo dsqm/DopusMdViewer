@@ -8,11 +8,11 @@
 
 namespace {
 
-// 数据根 = Opus 自己的数据根 + 固定子路径。走 /dopusdata 内置别名而不是
+// 数据根 = DOpus 自己的数据根 + 固定子路径。走 /dopusdata 内置别名而不是
 // %APPDATA%：普通安装两者等价，U 盘版只有别名指向 U 盘，环境变量永远指向宿主机。
 // /DopusMdViewerData 是留给用户的自定义覆盖，优先级最高。
 const wchar_t kDataSubPath[] = L"User Data\\DopusMdViewer";
-const wchar_t kOpusDataAlias[] = L"dopusdata";
+const wchar_t kDOpusDataAlias[] = L"dopusdata";
 
 // dopus.exe 的未公开导出；本机所有内置 Viewer 也用 GetProcAddress 按名字取它。
 using PFN_RESOLVEALIASPATH = BOOL(WINAPI*)(LPCWSTR, LPWSTR, UINT);
@@ -59,7 +59,7 @@ bool TryResolveDataDir(wchar_t* out, size_t cch) {
   if (ResolveAlias(kDataAliasName, out, cch)) return true;
 
   wchar_t root[MAX_PATH];
-  if (!ResolveAlias(kOpusDataAlias, root, ARRAYSIZE(root))) return false;
+  if (!ResolveAlias(kDOpusDataAlias, root, ARRAYSIZE(root))) return false;
   // 根必须真实存在：解析出来的路径不存在，多半是别名系统还没就绪，留给下次重试。
   if (!UtilDirExists(root)) return false;
 
@@ -152,7 +152,7 @@ using PFN_ISUSBINSTALL = BOOL(WINAPI*)(void);
 
 }  // namespace
 
-int UtilOpusIsUsbInstall(void) {
+int UtilDOpusIsUsbInstall(void) {
   static const auto isUsb =
       reinterpret_cast<PFN_ISUSBINSTALL>([] {
         const HMODULE host = ::GetModuleHandleW(nullptr);
@@ -265,7 +265,7 @@ void UtilSetUsbMode(bool usb) { ::InterlockedExchange(&g_usbMode, usb ? 1 : -1);
 
 namespace {
 
-// Opus 程序目录（本 DLL 在 <程序目录>\Viewers\）是否在可移动盘上。
+// DOpus 程序目录（本 DLL 在 <程序目录>\Viewers\）是否在可移动盘上。
 bool ProgramDirIsRemovable() {
   const std::wstring dir = UtilParentDir(UtilModuleDir());
   if (dir.size() < 3 || dir[1] != L':') return false;
@@ -280,11 +280,11 @@ bool UtilIsUsbMode(void) {
   if (cached != 0) return cached > 0;
 
   // 两条判据取并集：
-  //  1. SDK 的 IsUSBInstall()——Opus 自己说「从 U 盘运行」；
-  //  2. Opus 程序目录在可移动盘上——手工把插件/程序拷到 U 盘时，第 1 条不一定为真。
-  // 只看 Identify 的 VPINITF_USB 不够：那一位 Opus 未必置位，而且 Identify 可能晚于
+  //  1. SDK 的 IsUSBInstall()——DOpus 自己说「从 U 盘运行」；
+  //  2. DOpus 程序目录在可移动盘上——手工把插件/程序拷到 U 盘时，第 1 条不一定为真。
+  // 只看 Identify 的 VPINITF_USB 不够：那一位 DOpus 未必置位，而且 Identify 可能晚于
   // 第一次需要缓存路径的时刻。
-  const bool usb = (UtilOpusIsUsbInstall() == 1) || ProgramDirIsRemovable();
+  const bool usb = (UtilDOpusIsUsbInstall() == 1) || ProgramDirIsRemovable();
   ::InterlockedExchange(&g_usbMode, usb ? 1 : -1);
   return usb;
 }
@@ -698,18 +698,18 @@ std::wstring UtilModuleVersion(void) {
   return text;
 }
 
-// ---- Opus 独立查看器 ----
-// 插件在 Opus 进程里跑，宿主 exe 就是 dopus.exe；dopusrt.exe 与它同目录。
-// Viewer Plugin SDK 没有「让 Opus 打开文件」的接口，官方对外只有 dopusrt 命令行：
+// ---- DOpus 独立查看器 ----
+// 插件在 DOpus 进程里跑，宿主 exe 就是 dopus.exe；dopusrt.exe 与它同目录。
+// Viewer Plugin SDK 没有「让 DOpus 打开文件」的接口，官方对外只有 dopusrt 命令行：
 //   dopusrt.exe /show "<file>"   用独立查看器显示文件
 //   dopusrt.exe /vcmd ...        给当前查看器发命令
-// 这里只做前者：起一个 dopusrt 就返回，不等它（它转手给 Opus 就退出了）。
+// 这里只做前者：起一个 dopusrt 就返回，不等它（它转手给 DOpus 就退出了）。
 namespace {
 
 const wchar_t kViewerHostExe[] = L"dopusrt.exe";
 
-// 扩展名白名单：Opus 查看器插件实际覆盖的类型。名单外的（exe、压缩包、无扩展名）
-// 交回系统默认程序——Opus 对它们只会弹「无法显示」。顺序与 Viewers\ 下的插件对应：
+// 扩展名白名单：DOpus 查看器插件实际覆盖的类型。名单外的（exe、压缩包、无扩展名）
+// 交回系统默认程序——DOpus 对它们只会弹「无法显示」。顺序与 Viewers\ 下的插件对应：
 // opuswic/WebP/gifanim（常见图片）、dcrawrap（相机 RAW）、j2k（JPEG 2000）、
 // pcx/targa（旧图像格式）、text（文本与代码）、docs（Office）、movie（视频）、
 // wav/wma（音频）、pdf。
@@ -758,12 +758,12 @@ std::wstring ProbeViewerIn(const std::wstring& dir) {
 
 }  // namespace
 
-std::wstring UtilOpusViewerExe(void) {
+std::wstring UtilDOpusViewerExe(void) {
   // 1) 宿主 exe 同目录：插件由 dopus.exe 加载，这条几乎总是命中（含便携版）。
   std::wstring exe = ProbeViewerIn(DirOfModule(nullptr));
   if (!exe.empty()) return exe;
 
-  // 2) DLL 的上级目录：DLL 在 <Opus>\Viewers\ 下，父目录就是 Opus 根。
+  // 2) DLL 的上级目录：DLL 在 <DOpus>\Viewers\ 下，父目录就是 DOpus 根。
   const std::wstring moduleDir = UtilModuleDir();
   if (!moduleDir.empty()) {
     exe = ProbeViewerIn(UtilParentDir(moduleDir));
@@ -781,9 +781,9 @@ std::wstring UtilOpusViewerExe(void) {
   return std::wstring();
 }
 
-bool UtilOpusViewerShow(const std::wstring& path) {
+bool UtilDOpusViewerShow(const std::wstring& path) {
   if (path.empty() || !UtilFileExists(path)) return false;
-  const std::wstring exe = UtilOpusViewerExe();
+  const std::wstring exe = UtilDOpusViewerExe();
   if (exe.empty()) return false;
 
   // 两个路径都可能带空格（便携版在 Downloads 下，文档名更常见）：一律加引号。
@@ -803,7 +803,7 @@ bool UtilOpusViewerShow(const std::wstring& path) {
   return true;
 }
 
-std::wstring UtilOpusViewerDefaultExts(void) {
+std::wstring UtilDOpusViewerDefaultExts(void) {
   static const std::wstring kDefault = [] {
     std::wstring out;
     for (const wchar_t* ext : kViewerExts) {
@@ -839,7 +839,7 @@ bool ExtListContains(const std::wstring& list, const wchar_t* ext) {
 
 }  // namespace
 
-bool UtilOpusViewerHandlesExt(const wchar_t* ext, const std::wstring& list) {
+bool UtilDOpusViewerHandlesExt(const wchar_t* ext, const std::wstring& list) {
   if (!ext || ext[0] != L'.') return false;
-  return ExtListContains(list.empty() ? UtilOpusViewerDefaultExts() : list, ext);
+  return ExtListContains(list.empty() ? UtilDOpusViewerDefaultExts() : list, ext);
 }

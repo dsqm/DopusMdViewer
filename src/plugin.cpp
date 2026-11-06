@@ -1,6 +1,6 @@
 // plugin.cpp - 导出层。
 //
-// 只做转调：Opus 按名字找的入口函数。这里不解析 Markdown、不碰 WebView2。
+// 只做转调：DOpus 按名字找的入口函数。这里不解析 Markdown、不碰 WebView2。
 // 建窗口全部发生在别处，这里只转交：DVP_CreateViewer → ViewerCreate、
 // DVP_Configure → SettingsShow。
 
@@ -24,15 +24,15 @@ namespace {
 
 HINSTANCE g_hInstance = nullptr;
 
-// Opus 每次刷新插件列表都会成对调用 Init/Uninit，计数让这件事在日志里可见。
+// DOpus 每次刷新插件列表都会成对调用 Init/Uninit，计数让这件事在日志里可见。
 volatile LONG g_initCalls = 0;
 volatile LONG g_initExCalls = 0;
 volatile LONG g_uninitCalls = 0;
 volatile LONG g_createViewerCalls = 0;
 
-DWORD g_dwOpusVerMajor = 13;
-DWORD g_dwOpusVerMinor = 0;
-HWND g_hwndOpusMsgWindow = nullptr;
+DWORD g_dwDOpusVerMajor = 13;
+DWORD g_dwDOpusVerMinor = 0;
+HWND g_hwndDOpusMsgWindow = nullptr;
 wchar_t g_szLanguage[128] = L"(未提供)";
 
 wchar_t g_szHandleExts[] = L".md;.markdown";
@@ -134,23 +134,23 @@ extern "C" BOOL DVP_InitEx(LPDVPINITEXDATA pInitExData) {
     return TRUE;
   }
 
-  g_hwndOpusMsgWindow = pInitExData->hwndDOpusMsgWindow;
-  g_dwOpusVerMajor = pInitExData->dwOpusVerMajor;
-  g_dwOpusVerMinor = pInitExData->dwOpusVerMinor;
+  g_hwndDOpusMsgWindow = pInitExData->hwndDOpusMsgWindow;
+  g_dwDOpusVerMajor = pInitExData->dwOpusVerMajor;
+  g_dwDOpusVerMinor = pInitExData->dwOpusVerMinor;
 
   if (pInitExData->pszLanguageName && *pInitExData->pszLanguageName) {
     ::StringCchCopyW(g_szLanguage, ARRAYSIZE(g_szLanguage), pInitExData->pszLanguageName);
   }
 
-  LogLine(L"=== DVP_InitEx #%ld opusVer=%lu.%lu language=\"%s\" pid=%lu ===", n,
-          static_cast<unsigned long>(g_dwOpusVerMajor),
-          static_cast<unsigned long>(g_dwOpusVerMinor), g_szLanguage,
+  LogLine(L"=== DVP_InitEx #%ld dopusVer=%lu.%lu language=\"%s\" pid=%lu ===", n,
+          static_cast<unsigned long>(g_dwDOpusVerMajor),
+          static_cast<unsigned long>(g_dwDOpusVerMinor), g_szLanguage,
           static_cast<unsigned long>(::GetCurrentProcessId()));
   LogModuleStamp();
 
   // 两路判据各记一次：Identify 的 VPINITF_USB 不一定被置位，SDK 的 IsUSBInstall()
   // 才是随时可问的那条。U 盘版出问题时先看这一行。
-  LogLine(L"OPUS: isUsbInstall=%d usbMode=%d", UtilOpusIsUsbInstall(), UtilIsUsbMode() ? 1 : 0);
+  LogLine(L"DOPUS: isUsbInstall=%d usbMode=%d", UtilDOpusIsUsbInstall(), UtilIsUsbMode() ? 1 : 0);
 
   // 启动后台预热（可在设置里关掉）。失败只在日志里出现，不影响预览。
   WebHostPrewarm(ConfigPrewarm(), ConfigIdleReleaseMinutes());
@@ -167,8 +167,8 @@ extern "C" void DVP_Uninit(void) {
           ::InterlockedCompareExchange(&g_initCalls, 0, 0),
           ::InterlockedCompareExchange(&g_initExCalls, 0, 0), live);
 
-  // Opus 卸载插件后可能 FreeLibrary：宿主/搜索线程还在跑就会执行已卸载的代码。
-  // 但实测 Opus 在插件仍加载时也会频繁成对调 Init/Uninit（跨进程、甚至 init=0），
+  // DOpus 卸载插件后可能 FreeLibrary：宿主/搜索线程还在跑就会执行已卸载的代码。
+  // 但实测 DOpus 在插件仍加载时也会频繁成对调 Init/Uninit（跨进程、甚至 init=0），
   // 还有查看器活着时绝不能收——收掉等于把正在显示的预览连锅端。
   // 预热常驻时本模块自持一份引用，FreeLibrary 不会真的卸载代码，线程可以留下；
   // 否则每次"刷新插件列表"的 Uninit 都会把刚预热好的实例连锅端掉。
@@ -180,14 +180,14 @@ extern "C" void DVP_Uninit(void) {
     WebHostShutdown();
   }
 
-  g_hwndOpusMsgWindow = nullptr;
+  g_hwndDOpusMsgWindow = nullptr;
 }
 
 extern "C" BOOL DVP_IdentifyW(LPVIEWERPLUGININFOW lpVPInfo) {
   if (!lpVPInfo) return FALSE;
 
-  // cbSize / dwOpusVer* / dwInitFlags 都是 Opus 填给插件的 [in] 字段，只能读不能写：
-  // 改写 cbSize 会让 Opus 按错的结构长度读回，改写 dwInitFlags 等于把 VPINITF_USB 抹掉。
+  // cbSize / dwDOpusVer* / dwInitFlags 都是 DOpus 填给插件的 [in] 字段，只能读不能写：
+  // 改写 cbSize 会让 DOpus 按错的结构长度读回，改写 dwInitFlags 等于把 VPINITF_USB 抹掉。
   const UINT cbIn = lpVPInfo->cbSize;
   const bool hasV4 = cbIn >= VIEWERPLUGININFOW_V4_SIZE;
   if (hasV4) UtilSetUsbMode((lpVPInfo->dwInitFlags & VPINITF_USB) != 0);
@@ -269,7 +269,7 @@ extern "C" HWND DVP_CreateViewer(HWND hWndParent, LPRECT lpRc, DWORD dwFlags) {
   return hwnd;
 }
 
-// U 盘导出时 Opus 会调这里：返回 TRUE 即声明「不在系统里留任何东西」，同时把
+// U 盘导出时 DOpus 会调这里：返回 TRUE 即声明「不在系统里留任何东西」，同时把
 // 需要跟着插件走的文件（DLL 同级的资源目录）报给它。不导出这个函数就等于没申报，
 // 导出到 U 盘时插件可能根本不会被带上。
 extern "C" BOOL DVP_USBSafe(LPOPUSUSBSAFEDATA pUSBSafeData) {

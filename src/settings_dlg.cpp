@@ -552,7 +552,7 @@ INT_PTR CALLBACK ViewerExtsDlgProc(HWND dlg, UINT uMsg, WPARAM wParam, LPARAM lP
       switch (LOWORD(wParam)) {
         case IDC_EXTS_DEFAULT:
           if (HIWORD(wParam) == BN_CLICKED) {
-            ::SetDlgItemTextW(dlg, IDC_EXTS_TEXT, UtilOpusViewerDefaultExts().c_str());
+            ::SetDlgItemTextW(dlg, IDC_EXTS_TEXT, UtilDOpusViewerDefaultExts().c_str());
             return TRUE;
           }
           return FALSE;
@@ -591,7 +591,7 @@ INT_PTR CALLBACK ViewerExtsDlgProc(HWND dlg, UINT uMsg, WPARAM wParam, LPARAM lP
 bool EditViewerExts(HWND owner, std::wstring* exts, HFONT font) {
   if (!exts) return false;
   ViewerExtsDialogData data;
-  data.text = exts->empty() ? UtilOpusViewerDefaultExts() : *exts;
+  data.text = exts->empty() ? UtilDOpusViewerDefaultExts() : *exts;
   data.font = font;
   const INT_PTR result = ::DialogBoxParamW(ModuleHandle(), MAKEINTRESOURCEW(IDD_VIEWER_EXTS),
                                            owner, ViewerExtsDlgProc,
@@ -606,7 +606,7 @@ bool EditViewerExts(HWND owner, std::wstring* exts, HFONT font) {
   if (result != 1) return false;
   const std::wstring text = UtilTrim(data.text);
   // 与内置名单一致就存空串：以后内置名单更新，没改过的用户自动跟着变。
-  *exts = (text == UtilOpusViewerDefaultExts()) ? std::wstring() : text;
+  *exts = (text == UtilDOpusViewerDefaultExts()) ? std::wstring() : text;
   return true;
 }
 
@@ -1623,7 +1623,7 @@ void ReadUiIntoStaged(DialogState* st) {
   st->staged.enableLog = ::IsDlgButtonChecked(st->hwnd, kIdEnableLog) == BST_CHECKED;
   if (st->hLinkMode) {
     const int linkSel = static_cast<int>(::SendMessageW(st->hLinkMode, CB_GETCURSEL, 0, 0));
-    st->staged.openLinksInOpusViewer = (linkSel != 1);  // 0 = Opus 查看器，1 = 系统默认程序
+    st->staged.openLinksInOpusViewer = (linkSel != 1);  // 0 = DOpus 查看器，1 = 系统默认程序
   }
   if (st->hLinkWait) {
     const int waitSel = static_cast<int>(::SendMessageW(st->hLinkWait, CB_GETCURSEL, 0, 0));
@@ -2280,7 +2280,7 @@ void BuildUi(DialogState* st) {
                                comboX, y, 150, 200, kIdLinkOpenMode);
     if (st->hLinkMode) {
       ::SendMessageW(st->hLinkMode, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(loc::T(loc::Str::LinkOpenOpus)));
+                     reinterpret_cast<LPARAM>(loc::T(loc::Str::LinkOpenDOpus)));
       ::SendMessageW(st->hLinkMode, CB_ADDSTRING, 0,
                      reinterpret_cast<LPARAM>(loc::T(loc::Str::LinkOpenSystem)));
     }
@@ -2846,9 +2846,9 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     case WM_NCDESTROY:
       // 子窗口全销毁完了才还刷子；WM_DESTROY 时它们还可能收到 CTLCOLOR 消息。
       DropThemeBrush();
-      // Opus 的 DVP_Configure 宿主靠这个 WM_QUIT 结束配置流程；
+      // DOpus 的 DVP_Configure 宿主靠这个 WM_QUIT 结束配置流程；
       // SDK 的 RAR / CSV 示例都在 WM_NCDESTROY 里发。
-      LogLine(L"SETTINGS: 窗口已销毁，向 Opus 配置循环发 WM_QUIT");
+      LogLine(L"SETTINGS: 窗口已销毁，向 DOpus 配置循环发 WM_QUIT");
       ::PostQuitMessage(0);
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
 

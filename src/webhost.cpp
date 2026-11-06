@@ -1,12 +1,12 @@
 // webhost.cpp - 把 WebView2 全部放到插件自己的一个线程上。
 //
 // 五条硬事实，都是踩出来的：
-//  1. **WebView2 的对象是线程绑定的**。Opus 的预览窗格与独立查看器窗口跑在不同
+//  1. **WebView2 的对象是线程绑定的**。DOpus 的预览窗格与独立查看器窗口跑在不同
 //     的 UI 线程上（日志里 18112 与 15248），共用全局 controller 会让第二个线程
 //     的 postMessage 直接失败（0x802A000C）。因此这里自建一个线程，Environment
 //     与 Controller 只活在那条线程上，其余线程通过消息借用。
 //  2. controller 的父窗口一旦销毁就永久失效，所以它只认插件自持的宿主窗口，
-//     Opus 的查看器窗口通过 SetParent 借用。归还必须在 WM_DESTROY 做：
+//     DOpus 的查看器窗口通过 SetParent 借用。归还必须在 WM_DESTROY 做：
 //     DestroyWindow 会连子窗口一起销毁，等到 WM_NCDESTROY 宿主已经没了。
 //  3. 宿主线程与进程同寿命：关掉窗口再打开只是 SetParent 加一次推送，不必再付
 //     浏览器进程冷启动的两三秒。预热开着时自持一份 DLL 引用，Uninit 不再收掉
@@ -87,13 +87,13 @@ const UINT kCmdDevTools = kCmdBase + 12;  // 只给 hosttest：发一条 DevTool
 const UINT kCmdClearUserData = kCmdBase + 13;  // lParam = const std::wstring*
 const UINT kCmdCleanupDone = kCmdBase + 14;  // 缓存清理线程完成（无参数）
 
-// 预热：InitEx 后等一会儿再开始，避开 Opus 自己的启动高峰。
+// 预热：InitEx 后等一会儿再开始，避开 DOpus 自己的启动高峰。
 const UINT_PTR kTimerPrewarm = 1;
 const UINT_PTR kTimerWatch = 2;
 const UINT_PTR kTimerIdle = 3;
 const UINT kPrewarmDelayMs = 3000;
 const UINT kWatchIntervalMs = 2000;
-const int kWatchEmptyLimit = 2;  // 连续两次看不见 DO 窗口才释放（约 4 秒）
+const int kWatchEmptyLimit = 2;  // 连续两次看不见 DOpus 窗口才释放（约 4 秒）
 const int kMaxRoots = 8;
 // 自愈预算：一分钟内连续崩这么多次就停手，免得卡在崩—恢复—再崩的循环里。
 const int kRecoverBudget = 3;
@@ -115,7 +115,7 @@ struct Host {
   bool prewarmEnabled = false;
   bool prewarmTimerArmed = false;  // 预热定时器已在等：重复 InitEx 不许把它往后推
   bool everSawViewer = false;  // 预热后是否真的被查看器借过
-  bool sawDopusWindow = false;
+  bool sawDOpusWindow = false;
   bool suspended = false;
   int idleReleaseMinutes = 3;
   int watchEmpty = 0;
@@ -150,14 +150,14 @@ int g_historyCount = 0;
 // 跨线程读取的标志与句柄。
 volatile LONG g_readyFlag = 0;
 
-// 预热常驻时自持的 DLL 引用。Opus 会在插件仍加载时频繁成对调 Init/Uninit，
+// 预热常驻时自持的 DLL 引用。DOpus 会在插件仍加载时频繁成对调 Init/Uninit，
 // 而 DLL 一旦卸载，宿主线程/搜索线程就会执行已卸载的代码。自持一份引用让
 // FreeLibrary 只减一次计数，卸载推迟到进程结束；这份引用不配对释放，关掉预热
 // 后也留着，避免在收尾与重建之间出现竞态。
 HMODULE g_pin = nullptr;
 volatile LONG g_hasThread = 0;
 // 宿主线程/搜索线程/缓存清理线程的句柄与失败标志：Uninit 收尾要等三条线程都
-// 真正退出后 Opus 才能 FreeLibrary，否则线程还在执行已卸载的代码。
+// 真正退出后 DOpus 才能 FreeLibrary，否则线程还在执行已卸载的代码。
 HANDLE g_hHostThread = nullptr;
 HANDLE g_hSearchThread = nullptr;
 HANDLE g_hCleanThread = nullptr;
@@ -256,7 +256,7 @@ void StartCacheCleanAsync() {
 
 // 用户自放的 Fixed Version 运行时：…\DopusMdViewer\Runtime\msedgewebview2.exe。
 // 只认这一层，不递归扫描——多层扫描要回答「两份该用哪份」，没有确定答案。
-// 结果按进程缓存：换运行时本来就要重启 Opus，没必要每次建实例都去摸盘。
+// 结果按进程缓存：换运行时本来就要重启 DOpus，没必要每次建实例都去摸盘。
 const std::wstring& UserRuntimeDir() {
   static const std::wstring dir = [] {
     const std::wstring dataDir = UtilDataDir();
@@ -575,7 +575,7 @@ void QuitSearchThread() {
   g_searchCv.notify_all();
 }
 
-// 预热关闭时，从最后一次预览结束起算空闲释放；预热开着就保持到 DO 窗口关闭。
+// 预热关闭时，从最后一次预览结束起算空闲释放；预热开着就保持到 DOpus 窗口关闭。
 void ArmIdleTimer() {
   if (!g_host.host) return;
   ::KillTimer(g_host.host, kTimerIdle);
@@ -629,9 +629,9 @@ BOOL CALLBACK ScanWindowProc(HWND hwnd, LPARAM param) {
 
   wchar_t cls[128] = L"";
   ::GetClassNameW(hwnd, cls, ARRAYSIZE(cls));
-  // 插件自己的窗口不算 DO 窗口：宿主、查看器、设置窗口都以 DopusMdViewer 开头。
+  // 插件自己的窗口不算 DOpus 窗口：宿主、查看器、设置窗口都以 DopusMdViewer 开头。
   if (wcsncmp(cls, L"DopusMdViewer", 13) == 0) return TRUE;
-  // 无标题的多半是 Opus 的辅助窗口，不作为“窗口还开着”的依据。
+  // 无标题的多半是 DOpus 的辅助窗口，不作为“窗口还开着”的依据。
   if (::GetWindowTextLengthW(hwnd) == 0) return TRUE;
 
   ++scan->count;
@@ -695,7 +695,7 @@ void ReleaseInstance() {
   g_host.userDataDir.clear();
   g_host.watchEmpty = 0;
   g_host.everSawViewer = false;
-  g_host.sawDopusWindow = false;
+  g_host.sawDOpusWindow = false;
   g_rootsCount = 0;
   LogLine(L"WEBHOST: 实例已释放（Environment 也回收，下次借用重建）");
 }
@@ -1147,7 +1147,7 @@ bool BorrowHost(HWND viewer, const RECT* rc) {
   g_host.borrower = viewer;
   g_host.borrowed = true;
   g_host.everSawViewer = true;
-  g_host.sawDopusWindow = true;
+  g_host.sawDOpusWindow = true;
   NoteRoot(::GetAncestor(viewer, GA_ROOT));
   ::KillTimer(g_host.host, kTimerIdle);
 
@@ -1219,7 +1219,7 @@ void SchedulePrewarm(UINT delayMs) {
   g_host.prewarmTimerArmed = true;
 }
 
-// 每 2 秒看一次：本进程还有没有 DO 的可见顶层窗口。连续两次都没有才释放。
+// 每 2 秒看一次：本进程还有没有 DOpus 的可见顶层窗口。连续两次都没有才释放。
 void WatchTick() {
   if (!g_host.host) return;
   if (g_host.borrower || (!g_host.controller && !g_host.env)) {
@@ -1230,18 +1230,18 @@ void WatchTick() {
   PruneRoots();
   WindowScan scan = {::GetCurrentProcessId(), 0, std::wstring()};
   ::EnumWindows(ScanWindowProc, reinterpret_cast<LPARAM>(&scan));
-  if (scan.count > 0) g_host.sawDopusWindow = true;
+  if (scan.count > 0) g_host.sawDOpusWindow = true;
 
   const bool noWindows = scan.count == 0;
   const bool gone = noWindows && (g_host.everSawViewer ? g_rootsCount == 0
-                                                       : g_host.sawDopusWindow);
+                                                       : g_host.sawDOpusWindow);
   if (!gone) {
     g_host.watchEmpty = 0;
     return;
   }
   if (++g_host.watchEmpty < kWatchEmptyLimit) return;
 
-  LogLine(L"WEBHOST: DO 窗口已关闭（活跃根 %d 个，可见顶层 %d 个 %s），释放 WebView2",
+  LogLine(L"WEBHOST: DOpus 窗口已关闭（活跃根 %d 个，可见顶层 %d 个 %s），释放 WebView2",
           g_rootsCount, scan.count, scan.detail.c_str());
   ReleaseInstance();
 }
@@ -1270,7 +1270,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
           EnsureEnvironment();  // env 在但 controller 没建成时补一次
           LogLine(L"WEBHOST: 预热开启，已有实例保持活跃");
         } else {
-          // Opus 刷新插件列表会反复送同一条命令；已在等的定时器不许被一直往后推。
+          // DOpus 刷新插件列表会反复送同一条命令；已在等的定时器不许被一直往后推。
           SchedulePrewarm(kPrewarmDelayMs);
         }
       } else {
@@ -1432,7 +1432,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       if (!full && !g_host.webview && !g_host.borrower) return 0;
       if (!RecoveryAllowed()) {
         LogLine(L"WEBHOST: 恢复次数超预算，停止自愈");
-        Fail(L"预览引擎反复崩溃，已停止自动恢复（重启 Opus 后再试）");
+        Fail(L"预览引擎反复崩溃，已停止自动恢复（重启 DOpus 后再试）");
         return 0;
       }
       g_host.recoverAcceptedAt = now;
@@ -1505,7 +1505,7 @@ DWORD WINAPI HostThreadProc(LPVOID param) {
   g_searchQuit = false;
   ::InterlockedExchange(&g_searchStarted, 0);
 
-  // Opus 的 UI 线程多半已是 STA；这里在自己的线程上重新初始化一次。
+  // DOpus 的 UI 线程多半已是 STA；这里在自己的线程上重新初始化一次。
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
   const HMODULE self = ThisModule();
@@ -1618,7 +1618,7 @@ void WebHostPrewarm(bool enabled, int idleReleaseMinutes) {
   if (idleReleaseMinutes > 1440) idleReleaseMinutes = 1440;
 
   // 预热常驻时插件不能在这些线程还活着的时候被 FreeLibrary。自持一份引用，
-  // 让 Opus 的 FreeLibrary 只是减一次计数；引用与进程同寿命，不配对释放。
+  // 让 DOpus 的 FreeLibrary 只是减一次计数；引用与进程同寿命，不配对释放。
   if (enabled && !g_pin) {
     HMODULE self = nullptr;
     if (::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
@@ -1750,7 +1750,7 @@ bool WebHostHostExists(void) {
 }
 
 // 插件 Uninit 时收尾：销毁宿主窗口（线程随之退出）并等待宿主/搜索线程落地。
-// Opus 之后可能 FreeLibrary——线程还活着就会执行已卸载的代码，必须等干净。
+// DOpus 之后可能 FreeLibrary——线程还活着就会执行已卸载的代码，必须等干净。
 // 等不到就不放行：标志与句柄全部留着，下次 Uninit 再等（放行才是真崩）。
 void WebHostShutdown(void) {
   if (::InterlockedCompareExchange(&g_hasThread, 0, 0) == 0) return;

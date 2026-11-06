@@ -82,7 +82,7 @@ enum class Str : int {
   // 高级
   Version,
   LinkOpenMode,
-  LinkOpenOpus,
+  LinkOpenDOpus,
   LinkOpenSystem,
   LinkConfirmWait,
   LinkWaitOn,

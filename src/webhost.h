@@ -1,6 +1,6 @@
 // webhost.h - 插件自持的 WebView2 宿主。
 //
-// WebView2 的对象是**线程绑定**的，而 Opus 的预览窗格与独立查看器窗口跑在不同的
+// WebView2 的对象是**线程绑定**的，而 DOpus 的预览窗格与独立查看器窗口跑在不同的
 // UI 线程上。所以这里把 Environment/Controller 全部放到插件自己的一个线程上，
 // 其余线程只通过消息借用：一个进程里只有一份实例、一个渲染进程，切换文件与
 // 关窗再开都不需要重建。
@@ -97,6 +97,6 @@ std::wstring WebHostRuntimeInfo(void);
 bool WebHostHostExists(void);
 
 // 插件 Uninit 时收尾：停掉宿主线程与搜索线程并等待退出（进程内不能留下
-// 指向本 DLL 的线程，Opus 随时可能 FreeLibrary）。预热常驻且已自持引用时
+// 指向本 DLL 的线程，DOpus 随时可能 FreeLibrary）。预热常驻且已自持引用时
 // Uninit 不调用本函数，线程随进程结束。
 void WebHostShutdown(void);

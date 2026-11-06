@@ -1,5 +1,5 @@
-// config.h - 插件自己的 config.json（不走 Opus 的配置存储）。
-// U 盘模式下配置与缓存走独立目录，DVP_USBSafe 仍按 Opus 的接口导出。
+// config.h - 插件自己的 config.json（不走 DOpus 的配置存储）。
+// U 盘模式下配置与缓存走独立目录，DVP_USBSafe 仍按 DOpus 的接口导出。
 //
 // 只有 config.cpp 允许 include nlohmann/json；其余模块只看到这个纯 std 结构。
 
@@ -71,16 +71,18 @@ struct Config {
   // U 盘版专用的缓存父目录，与普通模式分开存：同一台机器上插拔 U 盘时两套设置
   // 互不覆盖。空 = 自动选路（%TEMP% → 数据目录 → 本机）。
   std::wstring webviewBaseDirUsb;
-  // 页面里的本地文件链接交给 Opus 独立查看器（dopusrt /show）打开，而不是系统
-  // 默认程序。默认开；目录链接不受影响（仍走系统），Opus 查看器不支持的类型也回退。
+  // 页面里的本地文件链接交给 DOpus 独立查看器（dopusrt /show）打开，而不是系统
+  // 默认程序。默认开；目录链接不受影响（仍走系统），DOpus 查看器不支持的类型也回退。
+  // 键名沿用旧拼写（JSON 里是 "openLinksInOpusViewer"）：改键会让已有配置的该项
+  // 失效、静默回退默认值。
   bool openLinksInOpusViewer;
-  // 交给 Opus 查看器的额外扩展名：分号/逗号/空格分隔，可带点可不带；
+  // 交给 DOpus 查看器的额外扩展名：分号/逗号/空格分隔，可带点可不带；
   // `-` 前缀表示排除（能把内置名单里的项摘掉）。空 = 只用内置名单。
   std::wstring viewerExts;
   // 外部链接确认弹窗里的「打开」是否要等 3 秒才能点。默认开；关掉只是省掉等待，
   // 弹窗照旧出现——确认这一步不给关闭选项。
   bool linkConfirmWait;
-  // 启动后在后台预热 WebView2（Opus 窗口关闭时释放）。默认关闭。
+  // 启动后在后台预热 WebView2（DOpus 窗口关闭时释放）。默认关闭。
   bool prewarm;
   // 预热关闭时，最后一次预览结束后空闲多少分钟释放 WebView2；0 = 不释放。
   int idleReleaseMinutes;

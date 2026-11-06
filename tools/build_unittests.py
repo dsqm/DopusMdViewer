@@ -50,7 +50,7 @@ UNITTEST = os.path.join(ROOT, 'tools', 'unittest')
 OUT = os.path.join(UNITTEST, 'unittest.exe')
 OBJDIR = os.path.join(ROOT, 'build', 'obj-unittest')
 
-# 被测模块：只挑不碰 Opus SDK / WebView2 的纯逻辑单元。
+# 被测模块：只挑不碰 DOpus SDK / WebView2 的纯逻辑单元。
 SRC_UNITS = [
     'ced_wrap', 'config', 'doc_index', 'doc_regex', 'doc_regex8', 'doc_regex16',
     'doc_search', 'encoding_detect', 'localize', 'log', 'msg', 'util',

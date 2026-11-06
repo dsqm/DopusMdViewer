@@ -422,7 +422,7 @@ constexpr UINT kImgMenuBase = 0x6F00;
 
 enum ImageMenuItem : UINT {
   kImgZoom = 0,       // 放大查看：zoom| 发回页面开遮罩
-  kImgOpenInOpus,     // 在 Opus 查看器中打开：dopusrt /show（只有本地图才有）
+  kImgOpenInDOpus,     // 在 DOpus 查看器中打开：dopusrt /show（只有本地图才有）
   kImgOpenWithOther,  // 选择其他应用…：系统的 OpenWith 对话框（可勾「始终」）
   kImgHandlerFirst,   // 子菜单里系统枚举出的处理器从这里起号
 };
@@ -469,7 +469,7 @@ void ApplyCodeBlockMenu(UINT cmd) {
 }
 
 // 「打开方式」短列表的白名单：OpenWithProgids（HKCR 安装注册 + HKCU 用户历史）
-// 里登记的 ProgID 解析出的友好应用名。资源管理器/Opus 的打开方式子菜单就是这个
+// 里登记的 ProgID 解析出的友好应用名。资源管理器/DOpus 的打开方式子菜单就是这个
 // 数据源；无过滤枚举比它多出一片「未知类型兜底」噪音（给任何文件都能塞的那批
 // 记事本/VMware/媒体播放器），必须按这个名字集挡掉。解析不出友好名的 ProgID
 // （如空壳 pngfile）跳过。
@@ -535,10 +535,10 @@ std::wstring DefaultProgramExeLeaf(const std::wstring& ext) {
 // 图标兜底。位图做成 32bpp 预乘 alpha——原生菜单的 MIIM_BITMAP 会按 alpha 叠在
 // 菜单背景上（探针证实），不能直接搬 shell「打开方式」菜单里的位图：那是强调色
 // 实心底的贴图，在菜单里就是一块蓝方块。
-// Opus 自己的菜单图标取自它的图标集（context_menu_icon_set，默认 Windows 11
+// DOpus 自己的菜单图标取自它的图标集（context_menu_icon_set，默认 Windows 11
 // Default Icons 的 small 档），该档按 DPI 分块换位图：100%=22、126–175%=32、
 // 200%=48、300%=64（.dis 里 <dpi><scale> 的表）。自绘菜单按同一组分块取尺寸，
-// 与 Opus 菜单的观感一致；16 DIP 线性放大在 175% 只有 28px，比 Opus 小一档。
+// 与 DOpus 菜单的观感一致；16 DIP 线性放大在 175% 只有 28px，比 DOpus 小一档。
 
 struct MenuIcons {
   IWICImagingFactory* wic = nullptr;
@@ -620,8 +620,8 @@ HBITMAP BitmapFromHicon(MenuIcons* icons, HICON icon) {
 
 // UWP 的引用解析出来是磁盘上的 PNG（AppList 图）。这张图自带一圈透明留白：
 // 66px 画布里图形实际只有 42–48px，整张画布缩到 edge 后图形只剩六成多，菜单里
-// 就比 Opus 显示的同款图标小一圈。先按 alpha 量出图形范围、裁掉留白，再把图形
-// 等比缩进 edge×edge 并居中放回透明画布——视觉尺寸才和 Opus 菜单一致。
+// 就比 DOpus 显示的同款图标小一圈。先按 alpha 量出图形范围、裁掉留白，再把图形
+// 等比缩进 edge×edge 并居中放回透明画布——视觉尺寸才和 DOpus 菜单一致。
 HBITMAP BitmapFromImageFile(MenuIcons* icons, const std::wstring& file, UINT edge) {
   if (!icons->wic) return nullptr;
   IWICBitmapDecoder* dec = nullptr;
@@ -856,7 +856,7 @@ void CollectOpenWithHandlers(const std::wstring& ext, HMENU ow,
 //
 // 为什么不能只用 3：个别机器上 handler->Invoke 返回 S_OK 却只弹出系统的「你要用
 // 什么方式打开这个文件」选择框（实测照片与 XnView 都这样，同一时刻资源管理器
-// 和 Opus 自己的打开方式都能直接启动程序），1/2 是绕过这条判断的直连路径。
+// 和 DOpus 自己的打开方式都能直接启动程序），1/2 是绕过这条判断的直连路径。
 // 3 的数据对象必须取 shell 为这个文件建的那份（IShellItem 的 BHID_DataObject）：
 // SHCreateDataObject 拿完整 pidl 当「桌面的子项」传进去只会得到空对象（CF_HDROP /
 // ShellIDList / ShellItemArray 全不支持）——经典程序 Invoke 返回 0x80070483、
@@ -1006,17 +1006,17 @@ void InvokeOpenWithHandler(IAssocHandler* handler, const std::wstring& path, HWN
   if (pdo) pdo->Release();
 }
 
-// 独立查看器不会把插件条目并进 Opus 自己的菜单（预览窗格会），这里自绘一个。
+// 独立查看器不会把插件条目并进 DOpus 自己的菜单（预览窗格会），这里自绘一个。
 constexpr UINT kCtxCopy = 0x6D80;
 constexpr UINT kCtxSelectAll = 0x6D81;
 constexpr UINT kCtxPrint = 0x6D82;
 constexpr UINT kCtxReload = 0x6D83;
 
 // 右键菜单：预览窗格与独立查看器用同一份自绘菜单。
-// 自绘的命令号由 TrackPopupMenu 直接带回，不会像 Opus 自己的菜单那样丢掉
-// （那条路要靠 Opus 把命令转回来，而焦点在 WebView2 子窗口时它认为查看器没焦点）。
+// 自绘的命令号由 TrackPopupMenu 直接带回，不会像 DOpus 自己的菜单那样丢掉
+// （那条路要靠 DOpus 把命令转回来，而焦点在 WebView2 子窗口时它认为查看器没焦点）。
 void ShowOwnContextMenu(ViewerState* st) {
-  // 枚举器与 OpenWith 对话框要求线程进 COM STA：查看器窗口建在 Opus 的 UI 线程上，
+  // 枚举器与 OpenWith 对话框要求线程进 COM STA：查看器窗口建在 DOpus 的 UI 线程上，
   // 那里通常已初始化，重复调用返回 S_FALSE（照样要成对 CoUninitialize）。
   struct ComGuard {
     const HRESULT hr;
@@ -1054,10 +1054,10 @@ void ShowOwnContextMenu(ViewerState* st) {
   } imgRelease{&imgHandlers};
   if (imgRemote || imgLocal) {
     ::AppendMenuW(menu, MF_STRING, kImgMenuBase + kImgZoom, L"放大查看");
-    // Opus 自己的查看器：只对本地图给（远程图没有磁盘路径）。dopusrt 找不到
+    // DOpus 自己的查看器：只对本地图给（远程图没有磁盘路径）。dopusrt 找不到
     // 就不出这一项，免得点了没反应。
-    if (imgLocal && !UtilOpusViewerExe().empty()) {
-      ::AppendMenuW(menu, MF_STRING, kImgMenuBase + kImgOpenInOpus, L"在 Opus 查看器中打开");
+    if (imgLocal && !UtilDOpusViewerExe().empty()) {
+      ::AppendMenuW(menu, MF_STRING, kImgMenuBase + kImgOpenInDOpus, L"在 DOpus 查看器中打开");
     }
     if (imgLocal) {
       // 枚举器只认扩展名：从磁盘路径取「.png」这种（目录名带点不受影响，取的是
@@ -1133,10 +1133,10 @@ void ShowOwnContextMenu(ViewerState* st) {
     if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"zoom|");
     return;
   }
-  if (cmd == kImgMenuBase + kImgOpenInOpus) {
-    if (!UtilOpusViewerShow(imgPath)) {
-      LogLine(L"VIEWER: Opus 查看器打不开图片 %s", imgPath.c_str());
-      SetStatus(st, L"打不开：Opus 查看器不可用");
+  if (cmd == kImgMenuBase + kImgOpenInDOpus) {
+    if (!UtilDOpusViewerShow(imgPath)) {
+      LogLine(L"VIEWER: DOpus 查看器打不开图片 %s", imgPath.c_str());
+      SetStatus(st, L"打不开：DOpus 查看器不可用");
     }
     return;
   }
@@ -1253,7 +1253,7 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   }
 
   if (type == L"ctxmenu") {
-    // 两边都自绘菜单：命令号直接回来，不会像 Opus 自己的菜单那样丢掉。
+    // 两边都自绘菜单：命令号直接回来，不会像 DOpus 自己的菜单那样丢掉。
     // 全局菜单不带图片动作区：只有 imgctx 帧才允许。
     st->imgCtxUrl.clear();
     st->imgCtxKind.clear();
@@ -1308,20 +1308,20 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
         return;
       }
       LogLine(L"VIEWER: 打开相对链接 %s", target.c_str());
-      // 本地文件优先交给 Opus 独立查看器（dopusrt /show）：图片、md、文本都能在
-      // Opus 里看，和双击资源管理器里同一类文件的行为一致。目录不算——查看器只显示
-      // 文件，目录仍走系统（Opus 替换资源管理器时就是 Opus 文件窗口）。
+      // 本地文件优先交给 DOpus 独立查看器（dopusrt /show）：图片、md、文本都能在
+      // DOpus 里看，和双击资源管理器里同一类文件的行为一致。目录不算——查看器只显示
+      // 文件，目录仍走系统（DOpus 替换资源管理器时就是 DOpus 文件窗口）。
       if (UtilFileExists(target)) {
         const Config cfg = ConfigSnapshot();
         const wchar_t* ext = ::PathFindExtensionW(target.c_str());
-        const std::wstring viewerExe = UtilOpusViewerExe();
-        const bool wantOpus = cfg.openLinksInOpusViewer;
-        const bool handled = UtilOpusViewerHandlesExt(ext, cfg.viewerExts);
-        const bool shown = wantOpus && handled && UtilOpusViewerShow(target);
+        const std::wstring viewerExe = UtilDOpusViewerExe();
+        const bool wantDOpus = cfg.openLinksInOpusViewer;
+        const bool handled = UtilDOpusViewerHandlesExt(ext, cfg.viewerExts);
+        const bool shown = wantDOpus && handled && UtilDOpusViewerShow(target);
         LogLine(L"VIEWER: 链接 %s ext=\"%s\" cfg=%d handled=%d exe=\"%s\" show=%d", target.c_str(),
-                ext, wantOpus ? 1 : 0, handled ? 1 : 0, viewerExe.c_str(), shown ? 1 : 0);
+                ext, wantDOpus ? 1 : 0, handled ? 1 : 0, viewerExe.c_str(), shown ? 1 : 0);
         if (shown) {
-          LogLine(L"VIEWER: 相对链接交给 Opus 查看器 %s", target.c_str());
+          LogLine(L"VIEWER: 相对链接交给 DOpus 查看器 %s", target.c_str());
           return;
         }
       }
@@ -1391,8 +1391,8 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
     ::StringCchCopyW(st->szFile, ARRAYSIZE(st->szFile), pszPath);
   }
   pszPath = st->szFile;
-  // 入口就写一行：Opus 什么时候让我们换文件，是排查「窗格不刷新」的唯一凭据
-  // （外部程序用 Go 定位文件时，Opus 可能一条消息都不发，日志里必须能看出「没收到」）。
+  // 入口就写一行：DOpus 什么时候让我们换文件，是排查「窗格不刷新」的唯一凭据
+  // （外部程序用 Go 定位文件时，DOpus 可能一条消息都不发，日志里必须能看出「没收到」）。
   LogLine(L"VIEWER: LOADW \"%s\" host=%d", pszPath, st->hasHost ? 1 : 0);
 
   WIN32_FILE_ATTRIBUTE_DATA fad;
@@ -1615,11 +1615,11 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     }
 
     case DVPLUGINMSG_LOADW:
-      // 这个返回值是「加载成功/失败」。返回 FALSE 会让 Opus 立刻 CLEAR 并销毁窗口。
+      // 这个返回值是「加载成功/失败」。返回 FALSE 会让 DOpus 立刻 CLEAR 并销毁窗口。
       HandleLoad(st, reinterpret_cast<const wchar_t*>(lParam));
       return TRUE;
 
-    // 只在我们申报了 DVPFIF_CanHandleStreams 时才会来。没申报却收到，说明 Opus
+    // 只在我们申报了 DVPFIF_CanHandleStreams 时才会来。没申报却收到，说明 DOpus
     // 走了另一条加载路径；记下来，别让它静默变成「窗格空白」。
     case DVPLUGINMSG_LOADSTREAMW:
       LogLine(L"VIEWER: 收到 LOADSTREAMW（未实现），按失败返回");
@@ -1634,16 +1634,16 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       return 0;
 
     case DVPLUGINMSG_TESTSELECTION:
-      // Opus 用它决定「复制」是否置灰：不实现就一直返回 0，菜单项永远是灰的。
+      // DOpus 用它决定「复制」是否置灰：不实现就一直返回 0，菜单项永远是灰的。
       return st->hasSelection ? TRUE : FALSE;
 
     case DVPLUGINMSG_SELECTALL:
-      // Opus 菜单里的「全选」只做选中；随后的「复制」走下一分支
+      // DOpus 菜单里的「全选」只做选中；随后的「复制」走下一分支
       if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"selectall|");
       return 0;
 
     case DVPLUGINMSG_COPYSELECTION:
-      // Opus 菜单/命令里的「复制」：有选区就复制选区文本，没有就把全文渲染文本放进剪贴板。
+      // DOpus 菜单/命令里的「复制」：有选区就复制选区文本，没有就把全文渲染文本放进剪贴板。
       if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"copy|");
       return 0;
 
@@ -1661,7 +1661,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     }
 
     case DVPLUGINMSG_GETCAPABILITIES:
-      // COPYSELECTION 必须报：不报 Opus 会认为本查看器不能复制，「复制」菜单项恒灰。
+      // COPYSELECTION 必须报：不报 DOpus 会认为本查看器不能复制，「复制」菜单项恒灰。
       // 不报 ADDCONTEXTMENU：右键菜单由插件自绘，命令号才回得来。
       return VPCAPABILITY_WANTFOCUS | VPCAPABILITY_SELECTALL | VPCAPABILITY_COPYSELECTION |
              VPCAPABILITY_PRINT;
@@ -1707,7 +1707,7 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
       st->pClaimed = nullptr;
       st->hwndSelf = hwnd;
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(st));
-      // 与下面的 WM_NCDESTROY 配对：创建失败时 Opus 会紧接着销毁窗口，
+      // 与下面的 WM_NCDESTROY 配对：创建失败时 DOpus 会紧接着销毁窗口，
       // 计数绝不能只在成功路径上加，否则失败一次就欠一个。
       ::InterlockedIncrement(&g_liveViewers);
     }

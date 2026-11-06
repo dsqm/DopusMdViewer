@@ -1,7 +1,7 @@
-// hosttest.cpp - 把查看器与 WebView2 这条链路搬到 Opus 外面跑。
+// hosttest.cpp - 把查看器与 WebView2 这条链路搬到 DOpus 外面跑。
 //
 // 它不复制任何渲染逻辑：直接调用 src\viewer_window.cpp 的 ViewerCreate 与
-// DVPLUGINMSG_LOADW，所以跑通就等于「Opus 里那条路」跑通，只是省掉每次重启 Opus。
+// DVPLUGINMSG_LOADW，所以跑通就等于「DOpus 里那条路」跑通，只是省掉每次重启 DOpus。
 // 用来验证：宿主窗口、controller、mdprev.localhost 映射、CSP 生效、皮肤/字体/正文推送。
 //
 // 用法：hosttest.exe "C:\path\to\sample.md"
@@ -67,7 +67,7 @@ const UINT kDumpAfterMs = 8000;
 const UINT kQuitAfterMs = 40000;
 const UINT kShotAfterDefaultMs = 5000;
 const UINT kPrewarmAfterMs = 7000;      // 预热 3 秒开始、页面约 2.6 秒就绪，7 秒时借用
-const UINT kReleaseCloseAfterMs = 5000; // 销毁主窗口，模拟 DO 窗口关闭
+const UINT kReleaseCloseAfterMs = 5000; // 销毁主窗口，模拟 DOpus 窗口关闭
 const UINT kReleaseReopenAfterMs = 10000; // 释放后重新开窗口，验 Environment 重建
 const UINT kReleaseQuitAfterMs = 19000;
 const UINT kDropQuitAfterMs = 80000;
@@ -91,7 +91,7 @@ bool g_findWord = false;    // 配合 find：先打开整词匹配
 bool g_findRegex = false;   // findre：先打开正则匹配
 bool g_findRace = false;    // 5 秒后连打两个查询：验证旧扫描被取消、后一问生效
 bool g_prewarm = false;     // 先预热，7 秒后再建查看器，验首开耗时
-bool g_release = false;     // 5 秒后销毁主窗口，验 DO 窗口关闭后实例释放
+bool g_release = false;     // 5 秒后销毁主窗口，验 DOpus 窗口关闭后实例释放
 bool g_idle = false;        // 配合 prewarm：只预热、不建查看器，量常驻内存
 bool g_drop = false;        // 关预热、设 1 分钟空闲释放；5 秒后只销毁查看器，验空闲回收
 wchar_t g_findQuery[128] = L"中文";
@@ -147,7 +147,7 @@ LRESULT CALLBACK ThreadFrameProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPa
   return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
 }
 
-// Opus 的独立查看器窗口跑在另一个 UI 线程上，WebView2 的对象是线程绑定的。
+// DOpus 的独立查看器窗口跑在另一个 UI 线程上，WebView2 的对象是线程绑定的。
 // 这个线程照做一遍：自己的窗口、自己的消息泵、自己的查看器。
 DWORD WINAPI SecondThreadProc(LPVOID param) {
   ThreadCtx* ctx = static_cast<ThreadCtx*>(param);
@@ -299,7 +299,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         g_thread = ::CreateThread(nullptr, 0, SecondThreadProc, g_threadCtx, 0, nullptr);
       } else if (wParam == kTwoCloseTimerId) {
         // 关掉第二个查看器所在的窗口：宿主应当按借用历史交回主线程的那个，
-        // 主窗口的画面要自己回来（这正是 Opus 里关掉独立查看器后侧边栏恢复的路径）。
+        // 主窗口的画面要自己回来（这正是 DOpus 里关掉独立查看器后侧边栏恢复的路径）。
         ::KillTimer(hwnd, kTwoCloseTimerId);
         if (g_threadCtx && g_threadCtx->frame) {
           ::PostMessageW(g_threadCtx->frame, WM_CLOSE, 0, 0);
@@ -633,7 +633,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       } else if (wParam == kCopyCheckTimerId) {
         ::KillTimer(hwnd, kCopyCheckTimerId);
         LogClipboard(L"Ctrl+C");
-        // 再走一遍 Opus 菜单「全选」→「复制」的消息路径：全选只选中，
+        // 再走一遍 DOpus 菜单「全选」→「复制」的消息路径：全选只选中，
         // 复制由 COPYSELECTION 让页面把选区（或全文）交给宿主写剪贴板。
         if (g_viewer) ::PostMessageW(g_viewer, DVPLUGINMSG_SELECTALL, 0, 0);
         if (g_viewer) ::PostMessageW(g_viewer, DVPLUGINMSG_COPYSELECTION, 0, 0);
@@ -710,7 +710,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         if (g_viewer) LayoutChildren();
       } else if (wParam == kReleaseCloseTimerId) {
         ::KillTimer(hwnd, kReleaseCloseTimerId);
-        LogLine(L"TEST: 销毁主窗口（模拟 DO 窗口关闭）");
+        LogLine(L"TEST: 销毁主窗口（模拟 DOpus 窗口关闭）");
         HWND main = g_hwndMain;
         g_hwndMain = nullptr;
         g_viewer = nullptr;
@@ -737,7 +737,7 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         ::KillTimer(hwnd, kReleaseQuitTimerId);
         ::PostQuitMessage(0);
       } else if (wParam == kCycleTimerId) {
-        // Opus 换文件时会销毁并重建查看器；这里照做一遍，验证宿主与 controller 能否撑住
+        // DOpus 换文件时会销毁并重建查看器；这里照做一遍，验证宿主与 controller 能否撑住
         ::KillTimer(hwnd, kCycleTimerId);
         if (g_viewer) {
           ::DestroyWindow(g_viewer);
@@ -1007,8 +1007,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     ::DispatchMessageW(&msg);
   }
 
-  // setclose 模式：设置窗口关闭时会向宿主循环发 WM_QUIT（Opus 的配置流程靠它收尾）。
-  // 这里吞掉它继续跑，才能观察「Opus 还活着时」预览的浏览器进程会不会自己退出。
+  // setclose 模式：设置窗口关闭时会向宿主循环发 WM_QUIT（DOpus 的配置流程靠它收尾）。
+  // 这里吞掉它继续跑，才能观察「DOpus 还活着时」预览的浏览器进程会不会自己退出。
   if (g_settingsClose) {
     while (::GetMessageW(&msg, nullptr, 0, 0) >= 0) {
       if (msg.message == WM_QUIT) continue;

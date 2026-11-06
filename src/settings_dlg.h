@@ -1,4 +1,4 @@
-// settings_dlg.h - Opus 插件设置入口（非模态四页：外观 / 字体 / 渲染 / 高级）。
+// settings_dlg.h - DOpus 插件设置入口（非模态四页：外观 / 字体 / 渲染 / 高级）。
 
 #pragma once
 

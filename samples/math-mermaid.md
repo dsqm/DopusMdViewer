@@ -6,7 +6,7 @@ Mermaid 只在本文出现 ```mermaid 时才会去拉 `mermaid.js`（5.0 MiB）�
 
 ```mermaid
 flowchart LR
-  A[Opus 查看器窗口] -->|SetParent 借用| B[隐藏宿主 HWND]
+  A[DOpus 查看器窗口] -->|SetParent 借用| B[隐藏宿主 HWND]
   B --> C[WebView2 Controller]
   C --> D[shell.html]
   D -->|二进制帧| E[区块正文]
@@ -17,7 +17,7 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-  participant O as Opus
+  participant O as DOpus
   participant V as viewer_window
   participant H as webhost
   participant J as shell.html

@@ -43,7 +43,7 @@ TEST(config, defaults) {
   CHECK_EQ_INT(c.tableCopyMode, 0);
   CHECK(c.showFindButton && c.showOutlineButton);
   CHECK(!c.enableLog);
-  CHECK(c.openLinksInOpusViewer);  // 链接默认交给 Opus 查看器
+  CHECK(c.openLinksInOpusViewer);  // 链接默认交给 DOpus 查看器
   CHECK(c.viewerExts.empty());     // 额外名单默认空，只用内置
   CHECK(c.linkConfirmWait);        // 外部链接默认要等 3 秒才能点打开
   CHECK(c.webviewBaseDir.empty());

@@ -78,18 +78,18 @@ const wchar_t* const kZh[kCount] = {
 
     /* Version          */ L"版本",
     /* LinkOpenMode     */ L"文档内链接的打开方式：",
-    /* LinkOpenOpus     */ L"Opus 查看器",
+    /* LinkOpenDOpus     */ L"DOpus 查看器",
     /* LinkOpenSystem   */ L"系统默认程序",
     /* LinkConfirmWait  */ L"外部链接确认：",
     /* LinkWaitOn       */ L"弹窗后等 3 秒才能点「打开」",
     /* LinkWaitOff      */ L"弹窗后直接可点「打开」",
     /* ViewerExts       */ L"扩展名名单…",
-    /* ViewerExtsTitle  */ L"Opus 查看器扩展名",
+    /* ViewerExtsTitle  */ L"DOpus 查看器扩展名",
     /* ViewerExtsHint   */
     L"每行或分号分隔一个扩展名，带不带点都行。留空 = 使用内置名单。\r\n"
-    L"只影响页面里的链接；图片右键的「在 Opus 查看器中打开」不看这份名单。",
+    L"只影响页面里的链接；图片右键的「在 DOpus 查看器中打开」不看这份名单。",
     /* ViewerExtsOpenFailed */ L"打不开「扩展名名单」对话框。",
-    /* Prewarm          */ L"启动时预热预览引擎（Opus 窗口关闭时释放）",
+    /* Prewarm          */ L"启动时预热预览引擎（DOpus 窗口关闭时释放）",
     /* IdleRelease      */ L"关闭预热后空闲释放",
     /* IdleUnit         */ L"分钟（0 = 不释放）",
     /* LogEnabled       */ L"记录日志",
@@ -98,9 +98,9 @@ const wchar_t* const kZh[kCount] = {
     /* OpenSkins        */ L"打开皮肤目录",
     /* ConfigFolder     */ L"配置目录",
     /* ConfigFolderHelp */
-    L"默认位置在 Opus 的用户数据目录，随 Opus 配置一起备份。\r\n\r\n"
+    L"默认位置在 DOpus 的用户数据目录，随 DOpus 配置一起备份。\r\n\r\n"
     L"更换位置：在「设置 → 文件夹别名（Folder Aliases）」中新建名为 %s 的别名，"
-    L"指向目标文件夹。重启 Opus 后，配置、皮肤和日志都会改用该文件夹。\r\n\r\n"
+    L"指向目标文件夹。重启 DOpus 后，配置、皮肤和日志都会改用该文件夹。\r\n\r\n"
     L"目标文件夹必须可写，不要指向需要管理员权限的文件夹（例如 Program Files）。"
     L"\r\n\r\n当前配置文件夹：\r\n%s",
     /* WebViewCache     */ L"WebView2 缓存目录",
@@ -108,7 +108,7 @@ const wchar_t* const kZh[kCount] = {
     /* WebViewOpen      */ L"打开缓存目录",
     /* WebViewDefault   */ L"恢复默认目录",
     /* WebViewClear     */ L"清理缓存",
-    /* WebViewCacheInfo */ L"缓存 %s；超过 %s 自动清理；修改后重启 Opus 生效",
+    /* WebViewCacheInfo */ L"缓存 %s；超过 %s 自动清理；修改后重启 DOpus 生效",
     /* WebViewUsbTemp   */ L"U 盘模式下缓存自动放在系统临时目录（%s）",
     /* WebViewUsbData   */ L"U 盘模式下临时目录不可写，缓存放在 U 盘数据目录（%s）",
     /* WebViewUsbLocal  */ L"U 盘模式下临时目录和 U 盘都不可写，缓存放在本机（%s）",
@@ -121,7 +121,7 @@ const wchar_t* const kZh[kCount] = {
     L"实际 WebView2 目录 = 所选位置 + \\WebView2：\r\n%s\r\n\r\n"
     L"缓存可再生，超过 %s 会在下次创建预览引擎前自动清理；也可以点「清理缓存」手动删除。\r\n"
     L"修改位置不会搬移或删除旧位置的缓存。\r\n"
-    L"不要选择同步盘、网络盘或备份目录。修改后重启 Opus 生效。",
+    L"不要选择同步盘、网络盘或备份目录。修改后重启 DOpus 生效。",
     /* WebViewClearConfirm   */ L"将删除 WebView2 缓存，下次预览会重新生成。继续？",
     /* WebViewClearCloseFirst */ L"预览引擎正在使用缓存，请先关闭所有预览窗口，再清理缓存。",
     /* WebViewClearFailed    */ L"缓存清理失败：目录仍被占用，请关闭所有预览窗口后重试。",
@@ -135,10 +135,10 @@ const wchar_t* const kZh[kCount] = {
 
     /* CopyVersionInfo  */ L"复制版本信息",
     /* PrewarmHelp */
-    L"作用：Opus 启动后在后台把预览引擎和页面建好并一直留着。打开第一个 Markdown 文件"
+    L"作用：DOpus 启动后在后台把预览引擎和页面建好并一直留着。打开第一个 Markdown 文件"
     L"不必再等 Environment/controller 创建与页面加载。\r\n\r\n"
     L"代价：常驻一个渲染进程（约 80 MB），即使从不看 Markdown 也在后台待着；开启过"
-    L"预热后插件模块会留到 Opus 进程退出才卸载。\r\n\r\n"
+    L"预热后插件模块会留到 DOpus 进程退出才卸载。\r\n\r\n"
     L"适合：经常用预览窗格看文档、机器内存充裕。\r\n"
     L"不适合：很少看 Markdown，或在内存吃紧的机器上。关掉后由下面「空闲释放」在不用时回收。",
     /* ResetPage        */ L"重置本页",
@@ -156,7 +156,7 @@ const wchar_t* const kZh[kCount] = {
     /* SaveFailed       */ L"无法保存设置。",
     /* SaveFailedPath   */ L"路径：%s",
     /* SaveFailedError  */ L"错误：%lu - %s",
-    /* SaveFailedNoPath */ L"路径：不可用（Opus 的用户数据目录没解析出来）",
+    /* SaveFailedNoPath */ L"路径：不可用（DOpus 的用户数据目录没解析出来）",
     /* SaveAdviceMissing */
     L"建议：配置目录建不出来，可能被清理软件删掉了上级目录，或被 Folder Alias 指到了不存在的盘。"
     L"请检查「高级」页里的目录位置。",
