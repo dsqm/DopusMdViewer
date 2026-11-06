@@ -496,12 +496,16 @@ select.sel {
 
 /* 皮肤目录弹层 */
 .popwrap { position: relative; display: inline-flex; }
+/* 弹层右对齐到按钮：挂在这一排最右侧的按钮上，left:0 会一路伸到窗口外 */
 .pop {
   position: absolute;
   top: 34px;
-  left: 0;
+  right: 0;
   z-index: 20;
   width: 320px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 56px);
+  overflow: auto;
   padding: 10px;
   background: #fff;
   border: 1px solid #c9cfd5;

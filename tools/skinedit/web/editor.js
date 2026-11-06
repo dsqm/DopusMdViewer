@@ -244,6 +244,13 @@ const HL_CSS = `
   .__hl { outline: 2px solid #f59f00 !important; outline-offset: 1px; }
   .__sel { outline: 2px solid #1f6feb !important; outline-offset: 1px;
            box-shadow: 0 0 0 5px rgba(31, 111, 235, .16) !important; }
+  /* 自绘滚动条亮出来时把原生条收起来：插件里 body.virtual 也是这么干的，
+     两条并排会让人分不清在调哪一条（原生条只用得到 --md-scrollbar）。 */
+  html.sb-only { scrollbar-width: none; }
+  html.sb-only::-webkit-scrollbar { width: 0; height: 0; }
+  /* 工具条与搜索条都在顶边，搜索条整条盖住工具条，两件的颜色就没法一起看。
+     预览里把搜索条下移一行（只改排版，不改颜色）。 */
+  body.dev #find { top: 44px; }
 `
 
 const S = {
@@ -267,6 +274,9 @@ const S = {
   scheme: 'light',
   schemeAuto: 'light',
   widgets: false,
+  /* 只为一类变量临时亮起的界面件（tools / outline / sb）：预览窄，大纲一弹就盖住
+     大半正文，点「滚动条」把大纲带出来纯属干扰。 */
+  widgetPeek: null,
   hold: false,
   link: true,
   query: '',
@@ -379,12 +389,20 @@ function applyAll() {
   // color-scheme 不是 --md-* 变量，它得真的落在文档上才会影响原生控件
   root.style.colorScheme = S.hold ? '' : S.scheme
 
-  for (const id of ['tools', 'outline', 'sb']) {
+  // 界面件默认全关；点「只在界面件里出现的变量」时只亮那一个（widgetPeek）。
+  // 三个一起开不行：大纲是覆盖式面板，窄预览里会盖掉大半正文，反而看不见颜色变化。
+  // 界面件默认全关。总开关只亮三条横条（工具条 / 搜索条 / 自绘滚动条）；
+  // 大纲是覆盖式面板，在窄预览里一开就盖掉大半正文，只在点到大纲相关变量时单独亮。
+  const shown = { tools: S.widgets, find: S.widgets, outline: false, sb: S.widgets }
+  if (S.widgetPeek) shown[S.widgetPeek] = true
+  for (const id of ['tools', 'find', 'outline', 'sb']) {
     const node = d.getElementById(id)
-    if (node) node.hidden = !S.widgets
+    if (node) node.hidden = !shown[id]
   }
-  if (S.widgets) {
-    pollOutline()
+  if (shown.outline) pollOutline()
+  // 显示自绘滚动条时收起原生滚动条，免得两条并排
+  d.documentElement.classList.toggle('sb-only', !!shown.sb)
+  if (shown.sb) {
     const thumb = d.getElementById('sb-thumb')
     if (thumb && !thumb.style.height) {
       thumb.style.height = '28%'
@@ -508,26 +526,45 @@ function installLink(d) {
   // 自己滚动预览时取消跳转动画
   d.addEventListener('wheel', stopScrollAnim, { passive: true, capture: true })
 
-  // mousemove 一秒能来上百次：按帧合并，一帧最多做一次 ruleOf + 一次气泡更新。
+  /* 气泡只在指针停住之后出现。跟随式提示要每帧改一次合成层，在软件光栅的
+     WebView2 上能明显感觉到拖后腿，而移动中的指针本来也不需要读名字。 */
   let last = null
-  let queued = false
+  let hoverTimer = 0
+  let shownAt = null
+
+  function armChip() {
+    clearTimeout(hoverTimer)
+    hoverTimer = setTimeout(() => {
+      if (!last) return
+      const r = ruleOfCached(last.target, d)
+      if (!r) return
+      showChip(r.rule.name, last.x, last.y, false)
+      shownAt = { x: last.x, y: last.y }
+    }, CHIP_DELAY)
+  }
+
   d.addEventListener('mousemove', (e) => {
     if (!S.link) return
     last = { target: e.target, x: e.clientX, y: e.clientY }
-    placeChip(e.clientX, e.clientY)
-    if (queued) return
-    queued = true
-    requestAnimationFrame(() => {
-      queued = false
-      if (!last) return
-      const r = ruleOfCached(last.target, d)
-      showChip(r ? r.rule.name : '', last.x, last.y, false)
-    })
+    const chip = chipEl()
+    if (chip && !chip.hidden) {
+      // 悬停出来的：离开原位 12px 就收起；点住的那条留得久一些（40px），
+      // 让人能一边看气泡一边读左栏。
+      const pinned = chip.classList.contains('pin')
+      const dx = e.clientX - (shownAt ? shownAt.x : 0)
+      const dy = e.clientY - (shownAt ? shownAt.y : 0)
+      const limit = pinned ? 1600 : 144
+      if (shownAt && dx * dx + dy * dy < limit) return
+      hideChip()
+    }
+    armChip()
   }, true)
 
   d.addEventListener('mouseleave', () => {
     last = null
-    showChip('', 0, 0, false)
+    shownAt = null
+    clearTimeout(hoverTimer)
+    hideChip()
   }, true)
 
   d.addEventListener('click', (e) => {
@@ -536,12 +573,14 @@ function installLink(d) {
     if (!r) return
     e.preventDefault()
     e.stopPropagation()
+    clearTimeout(hoverTimer)
     if (selNode) selNode.classList.remove('__sel')
     selNode = r.node
     selNode.classList.add('__sel')
     selectVars(r.rule)
     showChip(r.rule.name + ' · 左侧 ' + r.rule.vars.length + ' 项',
              e.clientX, e.clientY, true)
+    shownAt = { x: e.clientX, y: e.clientY }
   }, true)
 }
 
@@ -652,13 +691,17 @@ function highlightVar(name) {
 
 /* 预览上方的浮动提示。位置只改 transform（合成层，不触发重排），
    容器尺寸缓存到 resize 才重量，文本没变就不写 DOM。
-   位置在 mousemove 里当场写：等到下一帧才挪，指针快时看起来就是「拖在后面」。 */
-let chipTimer = 0
+   显示时机见 installLink：指针停住 CHIP_DELAY 毫秒才出现，移动过程中完全不碰它。 */
 let chipText = ''
 let chipBox = null
+const CHIP_DELAY = 320
+
+function chipEl() {
+  return document.getElementById('chip')
+}
 
 function placeChip(x, y) {
-  const chip = document.getElementById('chip')
+  const chip = chipEl()
   if (!chip || chip.hidden) return
   if (chipBox === null) {
     const box = document.getElementById('preview-box')
@@ -669,26 +712,26 @@ function placeChip(x, y) {
   chip.style.transform = 'translate(' + lx + 'px, ' + ly + 'px)'
 }
 
+function hideChip() {
+  const chip = chipEl()
+  if (!chip) return
+  chip.hidden = true
+  chipText = ''
+}
+
 function showChip(text, x, y, pin) {
-  const chip = document.getElementById('chip')
+  const chip = chipEl()
+  if (!chip) return
   if (!text) {
-    if (!pin) { chip.hidden = true; chipText = ''; clearTimeout(chipTimer) }
+    if (!pin) hideChip()
     return
   }
   if (chip.hidden) chip.hidden = false
   if (text !== chipText) {
     chip.textContent = text
     chipText = text
-    chip.classList.toggle('pin', !!pin)
   }
-  if (!pin) {
-    // 指针还在元素上就不该自己消失：每次移动都把计时重来一遍
-    clearTimeout(chipTimer)
-    chipTimer = setTimeout(() => { chip.hidden = true; chipText = '' }, 2200)
-  } else {
-    // 点住的那条不再自动消失，否则悬停遗留的计时会把它带走
-    clearTimeout(chipTimer)
-  }
+  chip.classList.toggle('pin', !!pin)
   placeChip(x, y)
 }
 
@@ -1070,13 +1113,13 @@ function bindRowLink(row, name) {
       return
     }
     if (S.status.text.startsWith('--md-')) setStatus('')
-    // 工具条、搜索条、大纲默认不显示：跳到这些变量上先把它打开，
-    // 否则 scrollIntoView 对一个 hidden 元素什么也不会做，看着就是「点了没反应」。
-    if (!S.widgets && first.closest('[hidden]')) {
-      S.widgets = true
-      document.querySelectorAll('[data-act="widgets"]').forEach((b) =>
-        b.setAttribute('aria-pressed', 'true'))
-      applyAll()
+    // 只落在界面件里的变量（工具条 / 搜索条 / 大纲 / 滚动条）：把那一件亮出来。
+    // 只亮这一件而不是打开总开关，否则点「滚动条」会连大纲一起弹出、盖住大半正文。
+    const host = first.closest('#tools, #find, #outline, #sb')
+    const peek = host ? host.id : null
+    if (peek !== S.widgetPeek) {
+      S.widgetPeek = peek
+      if (!S.widgets) applyAll()
     }
     highlightVar(name)
     selNode = first
@@ -1449,10 +1492,11 @@ function widgetsButton() {
   const b = el('button', 'ghostbtn', '界面元素')
   b.type = 'button'
   b.dataset.act = 'widgets'
-  b.title = '显示搜索条、大纲、自绘滚动条；它们会挤占正文宽度'
+  b.title = '显示工具条、搜索条与自绘滚动条；大纲是覆盖式面板，点到大纲相关变量时才出现'
   b.setAttribute('aria-pressed', String(S.widgets))
   b.addEventListener('click', () => {
     S.widgets = !S.widgets
+    S.widgetPeek = null
     document.querySelectorAll('[data-act="widgets"]').forEach((x) =>
       x.setAttribute('aria-pressed', String(S.widgets)))
     applyAll()
