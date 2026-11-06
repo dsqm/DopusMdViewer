@@ -505,6 +505,9 @@ function installLink(d) {
   if (d.__protoLink) return
   d.__protoLink = true
 
+  // 自己滚动预览时取消跳转动画
+  d.addEventListener('wheel', stopScrollAnim, { passive: true, capture: true })
+
   // mousemove 一秒能来上百次：按帧合并，一帧最多做一次 ruleOf + 一次气泡更新。
   let last = null
   let queued = false
@@ -553,6 +556,45 @@ function selectVars(rule) {
   if (usedRows[0]) revealRow(usedRows[0])
 }
 
+/* 跳转的滚动自己走一小段动画。原生 behavior:'smooth' 不能直接用：连续点击会排队，
+   第二次点完先跑完上一次的动画再慢慢挪到新位置，看起来就是「跳了又弹回去」。
+   这里每次点击都从当前位置重新起算、直接替换掉上一条动画；用户自己滚动即取消。 */
+let scrollAnim = 0
+
+function stopScrollAnim() {
+  if (scrollAnim) {
+    cancelAnimationFrame(scrollAnim)
+    scrollAnim = 0
+  }
+}
+
+/* animate：把 setter 从 from 平移到 to，缓出，按时长封顶。
+   时长随距离变化，短距离不做动画（否则会有「已经在那儿却还在动」的错觉）。 */
+function easeScroll(get, set, to) {
+  stopScrollAnim()
+  const from = get()
+  const dist = to - from
+  if (Math.abs(dist) < 6) { set(to); return }
+  const dur = Math.min(240, 90 + Math.abs(dist) * 0.5)
+  const t0 = performance.now()
+  const step = (t) => {
+    const p = Math.min(1, (t - t0) / dur)
+    set(from + dist * (1 - Math.pow(1 - p, 3)))
+    scrollAnim = p < 1 ? requestAnimationFrame(step) : 0
+  }
+  scrollAnim = requestAnimationFrame(step)
+}
+
+/* 把一行滚到容器中间。rect 用的是当前布局，所以调用前必须已经展开分组/撤掉过滤。 */
+function scrollRowIntoView(scroller, row) {
+  if (!scroller) { row.scrollIntoView({ block: 'center' }); return }
+  const sBox = scroller.getBoundingClientRect()
+  const rBox = row.getBoundingClientRect()
+  const max = scroller.scrollHeight - scroller.clientHeight
+  const want = scroller.scrollTop + (rBox.top - sBox.top) - (sBox.height - rBox.height) / 2
+  easeScroll(() => scroller.scrollTop, (v) => { scroller.scrollTop = v }, Math.max(0, Math.min(max, want)))
+}
+
 /* 把一行真正送到眼前。只标 used 是不够的：目标行多半在收起的分组里（默认只展开
    第一组），或者被搜索/「仅改动」过滤掉了——此时 scrollIntoView 对 display:none
    的元素毫无作用，表现就是「右侧点了，左侧只弹了句提示」。 */
@@ -572,8 +614,17 @@ function revealRow(row) {
     if (only) only.setAttribute('aria-pressed', 'false')
     applyFilter()
   }
-  // 连续点击时平滑滚动会排队，看起来像「跳了又弹回去」；这里一律瞬时定位。
-  row.scrollIntoView({ block: 'center' })
+  scrollRowIntoView(document.querySelector('.rail-body'), row)
+}
+
+/* 反方向：点左侧行把预览滚到元素上。坐标取自 iframe 视口，同一套缓动。 */
+function scrollPreviewIntoView(d, node) {
+  const doc = d.scrollingElement || d.documentElement
+  const vh = doc.clientHeight
+  const r = node.getBoundingClientRect()
+  const max = doc.scrollHeight - vh
+  const want = doc.scrollTop + r.top + r.height / 2 - vh / 2
+  easeScroll(() => doc.scrollTop, (v) => { doc.scrollTop = v }, Math.max(0, Math.min(max, want)))
 }
 
 function clearUsed() {
@@ -1030,7 +1081,7 @@ function bindRowLink(row, name) {
     highlightVar(name)
     selNode = first
     selNode.classList.add('__sel')
-    selNode.scrollIntoView({ block: 'center' })
+    scrollPreviewIntoView(d, selNode)
   })
   return row
 }
@@ -1542,6 +1593,9 @@ function renderD() {
   head.append(fname, dirty, el('span', 'grow'))
   const body = el('div', 'rail-body pane-scroll')
   body.append(buildForm(false))
+  // 用户自己滚动就当作取消跳转动画，别跟手指抢
+  body.addEventListener('wheel', stopScrollAnim, { passive: true })
+  body.addEventListener('pointerdown', stopScrollAnim)
   rail.append(head, statusBar(), formTools(), schemeRow(), body)
 
   const splitter = el('div', 'splitter')
@@ -1586,6 +1640,7 @@ function refresh() {
   selNode = null
   chipBox = null
   applyQueue.clear()
+  stopScrollAnim()
   const body = document.querySelector('.rail-body')
   if (body) body.replaceChildren(buildForm(false))
   const fname = document.querySelector('.rail-head .fname')
@@ -1634,6 +1689,7 @@ function render() {
   S.ruleIndex = null
   ruleCache = new WeakMap()
   applyQueue.clear()
+  stopScrollAnim()
   chipBox = null
   const host = document.getElementById('app')
   host.replaceChildren()
