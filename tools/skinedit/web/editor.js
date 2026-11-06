@@ -463,7 +463,19 @@ function bestRuleAt(node, minScore, skipGeneric = false) {
 }
 
 /* 预览文档只在换皮肤时重建，规则→元素、变量→元素两张表建一次即可。
-   以前每次悬停都对 iframe 做几十次全文档查询，且 box-shadow 高亮会连带重绘。 */
+   以前每次悬停都对 iframe 做几十次全文档查询，且 box-shadow 高亮会连带重绘。
+   同一条规则在同一个元素上的结论也是固定的：鼠标在同一段文字上来回移动时不必
+   每次再跑 53 条选择器匹配。索引重建（换皮肤 / 重新渲染）时整表作废。 */
+let ruleCache = new WeakMap()
+
+function ruleOfCached(target, d) {
+  if (!target || target.nodeType !== 1) return ruleOf(target, d)
+  if (ruleCache.has(target)) return ruleCache.get(target)
+  const r = ruleOf(target, d)
+  ruleCache.set(target, r)
+  return r
+}
+
 function buildRuleIndex(d) {
   const byVar = new Map()
   const byRule = new Map()
@@ -477,6 +489,7 @@ function buildRuleIndex(d) {
     }
   }
   S.ruleIndex = { byVar, byRule }
+  ruleCache = new WeakMap()
   d.__protoIndex = true
 }
 
@@ -503,7 +516,7 @@ function installLink(d) {
     requestAnimationFrame(() => {
       queued = false
       if (!last) return
-      const r = ruleOf(last.target, d)
+      const r = ruleOfCached(last.target, d)
       showChip(r ? r.rule.name : '', last.x, last.y, false)
     })
   }, true)
@@ -515,7 +528,7 @@ function installLink(d) {
 
   d.addEventListener('click', (e) => {
     if (!S.link) return
-    const r = ruleOf(e.target, d)
+    const r = ruleOfCached(e.target, d)
     if (!r) return
     e.preventDefault()
     e.stopPropagation()
@@ -536,8 +549,30 @@ function selectVars(rule) {
     const row = document.querySelector('[data-var="' + v + '"]')
     if (row) { row.classList.add('used'); usedRows.push(row) }
   }
-  // 平滑滚动在连续点击时会排队，看起来像「跳了又弹回去」。
-  if (usedRows[0]) usedRows[0].scrollIntoView({ block: 'center' })
+  if (usedRows[0]) revealRow(usedRows[0])
+}
+
+/* 把一行真正送到眼前。只标 used 是不够的：目标行多半在收起的分组里（默认只展开
+   第一组），或者被搜索/「仅改动」过滤掉了——此时 scrollIntoView 对 display:none
+   的元素毫无作用，表现就是「右侧点了，左侧只弹了句提示」。 */
+function revealRow(row) {
+  const sec = row.closest('section.grp')
+  if (sec && sec.classList.contains('closed')) {
+    sec.classList.remove('closed')
+    S.open[sec.dataset.grp] = true
+  }
+  // 过滤状态下目标行可能被藏起来：撤掉过滤，否则跳过去也是空白
+  if (S.query || S.onlyChanged || row.hidden) {
+    S.query = ''
+    S.onlyChanged = false
+    const q = document.querySelector('.search-in')
+    if (q) q.value = ''
+    const only = document.getElementById('only-changed')
+    if (only) only.setAttribute('aria-pressed', 'false')
+    applyFilter()
+  }
+  // 连续点击时平滑滚动会排队，看起来像「跳了又弹回去」；这里一律瞬时定位。
+  row.scrollIntoView({ block: 'center' })
 }
 
 function clearUsed() {
@@ -618,6 +653,9 @@ async function loadSkin(id) {
     filled: sk ? sk.filled : [], duplicates: sk ? sk.duplicates : [],
     builtin: true,
   }
+  applySkinText(text)
+  applyAll()
+  refresh()
   reportParse(sk)
 }
 
@@ -633,12 +671,34 @@ function resolvedBase(name, depth = 0) {
 
 /* 逐字符输入走这里：只动一个自定义属性。以前每次改值都把全部 overrides
    先删再写，改动 20 处后每敲一个字符就是 40 次全文档样式失效。 */
-function applyOne(name) {
-  const d = frameDoc()
-  if (!d) return
+function applyOneTo(d, name) {
   const v = S.overrides[name]
   if (v === undefined || S.hold) d.documentElement.style.removeProperty('--md-' + name)
   else d.documentElement.style.setProperty('--md-' + name, v)
+}
+
+/* 拖色板与连敲字符时，input 事件比帧还密：同一帧里只把最新的值写进预览一次。
+   第一次仍然立刻生效（首帧手感与断言都不依赖下一帧），之后的合并到帧末。 */
+let applyRaf = 0
+const applyQueue = new Set()
+
+function applyOne(name) {
+  applyQueue.add(name)
+  if (applyRaf) return
+  flushApply()
+  applyRaf = requestAnimationFrame(() => {
+    applyRaf = 0
+    if (applyQueue.size) flushApply()
+  })
+}
+
+function flushApply() {
+  const d = frameDoc()
+  if (!d) { applyQueue.clear(); return }
+  for (const k of applyQueue) applyOneTo(d, k)
+  applyQueue.clear()
+  // 派生行的色块是按「主色 × 页面背景」算出来的，主色一动就要重画
+  syncDerivedSwatches()
 }
 
 function setValue(name, value) {
@@ -647,8 +707,6 @@ function setValue(name, value) {
   else S.overrides[name] = v
   applyOne(name)
   markChanged(name)
-  // 派生行的色块是按「主色 × 页面背景」算出来的，主色一动就要重画
-  syncDerivedSwatches()
 }
 
 function markChanged(only) {
@@ -762,8 +820,11 @@ function applyLoaded(text, meta) {
     extra: sk.extra, unknown: sk.unknown, filled: sk.filled, duplicates: sk.duplicates,
     builtin: !meta.path,
   }
+  // 预览的底色要跟着换成刚打开的这一份，否则表单是新值、右侧还是上一套颜色
+  applySkinText(text)
+  applyAll()
+  refresh()
   reportParse(sk)
-  render()
 }
 
 async function openPath(path) {
@@ -789,9 +850,9 @@ async function writeSkin(path, name, id, expectMtime) {
   if (r.type === 'error') throw new Error(r.message + '｜' + r.code)
   // 保存后当前值成为新基准：「仅改动」与「有改动」徽标才会归零。
   S.values = { ...S.values, ...S.overrides }
-  S.overrides = {}
   S.file = { ...S.file, path, size: r.size, mtime: r.mtime, name, id, builtin: false }
-  render()
+  pushSkin()
+  refresh()
   setStatus('已保存 ' + path)
   refreshUsers()
 }
@@ -945,6 +1006,14 @@ function bindRowLink(row, name) {
       return
     }
     if (S.status.text.startsWith('--md-')) setStatus('')
+    // 工具条、搜索条、大纲默认不显示：跳到这些变量上先把它打开，
+    // 否则 scrollIntoView 对一个 hidden 元素什么也不会做，看着就是「点了没反应」。
+    if (!S.widgets && first.closest('[hidden]')) {
+      S.widgets = true
+      document.querySelectorAll('[data-act="widgets"]').forEach((b) =>
+        b.setAttribute('aria-pressed', 'true'))
+      applyAll()
+    }
     highlightVar(name)
     selNode = first
     selNode.classList.add('__sel')
@@ -1024,7 +1093,13 @@ function relinkBtn(name) {
   b.addEventListener('click', (e) => {
     e.stopPropagation()
     setValue(name, 'color-mix(in srgb, var(--md-alert-' + fam + ') 12%, transparent)')
-    render()
+    // 只换这一行，不重建整份表单（重建会连带重建预览，几百毫秒的停顿）
+    const row = b.closest('.row')
+    const der = derivedOf(rawOf(name))
+    if (row && der) {
+      row.replaceWith(rowDerivedBg(name, der))
+      applyFilter()
+    }
   })
   return b
 }
@@ -1192,6 +1267,7 @@ function formTools() {
 
   const only = el('button', 'ghostbtn foldbtn', '仅改动')
   only.type = 'button'
+  only.id = 'only-changed'
   only.title = '只显示改过的变量（与搜索叠加）'
   only.setAttribute('aria-pressed', String(S.onlyChanged))
 
@@ -1288,7 +1364,6 @@ function sourceSelect() {
   sel.addEventListener('change', async () => {
     if (sel.value.startsWith('usr:')) return openPath(sel.value.slice(4))
     await loadSkin(sel.value)
-    render()
   })
   return sel
 }
@@ -1309,11 +1384,13 @@ function holdButton() {
 function widgetsButton() {
   const b = el('button', 'ghostbtn', '界面元素')
   b.type = 'button'
+  b.dataset.act = 'widgets'
   b.title = '显示搜索条、大纲、自绘滚动条；它们会挤占正文宽度'
   b.setAttribute('aria-pressed', String(S.widgets))
   b.addEventListener('click', () => {
     S.widgets = !S.widgets
-    b.setAttribute('aria-pressed', String(S.widgets))
+    document.querySelectorAll('[data-act="widgets"]').forEach((x) =>
+      x.setAttribute('aria-pressed', String(S.widgets)))
     applyAll()
   })
   return b
@@ -1394,7 +1471,7 @@ function topBar() {
   reset.addEventListener('click', async () => {
     // 有来源文件时「重置」是重读该文件；模板则回到模板原值。
     if (S.file.path) await openPath(S.file.path)
-    else { await loadSkin(S.skin); render() }
+    else await loadSkin(S.skin)
   })
   top.append(sourceSelect(), open, el('span', 'grow'), linkButton(), widgetsButton(),
              holdButton(), reset, save, saveAs, aboutButton())
@@ -1487,12 +1564,63 @@ function dragSplitter(rail, host, splitW) {
   }
 }
 
+/* 换皮肤、保存之后只需要重建左栏。以前这里整页重建：iframe 被换掉，预览页要重新
+   fetch 两张样式表 + 样例并重新跑一遍 markdown/KaTeX/hljs，一次几百毫秒的停顿。
+   预览的颜色由 <style id="skin"> 与根上的内联变量决定，跟表单结构无关，所以能拆开。 */
+function refresh() {
+  hlNodes = []
+  usedRows = []
+  selNode = null
+  chipBox = null
+  applyQueue.clear()
+  const body = document.querySelector('.rail-body')
+  if (body) body.replaceChildren(buildForm(false))
+  const fname = document.querySelector('.rail-head .fname')
+  if (fname) {
+    fname.textContent = (S.file.builtin ? (SKIN_LABELS[S.skin] || S.skin) : baseName(S.file.path)) + '.css'
+    fname.title = S.file.builtin ? '内置模板（只读）' : S.file.path
+  }
+  document.querySelectorAll('.schemerow .segbtn').forEach((b) =>
+    b.setAttribute('aria-pressed', String(b.dataset.v === S.scheme)))
+  const hint = document.querySelector('.schemerow .shint')
+  if (hint) hint.textContent = S.schemeInferred ? '按背景亮度推断' : '已指定'
+  // 来源下拉不在重建范围内，选中项要自己跟：打开别的文件后它还停在上一份
+  document.querySelectorAll('select.sel').forEach((sel) => {
+    const want = S.file.path ? 'usr:' + S.file.path : S.skin
+    if ([...sel.options].some((o) => o.value === want)) sel.value = want
+  })
+  markChanged()
+  applyFilter()
+}
+
+/* 预览页的皮肤底色来自 <style id="skin">：换模板、打开文件、另存之后都要把它换掉，
+   否则表单显示的是新值、右侧还是上一套颜色。 */
+function applySkinText(text) {
+  const d = frameDoc()
+  if (!d) return
+  const skinEl = d.getElementById('skin')
+  if (skinEl) skinEl.textContent = text
+}
+
+/* 保存 / 打开之后当前值成为新的基准：把合并后的整份皮肤写进预览页，
+   再清掉根上的内联变量，避免「文件里一份、内联一份」两处真相。 */
+function pushSkin() {
+  applySkinText(emitSkin(currentSkin()))
+  const d = frameDoc()
+  if (!d) return
+  for (const k of Object.keys(S.overrides)) d.documentElement.style.removeProperty('--md-' + k)
+  applyQueue.clear()
+  S.overrides = {}
+}
+
 function render() {
   // 表单与预览 iframe 都重建了，缓存的节点与索引一律作废。
   hlNodes = []
   usedRows = []
   selNode = null
   S.ruleIndex = null
+  ruleCache = new WeakMap()
+  applyQueue.clear()
   chipBox = null
   const host = document.getElementById('app')
   host.replaceChildren()
