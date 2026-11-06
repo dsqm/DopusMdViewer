@@ -359,18 +359,73 @@ function el(tag, cls, text) {
   return n
 }
 
-const isColorVal = (v) => /^#[0-9a-f]{3,8}$/i.test(v) || /^rgba?\(/i.test(v)
+/* 颜色值的唯一表示：{ r, g, b 各 0–255，a 0–1 }。
+   CSS 里会出现的写法全收：三位/六位/八位 hex、rgb()/rgba()、transparent。
+   写回统一成 hex：不透明写六位，带 alpha 写八位（与现有皮肤逐字兼容）。 */
+const clampByte = (n) => Math.max(0, Math.min(255, Math.round(Number(n) || 0)))
 
-function hexOf(v) {
-  if (/^#[0-9a-f]{6}$/i.test(v)) return v
-  if (/^#[0-9a-f]{3}$/i.test(v)) return '#' + v.slice(1).split('').map((c) => c + c).join('')
-  const m = /^rgba?\(([^)]+)\)/i.exec(v)
-  if (m) {
-    const p = m[1].split(/[ ,/]+/).map(Number)
-    return '#' + p.slice(0, 3).map((n) =>
-      Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0')).join('')
+function parseColor(v) {
+  const s = String(v == null ? '' : v).trim()
+  if (/^transparent$/i.test(s)) return { r: 0, g: 0, b: 0, a: 0 }
+  if (/^currentcolor$/i.test(s)) return null
+  const hex = /^#([0-9a-f]{3,8})$/i.exec(s)
+  if (hex) {
+    const h = hex[1]
+    if (h.length === 3 || h.length === 4) {
+      const p = h.split('').map((c) => parseInt(c + c, 16))
+      return { r: p[0], g: p[1], b: p[2], a: h.length === 4 ? p[3] / 255 : 1 }
+    }
+    if (h.length === 6 || h.length === 8) {
+      return {
+        r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16),
+        b: parseInt(h.slice(4, 6), 16),
+        a: h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1,
+      }
+    }
+    return null
   }
-  return null
+  const fn = /^rgba?\(([^)]+)\)$/i.exec(s)
+  if (!fn) return null
+  const p = fn[1].split(/[ ,/]+/).filter(Boolean).map(Number)
+  if (p.length < 3 || p.slice(0, 3).some((n) => !Number.isFinite(n))) return null
+  // alpha 既可能是 0–1 的小数，也可能是 0–255（老写法）
+  let a = p.length > 3 && Number.isFinite(p[3]) ? p[3] : 1
+  if (a > 1) a /= 255
+  return { r: clampByte(p[0]), g: clampByte(p[1]), b: clampByte(p[2]),
+           a: Math.max(0, Math.min(1, a)) }
+}
+
+function fmtColor(c) {
+  const h = (n) => clampByte(n).toString(16).padStart(2, '0')
+  const base = '#' + h(c.r) + h(c.g) + h(c.b)
+  const q = Math.round(Math.max(0, Math.min(1, c.a)) * 255)
+  return q >= 255 ? base : base + h(q)
+}
+
+const isColorVal = (v) => parseColor(v) !== null
+
+/* 两个颜色是不是同一个（按 RGBA 比，不按文本比）：'transparent' 与
+   '#00000000'、'rgba(1,2,3,0.5)' 与 '#01020380' 都算同一处颜色。 */
+function sameColor(a, b) {
+  const x = parseColor(a)
+  const y = parseColor(b)
+  if (x && y) {
+    return x.r === y.r && x.g === y.g && x.b === y.b &&
+      Math.round(x.a * 255) === Math.round(y.a * 255)
+  }
+  return String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim()
+}
+
+/* 色块与混色计算只要 RGB */
+function hexOf(v) {
+  const c = parseColor(v)
+  if (!c) return null
+  return '#' + [c.r, c.g, c.b].map((n) => clampByte(n).toString(16).padStart(2, '0')).join('')
+}
+
+const alphaPct = (v) => {
+  const c = parseColor(v)
+  return c ? Math.round(c.a * 100) : null
 }
 
 function frameDoc() {
@@ -969,8 +1024,12 @@ function flushApply() {
 }
 
 function setValue(name, value) {
-  const v = String(value).trim()
-  if (v === resolvedBase(name)) delete S.overrides[name]
+  const raw = String(value).trim()
+  // 颜色一律归一化成 hex（不透明写六位、带 alpha 写八位）；
+  // color-mix、var()、currentColor 这类原样存。
+  const c = parseColor(raw)
+  const v = c ? fmtColor(c) : raw
+  if (sameColor(v, resolvedBase(name))) delete S.overrides[name]
   else S.overrides[name] = v
   applyOne(name)
   markChanged(name)
@@ -1212,41 +1271,6 @@ function tipOf(name, from) {
   return bits.join('\n')
 }
 
-/* transparent / currentColor 不是颜色：色块表达不了，用勾选框覆盖。
-   勾上写关键字并记住上一个颜色，取消即恢复——这个「上一个颜色」只在内存里。 */
-function specialRow(slot, name, value, txt, sw) {
-  const kw = value === 'transparent' ? 'transparent' : value === 'currentColor' ? 'currentColor' : null
-  if (!kw) return
-  sw.disabled = true
-  sw.classList.add('kw')
-
-  const lbl = el('label', 'tgl')
-  const chk = el('input')
-  chk.type = 'checkbox'
-  chk.checked = true
-  lbl.append(chk, el('span', null, kw === 'transparent' ? '透明' : '跟随'))
-  lbl.title = kw === 'transparent'
-    ? '当前是 transparent：透出下一层（页面或代码块底色）。取消勾选会恢复到上一个颜色。'
-    : '当前是 currentColor：跟随该处的文字色（引用块里就是引用文字色）。'
-
-  chk.addEventListener('change', () => {
-    if (chk.checked) {
-      const prev = resolveVar(name).value
-      if (isColorVal(prev)) S.lastColor[name] = prev
-      setValue(name, kw)
-      txt.value = kw
-    } else {
-      const back = S.lastColor[name] || (kw === 'currentColor'
-        ? resolveVar('fg').value
-        : (isColorVal(resolveVar('bg').value) ? resolveVar('bg').value : '#ffffff'))
-      setValue(name, back)
-      txt.value = back
-    }
-    sw.disabled = chk.checked
-  })
-  slot.append(lbl)
-}
-
 /* 左侧行与右侧预览的联动：悬停点亮、点击定位。派生行与普通行共用。 */
 function bindRowLink(row, name) {
   row.addEventListener('mouseenter', () => {
@@ -1399,36 +1423,131 @@ function rowNormal(name) {
 
   const txt = el('input', 'v')
   // 显示解析后的值（色块旁边那个 hex），var() 原文放 title：输入框写不下被截断反而更糊涂
-  txt.value = value
+  const shown = parseColor(value)
+  txt.value = shown ? fmtColor(shown) : value
   txt.title = from ? raw : ''
   txt.spellcheck = false
 
   sw.addEventListener('input', () => {
-    txt.value = sw.value
-    setValue(name, sw.value)
+    // 原生取色器只认 RGB：alpha 沿用这一行当前的值，别因为换个颜色就把透明度抹平
+    const c = parseColor(sw.value)
+    if (!c) return
+    c.a = alphaPct(resolveVar(name).value) === null ? 1 : alphaPct(resolveVar(name).value) / 100
+    const next = fmtColor(c)
+    txt.value = next
+    setValue(name, next)
   })
   // 右键走宿主的 ChooseColorW。单击留给内建取色器，两个入口互不抢事件。
   sw.addEventListener('contextmenu', (e) => {
     if (!(window.chrome && window.chrome.webview)) return
     e.preventDefault()
-    hostCall('color', { hex: sw.value }).then((r) => {
+    hostCall('color', { hex: hexOf(sw.value) || '#ffffff' }).then((r) => {
       if (r.cancel || !r.hex) return
-      sw.value = r.hex
-      txt.value = r.hex
-      setValue(name, r.hex)
+      const c = parseColor(r.hex)
+      if (!c) return
+      c.a = alphaPct(resolveVar(name).value) === null ? 1 : alphaPct(resolveVar(name).value) / 100
+      const next = fmtColor(c)
+      sw.value = hexOf(next)
+      txt.value = next
+      setValue(name, next)
     }).catch(() => {})
   })
-  txt.addEventListener('input', () => setValue(name, txt.value.trim()))
+  txt.addEventListener('input', () => {
+    setValue(name, txt.value.trim())
+    // 六位 hex 按「完整值」理解：alpha 归 100%，透明度框跟着改，别让人以为还是半透明
+    const c = parseColor(txt.value.trim())
+    const box = row.querySelector('.alpha')
+    if (c && box) box.value = String(Math.round(c.a * 100))
+    // 从 currentColor 打成具体颜色（或反过来）：这一行的控件形态变了，重画这一行
+    if (!!c !== !!box) rebuildRow(name)
+  })
 
   row.append(txt)
 
-  // 勾选槽固定宽度：非特殊值行也留空，否则同组的值框右边界会参差
+  // 槽位固定宽度：普通行放透明度，currentColor 行放「跟随」，非颜色行留空，
+  // 三种情况都占同样宽度，同组的值框右边界才对得齐。
   const slot = el('span', 'slot')
   row.append(slot)
-  specialRow(slot, name, value, txt, sw)
-  if (ALERT_BG_RE.test(name)) slot.append(relinkBtn(name))
+  if (color) slot.append(alphaBox(name, txt))
+  else followRow(slot, name, value, txt, sw)
+  if (ALERT_BG_RE.test(name)) row.insertBefore(relinkBtn(name), txt)
 
   return bindRowLink(row, name)
+}
+
+/* 只重画一行：值从「颜色」变成 currentColor（或反过来）时，槽位里的控件要换形态。 */
+function rebuildRow(name) {
+  const row = document.querySelector('[data-var="' + name + '"]')
+  if (!row || row.classList.contains('derived')) return
+  row.replaceWith(rowNormal(name))
+  markChanged(name)
+  applyFilter()
+}
+
+/* 透明度：0–100 的整数，改的是同一个颜色的 alpha，RGB 不动。
+   0 就是透明（等价于原来的 transparent），100 不透明。 */
+function alphaBox(name, txt) {
+  const wrap = el('span', 'awrap')
+  const inp = el('input', 'alpha')
+  inp.type = 'text'
+  inp.inputMode = 'numeric'
+  inp.maxLength = 3
+  inp.value = String(alphaPct(resolveVar(name).value) ?? 100)
+  inp.title = '透明度 0–100：0 等于 transparent，100 不透明'
+  inp.spellcheck = false
+  const apply = () => {
+    const n = Number(inp.value)
+    if (inp.value === '' || !Number.isFinite(n)) return
+    const c = parseColor(resolveVar(name).value)
+    if (!c) return
+    c.a = Math.max(0, Math.min(100, n)) / 100
+    const next = fmtColor(c)
+    txt.value = next
+    setValue(name, next)
+  }
+  inp.addEventListener('input', apply)
+  inp.addEventListener('blur', () => {
+    const c = parseColor(resolveVar(name).value)
+    if (c) inp.value = String(Math.round(c.a * 100))
+  })
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); inp.blur() }
+  })
+  wrap.append(inp, el('span', 'pc', '%'))
+  return wrap
+}
+
+/* currentColor 不是颜色（没有 RGB），透明度表达不了它：
+   这一行保留「跟随」勾选，取消即回到上一个颜色。 */
+function followRow(slot, name, value, txt, sw) {
+  if (!/^currentColor$/i.test(String(value).trim())) return
+  sw.disabled = true
+  sw.classList.add('kw')
+
+  const lbl = el('label', 'tgl')
+  const chk = el('input')
+  chk.type = 'checkbox'
+  chk.checked = true
+  lbl.append(chk, el('span', null, '跟随'))
+  lbl.title = '当前是 currentColor：跟随该处的文字色（引用块里就是引用文字色）。取消勾选会恢复到上一个颜色。'
+
+  chk.addEventListener('change', () => {
+    if (chk.checked) {
+      const prev = resolveVar(name).value
+      if (isColorVal(prev)) S.lastColor[name] = prev
+      setValue(name, 'currentColor')
+      txt.value = 'currentColor'
+    } else {
+      const back = S.lastColor[name] ||
+        (isColorVal(resolveVar('fg').value) ? resolveVar('fg').value : '#ffffff')
+      setValue(name, back)
+      txt.value = back
+    }
+    sw.disabled = chk.checked
+    // 取消「跟随」后这一行就是普通颜色行，槽位要换成透明度
+    rebuildRow(name)
+  })
+  slot.append(lbl)
 }
 
 function rowCompact(name) {

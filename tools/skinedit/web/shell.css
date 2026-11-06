@@ -118,6 +118,27 @@ select.sel {
   justify-content: flex-end;
 }
 
+/* 透明度：0–100 的整数，和色块一样挂在槽位里，列不会因为有没有 alpha 而错位 */
+.row .awrap {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+.row .alpha {
+  width: 28px;
+  font: inherit;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  text-align: right;
+  padding: 1px 2px;
+  border: 1px solid #d6dade;
+  border-radius: 4px;
+  background: #fff;
+  color: #24292f;
+}
+.row .alpha:focus { outline: 2px solid #9dc2ee; outline-offset: -1px; }
+.row .awrap .pc { font-size: 10px; color: #8a9199; }
+
 .row .tgl {
   flex: 0 0 auto;
   display: flex;
