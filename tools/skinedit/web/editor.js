@@ -23,7 +23,7 @@ const NAMES = {
   'h4-border': '四级标题下边线', 'h5-border': '五级标题下边线', 'h6-border': '六级标题下边线',
 
   link: '链接字', 'link-hover': '链接字（悬停）', danger: '危险字',
-  selection: '选中背景', hit: '命中背景', 'hit-current': '当前命中背景', 'mark-bg': '高亮背景',
+  selection: '选中背景', hit: '整块命中底色', 'hit-current': '当前命中背景', 'mark-bg': '高亮背景',
 
   'block-fg': '代码块字', 'block-bg': '代码块背景', 'block-border': '代码块边框',
   'code-fg': '行内码字', 'code-bg': '行内码背景',
@@ -96,8 +96,8 @@ const STATE_NOTE = {
   'table-row-hover': '表格行悬停时的单元格底色',
   'outline-hover-bg': '大纲条目悬停时的底色',
   'scrollbar-hover': '自绘滚动条滑块悬停时的颜色',
-  hit: '搜索命中的高亮底色（打开工具条上的搜索条即可看到）',
-  'hit-current': '搜索「当前命中的那一个」的高亮底色（打开工具条上的搜索条即可看到）',
+  hit: '巨型表格的命中行、源码块里包不出 mark 的命中：整块/整行底色；点左栏这项会临时摆出真实形态',
+  'hit-current': '搜索时当前命中的底色，也画整块命中的左侧竖条与锚点跳转闪烁（打开工具条上的搜索条即可看到）',
   'zoom-bg': '点开图片后弹出的全屏遮罩；点左侧这几项会临时弹出真实遮罩预览',
 }
 
@@ -167,7 +167,7 @@ const RULES = [
   { sel: '#doc dl, #doc dt, #doc dd', name: '定义列表', vars: ['space-block'] },
   { sel: '#doc hr', name: '分隔线', vars: ['hr'] },
   { sel: '#doc mark.hit--current', name: '当前命中', vars: ['hit-current'] },
-  { sel: '#doc mark.hit', name: '搜索命中', vars: ['hit'] },
+  { sel: '#doc .hit--block, #doc tr.hit--row > td', name: '整块/整行命中', vars: ['hit'] },
   { sel: '#doc mark', name: '高亮标记', vars: ['mark-bg'] },
   { sel: '#doc table', name: '表格', vars: ['table-bg', 'table-border', 'radius'] },
   { sel: '#doc thead th', name: '表头单元格', vars: ['table-head-bg', 'table-head-fg', 'table-head-border'] },
@@ -1015,15 +1015,20 @@ function selectVars(rule) {
   if (usedRows[0]) revealRow(usedRows[0])
 }
 
-/* 查找条接的是真查找：命中用 <mark class="hit"> 包出来，结构与插件一致，改
-   --md-hit / --md-hit-current 时看到的就是搜索时的样子。只匹配正文里的普通文本
-   节点，代码块、KaTeX、按钮与已有 mark 一律跳过：它们的文本被 hljs / KaTeX 切成
-   大量 span，包 mark 会拆坏结构，也会让复制按钮取到被改过的源码。 */
+/* 查找条接的是真查找：与插件一致，一次只把「当前命中」包成
+   <mark class="hit hit--current">，上下导航把这个 mark 移过去。base.css 里
+   mark.hit--current 与 mark.hit 特异度相同但排在后面，普通文本命中里 --md-hit
+   会被盖掉；它真正生效的是 .hit--block 与 .bt-table tr.hit--row > td 两种
+   整块/整行命中，点左栏那一项会临时摆出真实形态。
+   只匹配正文里的普通文本节点，代码块、KaTeX、按钮与已有 mark 一律跳过：它们的
+   文本被 hljs / KaTeX 切成大量 span，包 mark 会拆坏结构，也会让复制按钮取到
+   被改过的源码。 */
 const FIND_DEFAULT_QUERY = '正文'
 const FIND_VARS = ['hit', 'hit-current', 'mark-bg']
 const FIND_SKIP = 'pre, code, .katex, mark, button, svg, script, style'
 const FIND_WORD_L = String.raw`[\p{L}\p{N}_]`
 let findActive = false
+// 命中位置记成拼接文本里的字符区间，不存节点引用：包/拆 mark 与 normalize 会重排文本节点
 let findHits = []
 let findCur = -1
 
@@ -1053,6 +1058,38 @@ function reindexFind(d) {
   if (d.documentElement.dataset.previewReady === '1') buildRuleIndex(d)
 }
 
+/* 参与匹配的文本节点按文档顺序拼成一份串，命中位置记成这份串里的偏移。
+   存节点引用会在下一次导航时失效：包 mark 会 splitText，拆 mark 会 normalize。 */
+function findTextNodes(d, doc) {
+  const NF = window.NodeFilter
+  const walker = d.createTreeWalker(doc, NF.SHOW_TEXT, {
+    acceptNode(n) {
+      if (!n.nodeValue || !n.nodeValue.trim()) return NF.FILTER_REJECT
+      const p = n.parentElement
+      if (p && p.closest(FIND_SKIP)) return NF.FILTER_REJECT
+      return NF.FILTER_ACCEPT
+    },
+  })
+  const nodes = []
+  let text = ''
+  let n
+  while ((n = walker.nextNode())) {
+    const start = text.length
+    text += n.nodeValue
+    nodes.push({ node: n, start, end: text.length })
+  }
+  return { nodes, text }
+}
+
+function clearHitBlockSample(d) {
+  const doc = d.getElementById('doc')
+  if (!doc) return
+  for (const el of doc.querySelectorAll('[data-find-demo]')) {
+    el.classList.remove('hit--block', 'hit--row', 'bt-table')
+    delete el.dataset.findDemo
+  }
+}
+
 function clearFindMarks(d) {
   const doc = d.getElementById('doc')
   if (doc) {
@@ -1062,12 +1099,53 @@ function clearFindMarks(d) {
       if (p) p.normalize()
     }
   }
+  // 整块/整行命中是点左栏变量时临时摆出来的，点别的变量、改词或关条一并撤掉
+  clearHitBlockSample(d)
+}
+
+function resetFindState(d) {
+  clearFindMarks(d)
   findHits = []
   findCur = -1
 }
 
-function runFind(d, scroll = false) {
+/* 只包当前命中：跨文本节点时逐节点包，倒序保证 splitText 后偏移不失效。
+   结构与插件的 wrapTextRange 一致，mark 同时带 hit 与 hit--current。 */
+function wrapCurrent(d) {
   clearFindMarks(d)
+  if (findCur < 0) return
+  const doc = d.getElementById('doc')
+  if (!doc) return
+  const { nodes } = findTextNodes(d, doc)
+  const { start, end } = findHits[findCur]
+  const parts = []
+  for (const n of nodes) {
+    if (n.end <= start || n.start >= end) continue
+    const a = Math.max(0, start - n.start)
+    const b = Math.min(n.node.nodeValue.length, end - n.start)
+    if (a < b) parts.push({ node: n.node, a, b })
+  }
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const { node, a, b } = parts[i]
+    if (!node.parentNode) continue
+    try {
+      const r = d.createRange()
+      r.setStart(node, a)
+      r.setEnd(node, b)
+      const mk = d.createElement('mark')
+      mk.className = 'hit hit--current'
+      mk.dataset.find = '1'
+      r.surroundContents(mk)
+    } catch { /* 跨元素的部分跳过 */ }
+  }
+}
+
+function currentMark(d) {
+  return d.getElementById('doc')?.querySelector('mark.hit--current[data-find]')
+}
+
+function runFind(d, scroll = false) {
+  resetFindState(d)
   const input = d.getElementById('find-input')
   const o = {
     q: input ? input.value : '',
@@ -1081,55 +1159,31 @@ function runFind(d, scroll = false) {
 
   const doc = d.getElementById('doc')
   if (!doc) { setFindCount(d, '0/0'); return }
-  const NF = window.NodeFilter
-  const walker = d.createTreeWalker(doc, NF.SHOW_TEXT, {
-    acceptNode(n) {
-      if (!n.nodeValue || !n.nodeValue.trim()) return NF.FILTER_REJECT
-      const p = n.parentElement
-      if (p && p.closest(FIND_SKIP)) return NF.FILTER_REJECT
-      return NF.FILTER_ACCEPT
-    },
-  })
-  const jobs = []
-  let node
-  while ((node = walker.nextNode())) {
-    re.lastIndex = 0
-    let m
-    while ((m = re.exec(node.nodeValue))) {
-      if (!m[0].length) { re.lastIndex++; continue }
-      jobs.push({ node, start: m.index, end: m.index + m[0].length })
-    }
+  const { text } = findTextNodes(d, doc)
+  re.lastIndex = 0
+  let m
+  while ((m = re.exec(text))) {
+    if (!m[0].length) { re.lastIndex++; continue }
+    findHits.push({ start: m.index, end: m.index + m[0].length })
   }
-  // 倒序包：同一文本节点被 splitText 之后，靠前的偏移才不会失效
-  for (let i = jobs.length - 1; i >= 0; i--) {
-    const t = jobs[i].node
-    if (!t.parentNode) continue
-    try {
-      const r = d.createRange()
-      r.setStart(t, jobs[i].start)
-      r.setEnd(t, jobs[i].end)
-      const mk = d.createElement('mark')
-      mk.className = 'hit'
-      mk.dataset.find = '1'
-      r.surroundContents(mk)
-    } catch { /* 跨元素的匹配跳过 */ }
-  }
-  findHits = [...doc.querySelectorAll('mark.hit[data-find]')]
   findCur = findHits.length ? 0 : -1
-  if (findCur >= 0) findHits[findCur].classList.add('hit--current')
+  wrapCurrent(d)
   setFindCount(d, findHits.length ? '1/' + findHits.length : '0/0')
   reindexFind(d)
-  if (scroll && findCur >= 0) scrollPreviewIntoView(d, findHits[findCur])
+  if (scroll) {
+    const mk = currentMark(d)
+    if (mk) scrollPreviewIntoView(d, mk)
+  }
 }
 
 function stepFind(d, delta) {
   if (!findHits.length) return
-  findHits[findCur].classList.remove('hit--current')
   findCur = (findCur + delta + findHits.length) % findHits.length
-  const cur = findHits[findCur]
-  cur.classList.add('hit--current')
+  wrapCurrent(d)
   setFindCount(d, (findCur + 1) + '/' + findHits.length)
-  scrollPreviewIntoView(d, cur)
+  reindexFind(d)
+  const mk = currentMark(d)
+  if (mk) scrollPreviewIntoView(d, mk)
 }
 
 /* 界面件的可见性在 applyAll 里收口：谁把查找条亮出来，命中就跟着出现；收起时
@@ -1137,7 +1191,7 @@ function stepFind(d, delta) {
 function syncFind(d, visible) {
   if (!visible) {
     if (!findActive) return
-    clearFindMarks(d)
+    resetFindState(d)
     setFindCount(d, '')
     findActive = false
     reindexFind(d)
@@ -1148,14 +1202,29 @@ function syncFind(d, visible) {
   runFind(d, true)
 }
 
-/* 命中高亮只在查找产生后才存在：点左栏这几项时先摆出真实搜索状态，再定位到
-   对应的那一处。样例里剩下的 mark 是 ==高亮标记==，给 --md-mark-bg 用。 */
+/* 巨型表格整行命中与源码块整块命中平时不在 DOM：点左栏「整块命中底色」时
+   临时摆出真实结构，让 --md-hit 有看得见的落点（与放大遮罩同一套路）。 */
+function showHitBlockSample(d) {
+  const doc = d.getElementById('doc')
+  if (!doc) return
+  const table = doc.querySelector('table')
+  if (table) {
+    table.classList.add('bt-table')
+    table.dataset.findDemo = '1'
+    const tr = table.querySelector('tbody tr')
+    if (tr) { tr.classList.add('hit--row'); tr.dataset.findDemo = '1' }
+  }
+  const pre = doc.querySelector('.mdv-cb pre')
+  if (pre) { pre.classList.add('hit--block'); pre.dataset.findDemo = '1' }
+}
+
+/* 命中只在查找跑起来或摆出整块形态后才存在：点左栏这几项时先摆状态再定位。
+   样例里剩下的 mark 是 ==高亮标记==，给 --md-mark-bg 用。 */
 function findTarget(d, name) {
   const doc = d.getElementById('doc')
   if (!doc) return null
   if (name === 'hit-current') return doc.querySelector('mark.hit--current[data-find]')
-  if (name === 'hit') return doc.querySelector('mark.hit[data-find]:not(.hit--current)') ||
-                            doc.querySelector('mark.hit[data-find]')
+  if (name === 'hit') return doc.querySelector('.hit--block') || doc.querySelector('tr.hit--row')
   return doc.querySelector('mark:not(.hit)')
 }
 
@@ -1923,6 +1992,8 @@ function bindRowLink(row, name) {
   row.addEventListener('click', () => {
     const d = frameDoc()
     if (!d) return
+    // 点别的变量就撤掉上次摆出的整块/整行命中，别让它一直挂在预览里
+    clearHitBlockSample(d)
     // 遮罩是点图时才生成的，静态索引里没有它：直接弹一份真实遮罩当落点
     if (ZOOM_VARS.includes(name)) {
       clearUsed()
@@ -1930,11 +2001,13 @@ function bindRowLink(row, name) {
       if (S.status.text.startsWith('--md-')) setStatus('')
       return
     }
-    // 命中高亮要查找跑起来才有：先把查找条摆出来，再按变量定位到那一处
+    // 当前命中要查找跑起来、整块命中要临时摆出来：先把状态摆齐再按变量定位
     if (FIND_VARS.includes(name)) {
       clearUsed()
       S.widgetPeek = 'find'
       applyAll()
+      // 整块/整行命中是运行时才出现的，摆出来后联动索引要跟着重建
+      if (name === 'hit') { showHitBlockSample(d); reindexFind(d) }
       const target = findTarget(d, name)
       if (target) {
         highlightVar(name)
