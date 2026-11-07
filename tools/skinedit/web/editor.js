@@ -13,7 +13,8 @@ const SKIN_LABELS = {
 }
 
 /* 变量的中文名：左侧表单显示它，右侧联动时报的也是它。
-   命名约定：<对象>字 在前、<对象>背景 在后；不带「色」字，不用「底」。 */
+   命名约定：<对象>字 在前、<对象>背景 在后，不用「底」；同时染边框与文字的项
+   用「主色 / 强调色」，避免起一个像只管文字的名字。 */
 const NAMES = {
   fg: '正文字', 'fg-muted': '次要字', 'fg-heading': '标题字',
   'h1-fg': '一级标题字', 'h2-fg': '二级标题字', 'h3-fg': '三级标题字',
@@ -22,7 +23,7 @@ const NAMES = {
   'h1-border': '一级标题下边线', 'h2-border': '二级标题下边线', 'h3-border': '三级标题下边线',
   'h4-border': '四级标题下边线', 'h5-border': '五级标题下边线', 'h6-border': '六级标题下边线',
 
-  link: '链接字', 'link-hover': '链接字（悬停）', danger: '危险字',
+  link: '链接字', 'link-hover': '链接字（悬停）', danger: '危险强调色',
   selection: '选中背景', hit: '整块命中底色', 'hit-current': '当前命中背景', 'mark-bg': '高亮背景',
 
   'block-fg': '代码块字', 'block-bg': '代码块背景', 'block-border': '代码块边框',
@@ -35,13 +36,13 @@ const NAMES = {
   'quote-2-fg': '嵌套引用字', 'quote-2-bg': '嵌套引用背景', 'quote-2-bar': '嵌套引用竖条',
   'table-head-fg': '表头字', 'table-head-bg': '表头背景', 'table-head-border': '表头边框',
   'table-bg': '表格背景', 'table-odd-bg': '奇行背景', 'table-even-bg': '偶行背景',
-  'table-row-hover': '行悬停背景', 'table-border': '表格边框',
+  'table-row-hover': '单元格悬停背景', 'table-border': '表格边框',
 
-  'alert-note': '说明字', 'alert-note-bg': '说明背景', 'alert-note-title': '说明标题字',
-  'alert-tip': '提示字', 'alert-tip-bg': '提示背景', 'alert-tip-title': '提示标题字',
-  'alert-important': '重要字', 'alert-important-bg': '重要背景', 'alert-important-title': '重要标题字',
-  'alert-warning': '警告字', 'alert-warning-bg': '警告背景', 'alert-warning-title': '警告标题字',
-  'alert-caution': '注意字', 'alert-caution-bg': '注意背景', 'alert-caution-title': '注意标题字',
+  'alert-note': '说明框主色', 'alert-note-bg': '说明背景', 'alert-note-title': '说明标题字',
+  'alert-tip': '提示框主色', 'alert-tip-bg': '提示背景', 'alert-tip-title': '提示标题字',
+  'alert-important': '重要框主色', 'alert-important-bg': '重要背景', 'alert-important-title': '重要标题字',
+  'alert-warning': '警告框主色', 'alert-warning-bg': '警告背景', 'alert-warning-title': '警告标题字',
+  'alert-caution': '注意框主色', 'alert-caution-bg': '注意背景', 'alert-caution-title': '注意标题字',
 
   'outline-fg': '大纲字', 'outline-bg': '大纲背景', 'outline-border': '大纲边框',
   'outline-hover-bg': '大纲悬停背景',
@@ -58,7 +59,7 @@ const NAMES = {
   'syn-addition': '新增行字', 'syn-addition-bg': '新增行背景',
 
   'footnote-fg': '脚注字', 'footnote-bg': '脚注背景', 'footnote-border': '脚注分隔线',
-  'ul-marker': '无序列表符号', 'ol-marker': '有序列表符号', 'list-marker': '列表符号',
+  'ul-marker': '无序列表符号', 'ol-marker': '有序列表符号', 'list-marker': '列表符号总开关',
   hr: '分隔线',
 
   radius: '圆角', 'radius-code': '代码块圆角', 'radius-alert': '提示框圆角',
@@ -72,32 +73,35 @@ const NAMES = {
 /* RULES 里查不到的项：它们是总开关，或者消费者在预览里不出现。
    这几句是手写的——除此之外所有「影响」都从 RULES 反查，不再写第二份真相。 */
 const HINT = {
-  'bg-alt': '内层浅底：键盘键帽、弹窗按钮悬停、图片占位框、大纲悬停的默认值',
+  'bg-alt': '内层浅底：键盘键帽、弹窗按钮悬停、图片占位框、大纲悬停的默认值；外部链接弹窗的两处底色由 --md-danger 派生，本项只在 color-mix 不可用时回落',
   'fg-muted': '次要文字：页脚、定义列表的说明、表注；标题以外的弱化文字都取它',
-  'fg-heading': '所有标题（h1–h6）的总开关；单独改过某一级，那一级就不再跟它',
-  border: '所有细线的总开关：表格、引用竖条、代码块、图标边框、图片占位都取它',
-  danger: '危险字：外部链接确认弹窗的标题与主按钮，正文里用不到',
+  'fg-heading': 'h1–h5 的默认字色；单独改过某一级就不再跟它，h6 默认跟次要字',
+  border: '标题下边线、大纲 / 搜索条 / 图标 / 脚注边框与弹窗细线；表格、引用竖条、代码块、分隔线各有独立变量，不跟它',
+  danger: '外部链接确认弹窗的竖条、图标、警示底与主按钮；正文里用不到，弹窗标题用的是标题字',
   selection: '拖选文字时的背景（原生 ::selection），不影响搜索命中的高亮',
   'code-ws-fg': '空白符标记的颜色（只在该功能打开时可见）；默认跟随次要字',
   'radius-code': '代码块外框圆角；默认跟随总圆角',
   'radius-alert': '提示框外框圆角；默认跟随总圆角',
-  'radius-ui': '小按钮（复制、搜索、大纲条目）的圆角；默认是本值的 0.7 倍',
-  radius: '所有圆角的总开关：代码块、提示框、表格、小按钮；单独配过的项不再跟它',
-  'space-block': '块与块之间的垂直间距（段落、列表、表格、提示框的上下外边距）',
+  'radius-ui': '图标按钮与复制按钮的圆角；默认是总圆角的 0.7 倍',
+  radius: '圆角的总开关：代码块、提示框、弹窗、搜索条与小按钮的默认值；表格没有圆角',
+  'space-block': '块与块之间的垂直间距（段落、列表、表格、提示框的上下外边距）；标题上下边距是固定值，不跟随',
 }
 
-/* 只在「某种状态」下才看得见的项：静态预览里没有那个状态，光看「影响」列不出来。
-   这不参与 RULES 反查，只是在提示末尾补一句「要先把状态摆出来」。 */
+/* 补充说明：状态限制、层叠例外与级联行为。不参与 RULES 反查，只在提示末尾补一句，
+   免得把「影响」列写成第二份真相。 */
 const STATE_NOTE = {
-  'icon-active': '搜索条里 Aa / 整词 / 正则三个开关按下时的边框与文字颜色；预览已把 Aa 置为按下',
+  'icon-active': '搜索条里 Aa / 整词 / 正则开关按下时的边框与文字颜色；真机默认三个都不按下，要把开关按下才看得见',
   'icon-hover': '图标按钮悬停时的图标色',
-  'copy-hover-fg': '复制按钮悬停时的字与图标颜色',
+  'copy-hover-fg': '复制按钮悬停时、以及复制完成后短暂亮起的字与图标颜色',
   'link-hover': '链接悬停时的字色',
-  'table-row-hover': '表格行悬停时的单元格底色',
+  'table-row-hover': '表格行悬停时的单元格底色；设成实色会盖住奇偶行底色',
   'outline-hover-bg': '大纲条目悬停时的底色',
-  'scrollbar-hover': '自绘滚动条滑块悬停时的颜色',
+  'scrollbar-hover': '自绘滚动条滑块与原生滚动条滑块悬停时的颜色',
+  'tools-bg': '默认透明，只染图标按钮之间的缝隙；真机打开搜索条或大纲时整条工具条收起',
+  'list-marker': '无序 / 有序列表符号的共同默认值；单独改过那两项后本项不再影响它们',
+  'mark-bg': '只染 ==高亮标记== 生成的纯 mark；搜索命中的 mark 底色由当前命中背景决定',
   hit: '巨型表格的命中行、源码块里包不出 mark 的命中：整块/整行底色；点左栏这项会临时摆出真实形态',
-  'hit-current': '搜索时当前命中的底色，也画整块命中的左侧竖条与锚点跳转闪烁（打开工具条上的搜索条即可看到）',
+  'hit-current': '搜索时当前命中的底色；整块命中的左侧竖条与锚点跳转闪烁也用它，竖条要点左栏「整块命中底色」才摆得出来',
   'zoom-bg': '点开图片后弹出的全屏遮罩；点左侧这几项会临时弹出真实遮罩预览',
 }
 
@@ -150,12 +154,12 @@ const DISPLAY = {
    末尾的规则更具体，命中时优先用它（best() 从后往前找）。 */
 const RULES = [
   { sel: '#doc', name: '文档页', vars: ['bg', 'fg'] },
-  { sel: '#doc h1', name: '一级标题', vars: ['h1-fg', 'h1-border', 'space-block'] },
-  { sel: '#doc h2', name: '二级标题', vars: ['h2-fg', 'h2-border', 'space-block'] },
-  { sel: '#doc h3', name: '三级标题', vars: ['h3-fg', 'h3-border', 'space-block'] },
-  { sel: '#doc h4', name: '四级标题', vars: ['h4-fg', 'h4-border', 'space-block'] },
-  { sel: '#doc h5', name: '五级标题', vars: ['h5-fg', 'h5-border', 'space-block'] },
-  { sel: '#doc h6', name: '六级标题', vars: ['h6-fg', 'h6-border', 'space-block'] },
+  { sel: '#doc h1', name: '一级标题', vars: ['h1-fg', 'h1-border'] },
+  { sel: '#doc h2', name: '二级标题', vars: ['h2-fg', 'h2-border'] },
+  { sel: '#doc h3', name: '三级标题', vars: ['h3-fg', 'h3-border'] },
+  { sel: '#doc h4', name: '四级标题', vars: ['h4-fg', 'h4-border'] },
+  { sel: '#doc h5', name: '五级标题', vars: ['h5-fg', 'h5-border'] },
+  { sel: '#doc h6', name: '六级标题', vars: ['h6-fg', 'h6-border'] },
   { sel: '#doc p', name: '正文段落', vars: ['fg', 'space-block'] },
   { sel: '#doc a', name: '链接', vars: ['link', 'link-hover'] },
   { sel: '#doc code', name: '行内代码', vars: ['code-bg', 'code-fg'] },
@@ -169,11 +173,11 @@ const RULES = [
   { sel: '#doc mark.hit--current', name: '当前命中', vars: ['hit-current'] },
   { sel: '#doc .hit--block, #doc tr.hit--row > td', name: '整块/整行命中', vars: ['hit'] },
   { sel: '#doc mark', name: '高亮标记', vars: ['mark-bg'] },
-  { sel: '#doc table', name: '表格', vars: ['table-bg', 'table-border', 'radius'] },
+  { sel: '#doc table', name: '表格', vars: ['table-bg', 'table-border'] },
   { sel: '#doc thead th', name: '表头单元格', vars: ['table-head-bg', 'table-head-fg', 'table-head-border'] },
   { sel: '#doc tbody tr:nth-child(odd) td', name: '表格奇行', vars: ['table-odd-bg', 'table-border'] },
   { sel: '#doc tbody tr:nth-child(even) td', name: '表格偶行', vars: ['table-even-bg', 'table-border'] },
-  { sel: '#doc thead th, #doc tbody td', name: '表格单元格（悬停）', vars: ['table-row-hover'] },
+  { sel: '#doc tbody td', name: '表格单元格（悬停）', vars: ['table-row-hover'] },
   { sel: '#doc .markdown-alert', name: '提示框', vars: ['space-block', 'radius'] },
   { sel: '#doc .markdown-alert-note', name: '提示框（说明）', vars: ['alert-note', 'alert-note-bg', 'alert-note-title'] },
   { sel: '#doc .markdown-alert-tip', name: '提示框（提示）', vars: ['alert-tip', 'alert-tip-bg', 'alert-tip-title'] },

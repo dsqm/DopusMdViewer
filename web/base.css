@@ -399,8 +399,8 @@ body.virtual .blk--bigseg .big-frame {
 
 body.virtual .blk--biglast .big-frame {
   border-bottom: 1px solid var(--md-block-border);
-  border-bottom-left-radius: var(--md-radius);
-  border-bottom-right-radius: var(--md-radius);
+  border-bottom-left-radius: var(--md-radius-code);
+  border-bottom-right-radius: var(--md-radius-code);
 }
 
 /* ---------------- 标题 ---------------- */
@@ -675,7 +675,7 @@ code .mdv-wt.mdv-sel::before {
 code .mdv-wrs.mdv-on,
 code .mdv-wrs.mdv-sel {
   background-image: radial-gradient(circle at 50% 72%,
-    var(--md-fg-muted) 0.5px, transparent 0.7px);
+    var(--md-code-ws-fg) 0.5px, transparent 0.7px);
   background-size: 1ch 100%;
   background-repeat: repeat-x;
   background-position: 0 0;
@@ -949,7 +949,7 @@ pre.mermaid-src {
   font: inherit;
   padding: 4px 14px;
   border: 1px solid var(--md-border);
-  border-radius: calc(var(--md-radius) * 0.7);
+  border-radius: var(--md-radius-ui);
   background: var(--md-block-bg);
   color: var(--md-outline-fg);
   cursor: pointer;
