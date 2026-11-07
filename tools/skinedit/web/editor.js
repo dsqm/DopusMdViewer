@@ -69,8 +69,8 @@ const NAMES = {
   'zoom-close-hover-bg': '遮罩关闭悬停背景',
 }
 
-/* RULES 里查不到的 10 项：它们是总开关，或者消费者在预览里不出现。
-   这 10 句是手写的——除此之外所有「影响」都从 RULES 反查，不再写第二份真相。 */
+/* RULES 里查不到的项：它们是总开关，或者消费者在预览里不出现。
+   这几句是手写的——除此之外所有「影响」都从 RULES 反查，不再写第二份真相。 */
 const HINT = {
   'bg-alt': '内层浅底：键盘键帽、弹窗按钮悬停、图片占位框、大纲悬停的默认值',
   'fg-muted': '次要文字：页脚、定义列表的说明、表注；标题以外的弱化文字都取它',
@@ -96,7 +96,8 @@ const STATE_NOTE = {
   'table-row-hover': '表格行悬停时的单元格底色',
   'outline-hover-bg': '大纲条目悬停时的底色',
   'scrollbar-hover': '自绘滚动条滑块悬停时的颜色',
-  'hit-current': '搜索「当前命中的那一个」的高亮底色（预览里第三处 mark 就是它）',
+  hit: '搜索命中的高亮底色（打开工具条上的搜索条即可看到）',
+  'hit-current': '搜索「当前命中的那一个」的高亮底色（打开工具条上的搜索条即可看到）',
   'zoom-bg': '点开图片后弹出的全屏遮罩；点左侧这几项会临时弹出真实遮罩预览',
 }
 
@@ -302,7 +303,7 @@ const S = {
   /* 只为一类变量临时亮起的界面件（tools / find / outline / sb）：预览窄，
      大纲一弹就盖住大半正文，点「滚动条」把大纲带出来纯属干扰。 */
   widgetPeek: null,
-  /* 原值视图：忽略本次会话的内联改动，预览显示当前来源刚载入时的样子。 */
+  /* 原值视图：按住对比按钮期间忽略本次会话的内联改动，预览显示来源刚载入时的样子。 */
   showOriginal: false,
   link: true,
   query: '',
@@ -827,6 +828,7 @@ function applyAll() {
   }
   installLink(d)
   installDemo(d)
+  syncFind(d, shown.find)
 }
 
 function fillOutline(d) {
@@ -1013,6 +1015,150 @@ function selectVars(rule) {
   if (usedRows[0]) revealRow(usedRows[0])
 }
 
+/* 查找条接的是真查找：命中用 <mark class="hit"> 包出来，结构与插件一致，改
+   --md-hit / --md-hit-current 时看到的就是搜索时的样子。只匹配正文里的普通文本
+   节点，代码块、KaTeX、按钮与已有 mark 一律跳过：它们的文本被 hljs / KaTeX 切成
+   大量 span，包 mark 会拆坏结构，也会让复制按钮取到被改过的源码。 */
+const FIND_DEFAULT_QUERY = '正文'
+const FIND_VARS = ['hit', 'hit-current', 'mark-bg']
+const FIND_SKIP = 'pre, code, .katex, mark, button, svg, script, style'
+const FIND_WORD_L = String.raw`[\p{L}\p{N}_]`
+let findActive = false
+let findHits = []
+let findCur = -1
+
+function findTog(d, id) {
+  const b = d.getElementById(id)
+  return !!b && b.classList.contains('on')
+}
+
+/* 整词不用 \b：中文没有词边界，\b 会让「正文」这类词永远匹配不上。
+   改用手写的前后否定断言，相邻字符不是字母/数字/下划线才算整词。 */
+function findRegex(o) {
+  if (!o.q) return null
+  const src = o.re ? o.q : o.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const body = o.word
+    ? '(?<!' + FIND_WORD_L + ')(?:' + src + ')(?!' + FIND_WORD_L + ')'
+    : src
+  try { return new RegExp(body, (o.cs ? 'g' : 'gi') + 'u') }
+  catch { return false }
+}
+
+function setFindCount(d, text) {
+  const c = d.getElementById('find-count')
+  if (c) c.textContent = text
+}
+
+function reindexFind(d) {
+  if (d.documentElement.dataset.previewReady === '1') buildRuleIndex(d)
+}
+
+function clearFindMarks(d) {
+  const doc = d.getElementById('doc')
+  if (doc) {
+    for (const m of [...doc.querySelectorAll('mark.hit[data-find]')]) {
+      const p = m.parentNode
+      m.replaceWith(...m.childNodes)
+      if (p) p.normalize()
+    }
+  }
+  findHits = []
+  findCur = -1
+}
+
+function runFind(d, scroll = false) {
+  clearFindMarks(d)
+  const input = d.getElementById('find-input')
+  const o = {
+    q: input ? input.value : '',
+    cs: findTog(d, 'find-case'),
+    word: findTog(d, 'find-word'),
+    re: findTog(d, 'find-regex'),
+  }
+  const re = findRegex(o)
+  if (re === false) { setFindCount(d, '表达式无效'); reindexFind(d); return }
+  if (!re) { setFindCount(d, '0/0'); reindexFind(d); return }
+
+  const doc = d.getElementById('doc')
+  if (!doc) { setFindCount(d, '0/0'); return }
+  const NF = window.NodeFilter
+  const walker = d.createTreeWalker(doc, NF.SHOW_TEXT, {
+    acceptNode(n) {
+      if (!n.nodeValue || !n.nodeValue.trim()) return NF.FILTER_REJECT
+      const p = n.parentElement
+      if (p && p.closest(FIND_SKIP)) return NF.FILTER_REJECT
+      return NF.FILTER_ACCEPT
+    },
+  })
+  const jobs = []
+  let node
+  while ((node = walker.nextNode())) {
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(node.nodeValue))) {
+      if (!m[0].length) { re.lastIndex++; continue }
+      jobs.push({ node, start: m.index, end: m.index + m[0].length })
+    }
+  }
+  // 倒序包：同一文本节点被 splitText 之后，靠前的偏移才不会失效
+  for (let i = jobs.length - 1; i >= 0; i--) {
+    const t = jobs[i].node
+    if (!t.parentNode) continue
+    try {
+      const r = d.createRange()
+      r.setStart(t, jobs[i].start)
+      r.setEnd(t, jobs[i].end)
+      const mk = d.createElement('mark')
+      mk.className = 'hit'
+      mk.dataset.find = '1'
+      r.surroundContents(mk)
+    } catch { /* 跨元素的匹配跳过 */ }
+  }
+  findHits = [...doc.querySelectorAll('mark.hit[data-find]')]
+  findCur = findHits.length ? 0 : -1
+  if (findCur >= 0) findHits[findCur].classList.add('hit--current')
+  setFindCount(d, findHits.length ? '1/' + findHits.length : '0/0')
+  reindexFind(d)
+  if (scroll && findCur >= 0) scrollPreviewIntoView(d, findHits[findCur])
+}
+
+function stepFind(d, delta) {
+  if (!findHits.length) return
+  findHits[findCur].classList.remove('hit--current')
+  findCur = (findCur + delta + findHits.length) % findHits.length
+  const cur = findHits[findCur]
+  cur.classList.add('hit--current')
+  setFindCount(d, (findCur + 1) + '/' + findHits.length)
+  scrollPreviewIntoView(d, cur)
+}
+
+/* 界面件的可见性在 applyAll 里收口：谁把查找条亮出来，命中就跟着出现；收起时
+   把包出来的 mark 全部拆回去，正文恢复成渲染时的原样。 */
+function syncFind(d, visible) {
+  if (!visible) {
+    if (!findActive) return
+    clearFindMarks(d)
+    setFindCount(d, '')
+    findActive = false
+    reindexFind(d)
+    return
+  }
+  if (findActive) return
+  findActive = true
+  runFind(d, true)
+}
+
+/* 命中高亮只在查找产生后才存在：点左栏这几项时先摆出真实搜索状态，再定位到
+   对应的那一处。样例里剩下的 mark 是 ==高亮标记==，给 --md-mark-bg 用。 */
+function findTarget(d, name) {
+  const doc = d.getElementById('doc')
+  if (!doc) return null
+  if (name === 'hit-current') return doc.querySelector('mark.hit--current[data-find]')
+  if (name === 'hit') return doc.querySelector('mark.hit[data-find]:not(.hit--current)') ||
+                            doc.querySelector('mark.hit[data-find]')
+  return doc.querySelector('mark:not(.hit)')
+}
+
 /* 预览里的界面件按真实行为接电：左键点搜索/大纲图标开关对应面板、面板里的关闭按钮
    与 Esc 收起面板、复制按钮真复制、图片点开是放大遮罩、任务框能勾、外链不导航
    （预览只有一页，点走就回不来）。跳转已经在 installLink 里挪到右键。 */
@@ -1043,15 +1189,24 @@ function installDemo(d) {
     })
   }
 
-  // 搜索条：三个开关能按，关闭按钮收起整条
+  // 搜索条：预填一个在样例里出现多次的词，开条即能看到命中高亮；输入框、
+  // 三个开关与上下按钮都接真查找，关闭按钮与 Esc 收起整条并拆掉命中。
   const find = d.getElementById('find')
   if (find) {
+    const input = d.getElementById('find-input')
+    if (input && !input.value) input.value = FIND_DEFAULT_QUERY
+    if (input) input.addEventListener('input', () => runFind(d))
     for (const b of find.querySelectorAll('button.tog')) {
       b.addEventListener('click', (e) => {
         e.preventDefault()
         b.classList.toggle('on')
+        runFind(d)
       })
     }
+    const prev = d.getElementById('find-prev')
+    if (prev) prev.addEventListener('click', (e) => { e.preventDefault(); stepFind(d, -1) })
+    const next = d.getElementById('find-next')
+    if (next) next.addEventListener('click', (e) => { e.preventDefault(); stepFind(d, 1) })
     const close = d.getElementById('find-close')
     if (close) {
       close.addEventListener('click', (e) => {
@@ -1775,6 +1930,21 @@ function bindRowLink(row, name) {
       if (S.status.text.startsWith('--md-')) setStatus('')
       return
     }
+    // 命中高亮要查找跑起来才有：先把查找条摆出来，再按变量定位到那一处
+    if (FIND_VARS.includes(name)) {
+      clearUsed()
+      S.widgetPeek = 'find'
+      applyAll()
+      const target = findTarget(d, name)
+      if (target) {
+        highlightVar(name)
+        selNode = target
+        selNode.classList.add('__sel')
+        scrollPreviewIntoView(d, target)
+      }
+      if (S.status.text.startsWith('--md-')) setStatus('')
+      return
+    }
     if (selNode) selNode.classList.remove('__sel')
     selNode = null
     const set = S.ruleIndex && S.ruleIndex.byVar.get(name)
@@ -2236,8 +2406,8 @@ function sourceSelect() {
   return sel
 }
 
-/* 原值视图是两态开关：点一下忽略本次改动看来源原值，再点（或按 Esc）回到编辑态。
-   用图标而不是文字，跟旁边「联动」一样是点按，整排按钮的手势保持一致。 */
+/* 原值视图靠按住生效：按下时忽略本次会话的内联改动，松手立刻回到编辑态。
+   图标本身看不出手势，title 里写明「按住」，按住期间只靠 aria-pressed 给底色反馈。 */
 function setOriginal(on) {
   if (S.showOriginal === on) return
   S.showOriginal = on
@@ -2250,8 +2420,8 @@ function originalButton() {
   const b = el('button', 'ghostbtn iconbtn')
   b.type = 'button'
   b.dataset.act = 'original'
-  b.title = '对比原值：忽略当前改动，看这份皮肤打开或上次保存时的样子（再点或按 Esc 返回）'
-  b.setAttribute('aria-label', '对比原值')
+  b.title = '按住对比原值：按住时忽略本次改动，看这份皮肤打开或上次保存时的样子（松开还原）'
+  b.setAttribute('aria-label', '按住对比原值')
   b.setAttribute('aria-pressed', String(S.showOriginal))
   // 外壳页没有 sprite，图标内联：外框 + 中缝 + 两侧内容，表示并排对照
   b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' +
@@ -2259,7 +2429,11 @@ function originalButton() {
     '<path d="M12 4v16"/>' +
     '<path d="M6.5 9h2.5M6.5 13h2.5M15 9h2.5M15 13h2.5"/>' +
     '</svg>'
-  b.addEventListener('click', () => setOriginal(!S.showOriginal))
+  const off = () => setOriginal(false)
+  b.addEventListener('pointerdown', (e) => { e.preventDefault(); setOriginal(true) })
+  b.addEventListener('pointerup', off)
+  b.addEventListener('pointerleave', off)
+  b.addEventListener('pointercancel', off)
   return b
 }
 
@@ -2495,6 +2669,9 @@ function render() {
   usedRows = []
   selNode = null
   S.ruleIndex = null
+  findActive = false
+  findHits = []
+  findCur = -1
   ruleCache = new WeakMap()
   applyQueue.clear()
   stopScrollAnim()
@@ -2530,12 +2707,23 @@ function boot() {
   window.addEventListener('message', (e) => {
     if (!e.data || e.data.type !== 'skinedit-preview-ready') return
     const d = frameDoc()
-    if (d) buildRuleIndex(d)
+    if (!d) return
+    buildRuleIndex(d)
+    // iframe 重建后查找条若仍开着，要按新正文重新跑一遍命中
+    syncFind(d, S.uiFind || S.widgetPeek === 'find')
   })
   window.addEventListener('resize', () => { chipBox = null })
 
+  // 按住期间窗口失焦会吞掉 pointerup，原值视图卡住后改任何颜色都像没反应。
+  // 这两条兜底只在按住态下有动作，setOriginal 自己会挡掉重复调用。
+  const releaseOriginal = () => setOriginal(false)
+  window.addEventListener('blur', releaseOriginal)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) releaseOriginal()
+  })
+
   // 应用级撤销：即使在输入框里也接管 Ctrl+Z，撤销的是「一段编辑」而不是一个字符。
-  // 捕获阶段拦，免得预览页或控件先消费掉按键。顺带接管原值视图的 Esc。
+  // 捕获阶段拦，免得预览页或控件先消费掉按键。Esc 同时作原值视图的手动兜底。
   document.addEventListener('keydown', (e) => {
     // 取色弹层开着时 Esc 归它自己，别一次关掉弹层和原值视图两样
     if (e.key === 'Escape' && S.showOriginal && !picker) {
