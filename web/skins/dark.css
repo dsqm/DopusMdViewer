@@ -131,6 +131,13 @@
   --md-radius-alert: var(--md-radius);
   --md-radius-ui: calc(var(--md-radius) * 0.7);
   --md-space-block: 1em;
+
+  /* —— 图片放大 —— */
+  --md-zoom-bg: rgba(0, 0, 0, 0.92);
+  --md-zoom-close-fg: #ffffff;
+  --md-zoom-close-bg: rgba(0, 0, 0, 0.55);
+  --md-zoom-close-border: rgba(255, 255, 255, 0.25);
+  --md-zoom-close-hover-bg: rgba(255, 255, 255, 0.18);
 }
 
 

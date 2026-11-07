@@ -1,5 +1,5 @@
 /* 皮肤编辑器主体（票 11）。由窗口交互原型 D 变体移植而来，去掉原型壳与假数据。
-   左栏 108 项表单 + 右栏自渲染预览；文件读写与本机对话框走宿主通道。 */
+   左栏 113 项表单 + 右栏自渲染预览；文件读写与本机对话框走宿主通道。 */
 
 import { GROUPS, DEFAULTS, parseSkin, emitSkin, decodeSkinBytes } from './skinfile.mjs'
 
@@ -63,6 +63,10 @@ const NAMES = {
 
   radius: '圆角', 'radius-code': '代码块圆角', 'radius-alert': '提示框圆角',
   'radius-ui': '小按钮圆角', 'space-block': '块间距',
+
+  'zoom-bg': '图片放大遮罩', 'zoom-close-fg': '遮罩关闭叉号',
+  'zoom-close-bg': '遮罩关闭背景', 'zoom-close-border': '遮罩关闭边框',
+  'zoom-close-hover-bg': '遮罩关闭悬停背景',
 }
 
 /* RULES 里查不到的 10 项：它们是总开关，或者消费者在预览里不出现。
@@ -93,6 +97,7 @@ const STATE_NOTE = {
   'outline-hover-bg': '大纲条目悬停时的底色',
   'scrollbar-hover': '自绘滚动条滑块悬停时的颜色',
   'hit-current': '搜索「当前命中的那一个」的高亮底色（预览里第三处 mark 就是它）',
+  'zoom-bg': '点开图片后弹出的全屏遮罩；点左侧这几项会临时弹出真实遮罩预览',
 }
 
 
@@ -136,6 +141,8 @@ const DISPLAY = {
   '列表、分隔线与脚注': ['footnote-fg', 'footnote-bg', 'footnote-border',
                          'ul-marker', 'ol-marker', 'list-marker', 'hr'],
   '形状': ['radius', 'radius-code', 'radius-alert', 'radius-ui', 'space-block'],
+  '图片放大': ['zoom-bg', 'zoom-close-fg', 'zoom-close-bg',
+               'zoom-close-border', 'zoom-close-hover-bg'],
 }
 
 /* 元素 → 变量。sel 用来在预览里找元素；变量顺序不重要。
@@ -194,10 +201,13 @@ const RULES = [
   { sel: '#outline', name: '大纲面板（界面元素）', vars: ['outline-bg', 'outline-fg', 'outline-border'] },
   { sel: '#outline .outline-item', name: '大纲条目', vars: ['outline-fg', 'outline-hover-bg'] },
   { sel: '#sb-thumb', name: '自绘滚动条', vars: ['scrollbar', 'scrollbar-hover', 'scrollbar-track'] },
+  { sel: '#mdv-zoom, #mdv-zoom .mdv-zoom-close', name: '图片放大遮罩',
+    vars: ['zoom-bg', 'zoom-close-fg', 'zoom-close-bg', 'zoom-close-border',
+           'zoom-close-hover-bg'] },
 ]
 
 /* 变量 → 用到它的元素中文名。悬停行的提示框里显示「影响：…」。
-   RULES 改了这里自动跟着改——这是「不手写 108 条说明」换到的东西。 */
+   RULES 改了这里自动跟着改——这是「不手写 113 条说明」换到的东西。 */
 /* 同一层上多条规则都命中时取最具体的一条：先比 CSS 特异度，同分再比选择器长度。
    否则 #doc mark 会抢走 mark.hit--current，.markdown-alert 会抢走 -note 之类。
    只在启动时算一次，mousemove 里不再碰字符串解析。 */
@@ -1166,6 +1176,23 @@ function openZoom(d, img) {
   d.body.append(layer)
 }
 
+/* 放大遮罩平时不在 DOM：点左侧这几项时用一张内联样例图弹出真实的 #mdv-zoom，
+   颜色改动立刻落在遮罩与关闭按钮上，不必在预览页常驻一个假的样例层。 */
+const ZOOM_VARS = ['zoom-bg', 'zoom-close-fg', 'zoom-close-bg',
+                   'zoom-close-border', 'zoom-close-hover-bg']
+
+function showZoomSample(d) {
+  const old = d.getElementById('mdv-zoom')
+  if (old) old.remove()
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180">' +
+    '<rect width="320" height="180" fill="#57606a"/>' +
+    '<text x="160" y="98" text-anchor="middle" fill="#fff" font-size="16">图片放大预览</text></svg>'
+  openZoom(d, {
+    currentSrc: 'data:image/svg+xml,' + encodeURIComponent(svg),
+    naturalWidth: 320, naturalHeight: 180, alt: '',
+  })
+}
+
 /* 跳转的滚动自己走一小段动画。原生 behavior:'smooth' 不能直接用：连续点击会排队，
    第二次点完先跑完上一次的动画再慢慢挪到新位置，看起来就是「跳了又弹回去」。
    这里每次点击都从当前位置重新起算、直接替换掉上一条动画；用户自己滚动即取消。 */
@@ -1741,6 +1768,13 @@ function bindRowLink(row, name) {
   row.addEventListener('click', () => {
     const d = frameDoc()
     if (!d) return
+    // 遮罩是点图时才生成的，静态索引里没有它：直接弹一份真实遮罩当落点
+    if (ZOOM_VARS.includes(name)) {
+      clearUsed()
+      showZoomSample(d)
+      if (S.status.text.startsWith('--md-')) setStatus('')
+      return
+    }
     if (selNode) selNode.classList.remove('__sel')
     selNode = null
     const set = S.ruleIndex && S.ruleIndex.byVar.get(name)

@@ -3,15 +3,15 @@
 // 一份皮肤固定是三段：
 //   <header>   /* name: 显示名
 //                 id: 文件名主干 */
-//   <root>     :root { color-scheme: …; 108 个 --md-* }
+//   <root>     :root { color-scheme: …; 113 个 --md-* }
 //   <extra>    :root 之后的原文，逐字带回
 //
-// 读：抽出 108 个变量、color-scheme、未识别声明与 extra，缺的补 DEFAULTS。
-// 写：头注释 + :root（十个分组、固定顺序、全量 108 行）+ 未识别声明 + extra。
+// 读：抽出 113 个变量、color-scheme、未识别声明与 extra，缺的补 DEFAULTS。
+// 写：头注释 + :root（十一个分组、固定顺序、全量 113 行）+ 未识别声明 + extra。
 // 因此 emitSkin(parseSkin(x)) 与 x 的 ":root" 起部分逐字相同（头注释会被重写成
 // 只有 name/id，模板里的说明文字不保留）。这条等式是 test/skinfile.test.mjs 的主断言。
 
-/* 分组顺序即写出顺序，与 web/skins/light.css 一致。108 项。 */
+/* 分组顺序即写出顺序，与 web/skins/light.css 一致。113 项。 */
 export const GROUPS = [
   { title: '底与字', names: ['bg', 'bg-alt', 'fg', 'fg-muted', 'fg-heading', 'border', 'h1-fg',
       'h2-fg', 'h3-fg', 'h4-fg', 'h5-fg', 'h6-fg', 'h1-border', 'h2-border', 'h3-border',
@@ -37,6 +37,8 @@ export const GROUPS = [
   { title: '列表、分隔线与脚注', names: ['list-marker', 'ul-marker', 'ol-marker', 'hr', 'footnote-fg',
       'footnote-bg', 'footnote-border'] },
   { title: '形状', names: ['radius', 'radius-code', 'radius-alert', 'radius-ui', 'space-block'] },
+  { title: '图片放大', names: ['zoom-bg', 'zoom-close-fg', 'zoom-close-bg',
+      'zoom-close-border', 'zoom-close-hover-bg'] },
 ]
 
 export const ORDER = GROUPS.flatMap((g) => g.names)
@@ -99,6 +101,11 @@ export const DEFAULTS = {
   /* 形状 */
   'radius': '6px', 'radius-code': 'var(--md-radius)', 'radius-alert': 'var(--md-radius)',
   'radius-ui': 'calc(var(--md-radius) * 0.7)', 'space-block': '1em',
+  /* 图片放大：遮罩与它的关闭按钮。深底是默认值，改成浅底时五项要一起反相 */
+  'zoom-bg': 'rgba(0, 0, 0, 0.92)', 'zoom-close-fg': '#ffffff',
+  'zoom-close-bg': 'rgba(0, 0, 0, 0.55)',
+  'zoom-close-border': 'rgba(255, 255, 255, 0.25)',
+  'zoom-close-hover-bg': 'rgba(255, 255, 255, 0.18)',
 }
 
 /* ---------------- 扫描 ---------------- */

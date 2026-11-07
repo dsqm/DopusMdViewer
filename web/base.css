@@ -1,8 +1,8 @@
 /* ============================================================
    base.css — 排版骨架，随 web\ 分发。
 
-   颜色：一律取 --md-* 变量。唯一的字面色是阴影与遮罩用的半透明黑
-         （rgba(0,0,0,…)），没有对应的变量，皮肤通常也不必改。
+   颜色：一律取 --md-* 变量。字面色只剩阴影用的半透明黑；图片放大遮罩与
+         它的关闭按钮在契约末尾单独成组（--md-zoom-*），深浅皮肤可各自反相。
    类型：一律取 --fx-* 变量（三槽位 / px 字号 / 倍数行高 / em 行宽），
          由 <style id="fx"> 最后覆盖，皮肤改不动。
    字面色值集中在 :root 默认块，供"皮肤只写两三行"时兜底。
@@ -10,7 +10,7 @@
    ============================================================ */
 
 :root {
-  /* —— 变量契约（108 个，本文件全量给出默认值，等于 light 皮肤）——
+  /* —— 变量契约（113 个，本文件全量给出默认值，等于 light 皮肤）——
      皮肤只写想改的项即可；缺项就落回这里的值。
      默认值里大量出现 var(--上级)：这是「总开关 + 个别覆盖」的级联，改 --md-fg-heading
      六级标题跟着变，某一级被单独写过就不再跟。 */
@@ -144,6 +144,13 @@
   --md-radius-code: var(--md-radius);
   --md-radius-alert: var(--md-radius);
   --md-radius-ui: calc(var(--md-radius) * 0.7);
+
+  /* —— 图片放大遮罩：深底是默认值，改成浅底时五项一起反相 —— */
+  --md-zoom-bg: rgba(0, 0, 0, 0.92);
+  --md-zoom-close-fg: #ffffff;
+  --md-zoom-close-bg: rgba(0, 0, 0, 0.55);
+  --md-zoom-close-border: rgba(255, 255, 255, 0.25);
+  --md-zoom-close-hover-bg: rgba(255, 255, 255, 0.18);
 
   /* —— 字体与行宽，#fx 会整组覆盖 —— */
   --fx-ui: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
@@ -1382,7 +1389,7 @@ pre.mermaid-src {
   position: fixed;
   inset: 0;
   z-index: 2000;
-  background: rgba(0, 0, 0, 0.92);
+  background: var(--md-zoom-bg);
   cursor: grab;
 }
 
@@ -1400,7 +1407,7 @@ pre.mermaid-src {
   -webkit-user-drag: none;
 }
 
-/* 关闭按钮：遮罩永远深色，不跟皮肤变量走，直接用白/黑定色 */
+/* 关闭按钮：遮罩与按钮整体走 --md-zoom-*，浅底皮肤把五项一起反相即可 */
 #mdv-zoom .mdv-zoom-close {
   position: absolute;
   top: 14px;
@@ -1411,15 +1418,15 @@ pre.mermaid-src {
   width: 36px;
   height: 36px;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  border: 1px solid var(--md-zoom-close-border);
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
+  background: var(--md-zoom-close-bg);
+  color: var(--md-zoom-close-fg);
   cursor: pointer;
 }
 
 #mdv-zoom .mdv-zoom-close:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--md-zoom-close-hover-bg);
 }
 
 #mdv-zoom .mdv-zoom-close .mdv-i {
