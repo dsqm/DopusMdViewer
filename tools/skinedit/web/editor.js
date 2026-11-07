@@ -77,9 +77,9 @@ const HINT = {
   'fg-muted': '次要文字：页脚、定义列表的说明、表注；标题以外的弱化文字都取它',
   'fg-heading': 'h1–h5 的默认字色；单独改过某一级就不再跟它，h6 默认跟次要字',
   border: '标题下边线、大纲 / 搜索条 / 图标 / 脚注边框与弹窗细线；表格、引用竖条、代码块、分隔线各有独立变量，不跟它',
-  danger: '外部链接确认弹窗的竖条、图标、警示底与主按钮；正文里用不到，弹窗标题用的是标题字',
+  danger: '外部链接确认弹窗的竖条、图标、警示底与主按钮；正文里用不到，弹窗标题用的是标题字；点左栏这项会临时摆出弹窗',
   selection: '拖选文字时的背景（原生 ::selection），不影响搜索命中的高亮',
-  'code-ws-fg': '空白符标记的颜色（只在该功能打开时可见）；默认跟随次要字',
+  'code-ws-fg': '空白符标记的颜色（只在该功能打开时可见）；默认跟随次要字，点左栏这项会临时在代码块里摆出标记',
   'radius-code': '代码块外框圆角；默认跟随总圆角',
   'radius-alert': '提示框外框圆角；默认跟随总圆角',
   'radius-ui': '图标按钮与复制按钮的圆角；默认是总圆角的 0.7 倍',
@@ -90,7 +90,7 @@ const HINT = {
 /* 补充说明：状态限制、层叠例外与级联行为。不参与 RULES 反查，只在提示末尾补一句，
    免得把「影响」列写成第二份真相。 */
 const STATE_NOTE = {
-  'icon-active': '搜索条里 Aa / 整词 / 正则开关按下时的边框与文字颜色；真机默认三个都不按下，要把开关按下才看得见',
+  'icon-active': '搜索条里 Aa / 整词 / 正则开关按下时的边框与文字颜色；真机默认三个都不按下，点左栏这项会临时把 Aa 按下',
   'icon-hover': '图标按钮悬停时的图标色',
   'copy-hover-fg': '复制按钮悬停时、以及复制完成后短暂亮起的字与图标颜色',
   'link-hover': '链接悬停时的字色',
@@ -1232,6 +1232,85 @@ function findTarget(d, name) {
   return doc.querySelector('mark:not(.hit)')
 }
 
+/* 这几项与真机一样只在某个状态出现，静态预览里本来没有落点：点左栏时把状态
+   摆出来，点别的变量时撤掉。工具条与自绘滚动条不改显隐——预览是调色台，
+   强行收起工具条或常驻一条不走动的假滑块，反而没法来回配色。 */
+const DEMO_VARS = ['danger', 'code-ws-fg', 'icon-active']
+
+function clearStateSample(d) {
+  for (const el of d.querySelectorAll('[data-state-demo]')) el.remove()
+  for (const s of d.querySelectorAll('span[data-ws-demo]')) {
+    const p = s.parentNode
+    s.replaceWith(...s.childNodes)
+    if (p) p.normalize()
+  }
+  const aa = d.getElementById('find-case')
+  if (aa && aa.dataset.stateOn) {
+    aa.classList.remove('on')
+    delete aa.dataset.stateOn
+  }
+}
+
+function showStateSample(d, name) {
+  if (name === 'danger') {
+    if (d.querySelector('.mdv-modal-overlay')) return
+    const layer = d.createElement('div')
+    layer.className = 'mdv-modal-overlay'
+    layer.dataset.stateDemo = '1'
+    layer.innerHTML =
+      '<div class="mdv-modal" role="dialog" aria-modal="true">' +
+      '<div class="mdv-modal-head"><span class="mdv-modal-ico">!</span>' +
+      '<h2 class="mdv-modal-title">打开外部链接</h2></div>' +
+      '<p class="mdv-modal-warn">预览里不打开链接，这里只摆出弹窗的配色。</p>' +
+      '<div class="mdv-modal-url">https://example.com</div>' +
+      '<div class="mdv-modal-actions">' +
+      '<button type="button" class="mdv-cancel">取消</button>' +
+      '<button type="button" class="mdv-open"><span class="mdv-fill"></span>' +
+      '<span class="mdv-txt">打开</span></button></div></div>'
+    d.body.append(layer)
+    return
+  }
+  if (name === 'icon-active') {
+    const aa = d.getElementById('find-case')
+    if (aa && !aa.classList.contains('on')) {
+      aa.classList.add('on')
+      aa.dataset.stateOn = '1'
+    }
+    return
+  }
+  if (name === 'code-ws-fg') {
+    const code = d.querySelector('#doc code.hljs')
+    if (!code) return
+    // 只包纯文本节点里的空格：span 内仍是同一个空格，复制与查找都不受影响
+    const walker = d.createTreeWalker(code, window.NodeFilter.SHOW_TEXT)
+    const nodes = []
+    let n
+    while ((n = walker.nextNode())) nodes.push(n)
+    let count = 0
+    for (const node of nodes) {
+      if (count >= 6) break
+      const i = node.nodeValue.indexOf(' ')
+      if (i < 0) continue
+      try {
+        const r = d.createRange()
+        r.setStart(node, i)
+        r.setEnd(node, i + 1)
+        const s = d.createElement('span')
+        s.className = 'mdv-ws mdv-on'
+        s.dataset.wsDemo = '1'
+        r.surroundContents(s)
+        count++
+      } catch { /* 跨元素的空格跳过 */ }
+    }
+  }
+}
+
+function stateTarget(d, name) {
+  if (name === 'danger') return d.querySelector('.mdv-modal-overlay .mdv-modal')
+  if (name === 'code-ws-fg') return d.querySelector('span[data-ws-demo]')
+  return d.getElementById('find-case')
+}
+
 /* 预览里的界面件按真实行为接电：左键点搜索/大纲图标开关对应面板、面板里的关闭按钮
    与 Esc 收起面板、复制按钮真复制、图片点开是放大遮罩、任务框能勾、外链不导航
    （预览只有一页，点走就回不来）。跳转已经在 installLink 里挪到右键。 */
@@ -1364,11 +1443,13 @@ async function copyCode(d, btn) {
   }
   const use = btn.querySelector('use')
   const old = btn.getAttribute('title') || '复制代码'
+  if (ok) btn.dataset.done = '1'
   if (use) use.setAttribute('href', ok ? '#i-check' : '#i-close')
   btn.setAttribute('title', ok ? '已复制' : '复制失败')
   setTimeout(() => {
     if (use) use.setAttribute('href', '#i-copy')
     btn.setAttribute('title', old)
+    delete btn.dataset.done
   }, 900)
 }
 
@@ -1996,8 +2077,9 @@ function bindRowLink(row, name) {
   row.addEventListener('click', () => {
     const d = frameDoc()
     if (!d) return
-    // 点别的变量就撤掉上次摆出的整块/整行命中，别让它一直挂在预览里
+    // 点别的变量就撤掉上次临时摆出的状态，别让它们一直挂在预览里
     clearHitBlockSample(d)
+    clearStateSample(d)
     // 遮罩是点图时才生成的，静态索引里没有它：直接弹一份真实遮罩当落点
     if (ZOOM_VARS.includes(name)) {
       clearUsed()
@@ -2013,6 +2095,21 @@ function bindRowLink(row, name) {
       // 整块/整行命中是运行时才出现的，摆出来后联动索引要跟着重建
       if (name === 'hit') { showHitBlockSample(d); reindexFind(d) }
       const target = findTarget(d, name)
+      if (target) {
+        highlightVar(name)
+        selNode = target
+        selNode.classList.add('__sel')
+        scrollPreviewIntoView(d, target)
+      }
+      if (S.status.text.startsWith('--md-')) setStatus('')
+      return
+    }
+    // 只在某个状态出现的变量：摆出真机同款状态，再定位到那一处
+    if (DEMO_VARS.includes(name)) {
+      clearUsed()
+      if (name === 'icon-active') { S.widgetPeek = 'find'; applyAll() }
+      showStateSample(d, name)
+      const target = stateTarget(d, name)
       if (target) {
         highlightVar(name)
         selNode = target

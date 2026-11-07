@@ -161,6 +161,9 @@ async function boot() {
     if (!r.ok) throw new Error('HTTP ' + r.status)
     const docEl = document.getElementById('doc')
     docEl.innerHTML = sanitize(md.render(await r.text()))
+    // 真机的脚注区由宿主自己拼，不带 markdown-it-footnote 的分隔 hr。
+    // 留着它会让 --md-hr 在预览里比真机多一条线。
+    for (const sep of docEl.querySelectorAll('hr.footnotes-sep')) sep.remove()
     fillOutline(docEl)
     document.documentElement.dataset.previewReady = '1'
     // iframe 的 load 早于这段异步渲染；父页面等这条消息才建联动索引。

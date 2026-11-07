@@ -35,9 +35,9 @@
 <div id="find" class="ui mdv-ui" hidden>
   <input id="find-input" type="search" autocomplete="off" spellcheck="false" placeholder="搜索本文档">
   <span id="find-count"></span>
-  <!-- Aa 固定置为按下状态：--md-icon-active 只画「开关按下」这一种状态，
-       三个开关全关着时那一项在预览里没有任何可见目标。 -->
-  <button id="find-case" type="button" class="tog on" title="区分大小写">Aa</button>
+  <!-- 三个开关与真机一样默认全不按下；--md-icon-active 只在按下态可见，
+       点左栏那一项会临时把 Aa 按下。 -->
+  <button id="find-case" type="button" class="tog" title="区分大小写">Aa</button>
   <button id="find-word" type="button" class="tog" title="整词匹配">W</button>
   <button id="find-regex" type="button" class="tog" title="正则匹配">.*</button>
   <button id="find-prev" type="button" class="mdv-ibtn" title="上一个" aria-label="上一个"><svg class="mdv-i"><use href="#i-up"></use></svg></button>
