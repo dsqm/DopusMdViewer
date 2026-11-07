@@ -46,6 +46,25 @@ html, body {
 .ghostbtn:disabled { opacity: .4; cursor: default; }
 .ghostbtn:disabled:hover { background: #fff; border-color: #c4c9ce; }
 
+/* 只有图标、没有文字的顶栏开关（对比原值）：尺寸与文字按钮对齐，靠 aria-pressed 显状态 */
+.ghostbtn.iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+}
+.ghostbtn.iconbtn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 select.sel {
   font: inherit;
   font-size: 12px;
@@ -337,18 +356,6 @@ select.sel {
 }
 .rail-foot .grow { flex: 1 1 auto; }
 .rail-foot .tiny { font-size: 11px; color: #7b838b; }
-
-/* 预览右下角的浮层小工具：A 用这种，B/C 不这么放。
-   放右下而不是右上：右上角在真窗格里是宿主自己的工具条（#tools），两排按钮会叠在一起。 */
-.pv-tools {
-  position: absolute;
-  bottom: 10px;
-  right: 12px;
-  display: flex;
-  gap: 6px;
-  z-index: 3;
-}
-.pv-tools .ghostbtn { backdrop-filter: blur(6px); background: rgba(255,255,255,.88); }
 
 /* —— B：预览优先 + 抽屉 —— */
 

@@ -286,15 +286,14 @@ const S = {
   lastColor: {},
   scheme: 'light',
   schemeAuto: 'light',
-  widgets: false,
-  /* 工具条上两个图标开关的面板：与插件里一致，搜索条与大纲由图标开关，
-     不跟「界面元素」总开关绑在一起。 */
+  /* 工具条上两个图标开关的面板：与插件里一致，搜索条与大纲各自独立。 */
   uiFind: false,
   uiOutline: false,
   /* 只为一类变量临时亮起的界面件（tools / find / outline / sb）：预览窄，
      大纲一弹就盖住大半正文，点「滚动条」把大纲带出来纯属干扰。 */
   widgetPeek: null,
-  hold: false,
+  /* 原值视图：忽略本次会话的内联改动，预览显示当前来源刚载入时的样子。 */
+  showOriginal: false,
   link: true,
   query: '',
   onlyChanged: false,
@@ -781,12 +780,12 @@ function applyAll() {
   const root = d.documentElement
 
   clearInlineVars(root)
-  if (!S.hold) {
+  if (!S.showOriginal) {
     for (const [k, v] of Object.entries(S.overrides)) root.style.setProperty('--md-' + k, v)
   }
 
-  // 「按住看默认」= 保留当前这份皮肤/模板，只摘掉本次会话写进根元素的内联改动。
-  // 摘掉整份皮肤（media="not all"）会露出 base.css 的底层默认，深色模板按住会
+  // 「对比原值」= 保留当前这份皮肤/模板，只摘掉本次会话写进根元素的内联改动。
+  // 摘掉整份皮肤（media="not all"）会露出 base.css 的底层默认，深色模板会
   // 突然变灰白，看不出改了什么。
   const skinEl = d.getElementById('skin')
   if (skinEl) skinEl.media = ''
@@ -794,13 +793,13 @@ function applyAll() {
   // color-scheme 不是 --md-* 变量，它得真的落在文档上才会影响原生控件
   root.style.colorScheme = S.scheme
 
-  // 界面件可见性：工具条常驻（插件里也一直在，图标就是开关），搜索条与大纲由图标开，
-  // 「界面元素」是「把界面件全摊开看颜色」的模式。点左侧变量时还能临时亮目标那一件。
+  // 界面件可见性：工具条常驻（插件里也一直在，图标就是开关），搜索条与大纲由图标开。
+  // 点左侧变量时只临时亮起对应的那一件，不把其它界面件一起摊开。
   const shown = {
     tools: true,
-    find: S.widgets || S.uiFind || S.widgetPeek === 'find',
-    outline: S.widgets || S.uiOutline || S.widgetPeek === 'outline',
-    sb: S.widgets || S.widgetPeek === 'sb',
+    find: S.uiFind || S.widgetPeek === 'find',
+    outline: S.uiOutline || S.widgetPeek === 'outline',
+    sb: S.widgetPeek === 'sb',
   }
   for (const id of ['tools', 'find', 'outline', 'sb']) {
     const node = d.getElementById(id)
@@ -1004,9 +1003,9 @@ function selectVars(rule) {
   if (usedRows[0]) revealRow(usedRows[0])
 }
 
-/* 预览里的界面件按真实行为接电：左键点搜索/大纲图标开关对应面板、复制按钮真复制、
-   图片点开是放大遮罩、任务框能勾、外链不导航（预览只有一页，点走就回不来）。
-   跳转已经在 installLink 里挪到右键，这里只接控件本身。 */
+/* 预览里的界面件按真实行为接电：左键点搜索/大纲图标开关对应面板、面板里的关闭按钮
+   与 Esc 收起面板、复制按钮真复制、图片点开是放大遮罩、任务框能勾、外链不导航
+   （预览只有一页，点走就回不来）。跳转已经在 installLink 里挪到右键。 */
 function installDemo(d) {
   if (d.__protoDemo) return
   d.__protoDemo = true
@@ -1017,7 +1016,8 @@ function installDemo(d) {
   if (tbtns[0]) {
     tbtns[0].addEventListener('click', () => {
       S.uiFind = !S.uiFind
-      if (S.uiFind) S.widgetPeek = null
+      // 单件预览会让面板一直亮着，开关关闭时也得把它清掉
+      if (S.uiFind || S.widgetPeek === 'find') S.widgetPeek = null
       applyAll()
       if (S.uiFind) {
         const input = d.getElementById('find-input')
@@ -1028,7 +1028,7 @@ function installDemo(d) {
   if (tbtns[1]) {
     tbtns[1].addEventListener('click', () => {
       S.uiOutline = !S.uiOutline
-      if (S.uiOutline) S.widgetPeek = null
+      if (S.uiOutline || S.widgetPeek === 'outline') S.widgetPeek = null
       applyAll()
     })
   }
@@ -1052,6 +1052,29 @@ function installDemo(d) {
       })
     }
   }
+
+  // 大纲头部的关闭按钮：与真实插件同一位置、同一图标，收起时清掉单件预览
+  const outlineClose = d.getElementById('outline-close')
+  if (outlineClose) {
+    outlineClose.addEventListener('click', (e) => {
+      e.preventDefault()
+      S.uiOutline = false
+      if (S.widgetPeek === 'outline') S.widgetPeek = null
+      applyAll()
+    })
+  }
+
+  // 两个面板的标题都写「关闭 (Esc)」：预览页内按 Esc 一并收起
+  d.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return
+    const open = S.uiFind || S.uiOutline ||
+                 S.widgetPeek === 'find' || S.widgetPeek === 'outline'
+    if (!open) return
+    S.uiFind = false
+    S.uiOutline = false
+    if (S.widgetPeek === 'find' || S.widgetPeek === 'outline') S.widgetPeek = null
+    applyAll()
+  })
 
   // 大纲条目：按顺序对应 #doc 里的 h1–h3
   const list = d.getElementById('outline-list')
@@ -1331,7 +1354,7 @@ function resolvedBase(name, depth = 0) {
    先删再写，改动 20 处后每敲一个字符就是 40 次全文档样式失效。 */
 function applyOneTo(d, name) {
   const v = S.overrides[name]
-  if (v === undefined || S.hold) d.documentElement.style.removeProperty('--md-' + name)
+  if (v === undefined || S.showOriginal) d.documentElement.style.removeProperty('--md-' + name)
   else d.documentElement.style.setProperty('--md-' + name, v)
 }
 
@@ -1723,19 +1746,19 @@ function bindRowLink(row, name) {
     const set = S.ruleIndex && S.ruleIndex.byVar.get(name)
     const first = set && set.values().next().value
     if (!first) {
-      // 总开关与只在插件界面出现的变量，预览里本来就没有可跳的元素。
+      // 只在插件界面出现、预览里本来就没有可跳元素的变量。
       clearUsed()
       setStatus('--md-' + name + ' 在预览里没有对应元素，无法跳转', 'warn')
       return
     }
     if (S.status.text.startsWith('--md-')) setStatus('')
-    // 只落在界面件里的变量（工具条 / 搜索条 / 大纲 / 滚动条）：把那一件亮出来。
-    // 只亮这一件而不是打开总开关，否则点「滚动条」会连大纲一起弹出、盖住大半正文。
+    // 只落在界面件里的变量（工具条 / 搜索条 / 大纲 / 滚动条）：把那一件亮出来，
+    // 不连其它界面件一起摊开，否则点「滚动条」会把大纲也弹出、盖住大半正文。
     const host = first.closest('#tools, #find, #outline, #sb')
     const peek = host ? host.id : null
     if (peek !== S.widgetPeek) {
       S.widgetPeek = peek
-      if (!S.widgets) applyAll()
+      applyAll()
     }
     highlightVar(name)
     selNode = first
@@ -2179,32 +2202,30 @@ function sourceSelect() {
   return sel
 }
 
-function holdButton() {
-  const b = el('button', 'ghostbtn', '按住看默认')
-  b.type = 'button'
-  b.title = '按住时忽略当前改动，看这份皮肤/模板原本的样子（松开还原）'
-  const on = (e) => { e.preventDefault(); S.hold = true; applyAll(); b.setAttribute('aria-pressed', 'true') }
-  const off = () => { S.hold = false; applyAll(); b.setAttribute('aria-pressed', 'false') }
-  b.addEventListener('pointerdown', on)
-  b.addEventListener('pointerup', off)
-  b.addEventListener('pointerleave', off)
-  b.addEventListener('pointercancel', off)
-  return b
+/* 原值视图是两态开关：点一下忽略本次改动看来源原值，再点（或按 Esc）回到编辑态。
+   用图标而不是文字，跟旁边「联动」一样是点按，整排按钮的手势保持一致。 */
+function setOriginal(on) {
+  if (S.showOriginal === on) return
+  S.showOriginal = on
+  applyAll()
+  document.querySelectorAll('[data-act="original"]').forEach((b) =>
+    b.setAttribute('aria-pressed', String(on)))
 }
 
-function widgetsButton() {
-  const b = el('button', 'ghostbtn', '界面元素')
+function originalButton() {
+  const b = el('button', 'ghostbtn iconbtn')
   b.type = 'button'
-  b.dataset.act = 'widgets'
-  b.title = '把搜索条、大纲、自绘滚动条一起摊开看颜色；平时搜索条与大纲用工具条上的图标开关'
-  b.setAttribute('aria-pressed', String(S.widgets))
-  b.addEventListener('click', () => {
-    S.widgets = !S.widgets
-    S.widgetPeek = null
-    document.querySelectorAll('[data-act="widgets"]').forEach((x) =>
-      x.setAttribute('aria-pressed', String(S.widgets)))
-    applyAll()
-  })
+  b.dataset.act = 'original'
+  b.title = '对比原值：忽略当前改动，看这份皮肤打开或上次保存时的样子（再点或按 Esc 返回）'
+  b.setAttribute('aria-label', '对比原值')
+  b.setAttribute('aria-pressed', String(S.showOriginal))
+  // 外壳页没有 sprite，图标内联：外框 + 中缝 + 两侧内容，表示并排对照
+  b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' +
+    '<rect x="3" y="4" width="18" height="16" rx="2"/>' +
+    '<path d="M12 4v16"/>' +
+    '<path d="M6.5 9h2.5M6.5 13h2.5M15 9h2.5M15 13h2.5"/>' +
+    '</svg>'
+  b.addEventListener('click', () => setOriginal(!S.showOriginal))
   return b
 }
 
@@ -2268,9 +2289,9 @@ function schemeRow() {
   return row
 }
 
-/* ---------------- 变体 ---------------- */
+/* ---------------- 顶栏与布局 ---------------- */
 
-/* B 样式的顶栏：所有动作常驻 */
+/* 顶栏：文件动作与预览视图开关常驻 */
 function topBar() {
   const top = el('div', 'topbar')
   const open = act('open')
@@ -2295,8 +2316,8 @@ function topBar() {
     restoreView()
     commitEdit()
   })
-  top.append(sourceSelect(), open, el('span', 'grow'), linkButton(), widgetsButton(),
-             holdButton(), undoBtn, redoBtn, reset, save, saveAs, aboutButton())
+  top.append(sourceSelect(), open, el('span', 'grow'), originalButton(), linkButton(),
+             undoBtn, redoBtn, reset, save, saveAs, aboutButton())
   return top
 }
 
@@ -2322,18 +2343,13 @@ function aboutButton() {
   return wrap
 }
 
-function previewBox(floating) {
+function previewBox() {
   const box = el('div', 'preview')
   box.id = 'preview-box'
   const chip = el('div', 'chip')
   chip.id = 'chip'
   chip.hidden = true
   box.append(newFrame(), chip)
-  if (floating) {
-    const tools = el('div', 'pv-tools')
-    tools.append(linkButton(), widgetsButton(), holdButton())
-    box.append(tools)
-  }
   return box
 }
 
@@ -2470,8 +2486,6 @@ function boot() {
     const i = pair.indexOf(':')
     if (i > 0) S.overrides[pair.slice(0, i)] = pair.slice(i + 1)
   }
-  S.widgets = p.get('widgets') === '1'
-  S.hold = p.get('hold') === '1'
   S.query = p.get('q') || ''
   S.openInit = p.get('fold') || 'first'
   S.onlyChanged = p.get('only') === '1'
@@ -2487,8 +2501,13 @@ function boot() {
   window.addEventListener('resize', () => { chipBox = null })
 
   // 应用级撤销：即使在输入框里也接管 Ctrl+Z，撤销的是「一段编辑」而不是一个字符。
-  // 捕获阶段拦，免得预览页或控件先消费掉按键。
+  // 捕获阶段拦，免得预览页或控件先消费掉按键。顺带接管原值视图的 Esc。
   document.addEventListener('keydown', (e) => {
+    // 取色弹层开着时 Esc 归它自己，别一次关掉弹层和原值视图两样
+    if (e.key === 'Escape' && S.showOriginal && !picker) {
+      setOriginal(false)
+      return
+    }
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return
     const k = e.key.toLowerCase()
     if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo() }
