@@ -3,12 +3,15 @@
     python tools/skinedit/build.py            # 全量
     python tools/skinedit/build.py --assets   # 只同步资产（改页面/样式时用，秒级）
 
-产物（全在 build\\ 下，不入库）：
+产物：
 
-    build\\obj-skinedit\\            中间文件：skinedit.obj、skinedit.res、version.rc.inc
-    build\\tools\\skinedit.exe
-    build\\tools\\assets\\           页面 + 预览资产，被映射成 https://skinedit.localhost/
-    build\\tools\\assets\\skins\\     四套内置皮肤，当模板用
+    build\\obj-skinedit\\                    中间文件：obj、res、version.rc.inc，不入库
+    tools\\skinedit\\bin\\skinedit.exe       可执行文件，不入库
+    tools\\skinedit\\bin\\assets\\           页面 + 预览资产，被映射成 https://skinedit.localhost/
+    tools\\skinedit\\bin\\assets\\skins\\     四套内置皮肤，当模板用
+
+bin 是发布目录：exe 与 assets 同级，pack.bat 也在那里，打包就地生成 zip。
+中间产物一律留在 build\\obj-skinedit\\，不进发布目录。
 
 零警告门槛：cl /W4、rc、link 只要吐出一条 warning 就算失败。这个程序只有一个 TU，
 容忍警告等于让它长期挂着。
@@ -26,6 +29,9 @@ import sys
 import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+TOOL = os.path.join(ROOT, 'tools', 'skinedit')
+BIN = os.path.join(TOOL, 'bin')
+WEB = os.path.join(ROOT, 'web')
 MSVC_VER = '14.44.35207'
 SDK_VER = '10.0.26100.0'
 VS = r'C:\VS2022'
@@ -33,10 +39,8 @@ SDK = r'C:\Program Files (x86)\Windows Kits\10'
 
 MSVC = os.path.join(VS, 'VC', 'Tools', 'MSVC', MSVC_VER)
 OBJ = os.path.join(ROOT, 'build', 'obj-skinedit')
-OUT = os.path.join(ROOT, 'build', 'tools', 'skinedit.exe')
-ASSETS = os.path.join(ROOT, 'build', 'tools', 'assets')
-TOOL = os.path.join(ROOT, 'tools', 'skinedit')
-WEB = os.path.join(ROOT, 'web')
+OUT = os.path.join(BIN, 'skinedit.exe')
+ASSETS = os.path.join(BIN, 'assets')
 
 CL = os.path.join(MSVC, 'bin', 'Hostx64', 'x64', 'cl.exe')
 RC = os.path.join(SDK, 'bin', SDK_VER, 'x64', 'rc.exe')

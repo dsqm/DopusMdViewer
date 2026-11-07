@@ -1,32 +1,27 @@
 @echo off
 chcp 936 >nul
-rem 皮肤编辑器发布包：只把 build\tools 下的 exe 与 assets 打进 zip。
-rem 发布前先跑 python tools\skinedit\build.py 全量重编，让版本号与页面资产对齐。
-rem 运行时生成物（WebView2 缓存、ini、日志）与其它开发工具一律不进包。
+rem 皮肤编辑器发布包：在本目录原地收 skinedit.exe 与 assets，压缩包也生成在这里。
+rem 发版前先用构建脚本全量重编，让 exe 与页面资产对齐。
+rem 运行时生成物（WebView2 缓存、ini、日志、旧 zip）与本脚本一律不进包。
 setlocal
 set "HERE=%~dp0"
-for %%I in ("%HERE%..\..") do set "ROOT=%%~fI"
-set "SRC=%ROOT%\build\tools"
-set "DIST=%ROOT%\build\dist"
-set "STAGE=%ROOT%\build\_pack_stage"
+set "STAGE=%HERE%_pack_stage"
 set "TAR=%SystemRoot%\System32\tar.exe"
 
-if not exist "%SRC%\skinedit.exe" echo 找不到 skinedit.exe，请先跑全量构建。 & goto :fail
-if not exist "%SRC%\assets\shell.html" echo 找不到 assets 页面，请先跑全量构建。 & goto :fail
+if not exist "%HERE%skinedit.exe" echo 找不到 skinedit.exe，请先跑全量构建。 & goto :fail
+if not exist "%HERE%assets\shell.html" echo 找不到 assets 页面，请先跑全量构建。 & goto :fail
 if not exist "%TAR%" echo 缺少 tar.exe，需要 Windows 10 1803 或更高版本。 & goto :fail
 
+rem 版本号直接取 exe 的版本资源，不回仓库里找中间产物；读不到就退回 portable
 set "VER=portable"
-if exist "%ROOT%\build\obj-skinedit\version.rc.inc" (
-  for /f "usebackq tokens=3" %%V in (`findstr MDV_VER_STRING "%ROOT%\build\obj-skinedit\version.rc.inc"`) do set "VER=%%~V"
-)
-set "OUT=%DIST%\skinedit-%VER%.zip"
+for /f "usebackq delims=" %%V in (`powershell -NoProfile -Command "(Get-Item -LiteralPath '%HERE%skinedit.exe').VersionInfo.ProductVersion"`) do set "VER=%%V"
+set "OUT=%HERE%skinedit-%VER%.zip"
 
 if exist "%STAGE%" rmdir /s /q "%STAGE%"
 mkdir "%STAGE%" 2>nul
-if not exist "%DIST%" mkdir "%DIST%" 2>nul
-copy /y "%SRC%\skinedit.exe" "%STAGE%" >nul
+copy /y "%HERE%skinedit.exe" "%STAGE%" >nul
 if errorlevel 1 goto :fail
-xcopy /e /i /q /y "%SRC%\assets" "%STAGE%\assets" >nul
+xcopy /e /i /q /y "%HERE%assets" "%STAGE%\assets" >nul
 if errorlevel 1 goto :fail
 
 rem 随包说明：程序目录必须可写，运行时用系统已装的常青版 WebView2 Runtime。

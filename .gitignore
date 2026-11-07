@@ -35,3 +35,9 @@ samples/big-*.md
 # —— 手动验收的大样本：samples/manual-test/gen.py 生成，不入库 ——
 samples/manual-test/big-*
 *.lnk
+
+# —— 皮肤编辑器发布目录：exe、assets、zip 与运行时缓存不入库，打包脚本保留 ——
+# 上面的 bin/ 会忽略整个目录，先把这个目录放回来，再逐项排除。
+!tools/skinedit/bin/
+tools/skinedit/bin/*
+!tools/skinedit/bin/pack.bat
