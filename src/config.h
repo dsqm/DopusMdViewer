@@ -22,7 +22,10 @@ struct FontSettings {
 };
 
 struct Config {
-  std::wstring skin;  // 皮肤 id（文件名去扩展名）
+  // 皮肤 id（文件名去扩展名）。跟随 DOpus 深浅色：亮色时用 skinLight，
+  // 暗色时用 skinDark；两框同值即事实上的固定皮肤。打印固定用 skinLight。
+  std::wstring skinLight;
+  std::wstring skinDark;
   FontSettings font;
   // 网络图片的确认粒度（两个档位的答复都只对当前文档有效，换文件全部重问）：
   //   0 = 不确认直接加载；

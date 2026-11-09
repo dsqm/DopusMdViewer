@@ -15,7 +15,8 @@ const wchar_t* const kZh[kCount] = {
     /* TabRender        */ L"渲染",
     /* TabAdvanced      */ L"高级",
 
-    /* Skin             */ L"皮肤",
+    /* SkinLight        */ L"亮色主题",
+    /* SkinDark         */ L"暗色主题",
     /* FontSize         */ L"字号",
     /* FontSizeUnit     */ L"px（8–48）",
     /* LineHeight       */ L"行高",
@@ -170,7 +171,7 @@ const wchar_t* const kZh[kCount] = {
     /* OpenFolderFailed */ L"打开目录失败。",
 };
 
-static_assert(static_cast<int>(Str::Skin) == 5, "字符串表顺序必须与 localize.h 的 Str 一致");
+static_assert(static_cast<int>(Str::SkinLight) == 5, "字符串表顺序必须与 localize.h 的 Str 一致");
 static_assert(sizeof(kZh) / sizeof(kZh[0]) == kCount,
               "kZh 少了条目：漏配的 key 会显示成空串");
 

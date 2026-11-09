@@ -25,7 +25,8 @@ bool JsonHas(const std::string& bytes, const char* needle) {
 
 TEST(config, defaults) {
   const Config c = ConfigDefaults();
-  CHECK_EQ_STR(c.skin.c_str(), L"light");
+  CHECK_EQ_STR(c.skinLight.c_str(), L"light");
+  CHECK_EQ_STR(c.skinDark.c_str(), L"dark");
   CHECK_EQ_INT(c.font.sizePx, 15);
   CHECK(c.font.lineHeight == 1.65);
   CHECK_EQ_INT(c.font.measureEm, 40);
@@ -59,7 +60,8 @@ TEST(config, load_missing_file) {
   CHECK_EQ_INT(c.font.sizePx, d.font.sizePx);
   CHECK_EQ_INT(c.netImageMode, d.netImageMode);
   CHECK(c.renderTableWrap == d.renderTableWrap);
-  CHECK_EQ_STR(c.skin.c_str(), L"light");
+  CHECK_EQ_STR(c.skinLight.c_str(), L"light");
+  CHECK_EQ_STR(c.skinDark.c_str(), L"dark");
 }
 
 // ConfigSave 后内存立即生效，落盘内容与结构一致，且未知键保留。
@@ -72,7 +74,8 @@ TEST(config, save_roundtrip) {
   REQUIRE(WriteBytes(path, std::string("{\"futureKey\": 42}")));
 
   Config c = ConfigDefaults();
-  c.skin = L"dark";
+  c.skinLight = L"solarized-light";
+  c.skinDark = L"dark";
   c.font.sizePx = 20;
   c.font.lineHeight = 1.8;
   c.font.measureEm = 0;  // 不限宽
@@ -98,7 +101,8 @@ TEST(config, save_roundtrip) {
 
   // 内存立即生效
   const Config now = ConfigSnapshot();
-  CHECK_EQ_STR(now.skin.c_str(), L"dark");
+  CHECK_EQ_STR(now.skinLight.c_str(), L"solarized-light");
+  CHECK_EQ_STR(now.skinDark.c_str(), L"dark");
   CHECK_EQ_INT(now.font.sizePx, 20);
   CHECK(now.prewarm);
   CHECK_EQ_STR(now.viewerExts.c_str(), L".epub;-.html");
@@ -108,7 +112,9 @@ TEST(config, save_roundtrip) {
   std::string bytes;
   REQUIRE(UtilReadFileBytes(path, 256 * 1024, &bytes));
   CHECK(JsonHas(bytes, "\"futureKey\": 42"));
-  CHECK(JsonHas(bytes, "\"skin\": \"dark\""));
+  CHECK(JsonHas(bytes, "\"skinLight\": \"solarized-light\""));
+  CHECK(JsonHas(bytes, "\"skinDark\": \"dark\""));
+  CHECK(!JsonHas(bytes, "\"skin\":"));  // 旧单键不再写
   CHECK(JsonHas(bytes, "\"size\": 20"));
   CHECK(JsonHas(bytes, "\"measure\": 0"));
   CHECK(JsonHas(bytes, "\"netImageConfirm\": \"doc\""));

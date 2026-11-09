@@ -16,7 +16,8 @@ enum class Str : int {
   TabAdvanced,
 
   // 外观
-  Skin,
+  SkinLight,
+  SkinDark,
   FontSize,
   FontSizeUnit,
   LineHeight,

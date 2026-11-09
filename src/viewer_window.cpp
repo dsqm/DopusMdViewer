@@ -55,6 +55,8 @@ struct ViewerState {
   bool webFailed;
   bool hasHost;  // 宿主此刻是否在本窗口（单宿主，被别的窗口借走时没有画面）
   bool hasSelection;  // 页面里此刻有没有非折叠选区，DVPLUGINMSG_TESTSELECTION 靠它回答
+  // DOpus 当前深浅色：true = 暗色。拿不到信号时保持 false（用亮色框皮肤兜底）。
+  bool darkMode;
   // 页面最后右键的图片（imgctx 帧）：「打开方式」要还原磁盘路径，「放大查看」
   // 原样生效。只在弹菜单时读一次，空 = 无图片上下文（全局菜单不带图片动作区）。
   std::wstring imgCtxUrl;
@@ -268,7 +270,7 @@ void PushChrome(ViewerState* st) {
   const Config cfg = ConfigSnapshot();
 
   std::wstring css;
-  std::wstring skinId = cfg.skin;
+  std::wstring skinId = st->darkMode ? cfg.skinDark : cfg.skinLight;
   if (!SkinLoad(skinId, &css)) {
     skinId = L"light";
     if (!SkinLoad(skinId, &css)) {
@@ -1847,6 +1849,7 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->webFailed = false;
   st->hasHost = false;
   st->hasSelection = false;
+  st->darkMode = false;
   st->pClaimed = nullptr;
   st->fontName = nullptr;
   st->fontHint = nullptr;

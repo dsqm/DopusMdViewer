@@ -35,7 +35,8 @@ enum {
   kIdTabFont,
   kIdTabRender,
   kIdTabAdvanced,
-  kIdSkin = 3100,
+  kIdSkinLight = 3100,
+  kIdSkinDark,
   kIdSize,
   kIdSizeSpin,
   kIdLh,
@@ -138,7 +139,8 @@ struct DialogState {
   std::vector<HWND> pageCtrls[kPages];
   std::vector<std::pair<HWND, WNDPROC>> subs;  // 装过键盘 subclass 的控件
 
-  HWND hSkin = nullptr;
+  HWND hSkinLight = nullptr;
+  HWND hSkinDark = nullptr;
   HWND hSize = nullptr;
   HWND hSizeSpin = nullptr;
   HWND hLh = nullptr;
@@ -1415,29 +1417,27 @@ void OpenFontPanel(DialogState* st, const RECT& anchor) {
   }
 }
 
-void RefreshSkins(DialogState* st) {
-  if (!st->hSkin) return;
-  SkinList(&st->skins);
-  ::SendMessageW(st->hSkin, CB_RESETCONTENT, 0, 0);
+// 两框列同一份皮肤清单；当前 id 不在清单里（文件被删/改名）时补成一项显示，
+// 别悄悄换成列表第一项——那样打开设置点「确定」就白改了配置。
+void FillSkinCombo(HWND combo, const std::vector<SkinEntry>& skins, const std::wstring& current) {
+  ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
   int selected = -1;
-  for (size_t i = 0; i < st->skins.size(); ++i) {
-    ::SendMessageW(st->hSkin, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(st->skins[i].label.c_str()));
-    if (st->skins[i].id == st->staged.skin) selected = static_cast<int>(i);
+  for (size_t i = 0; i < skins.size(); ++i) {
+    ::SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(skins[i].label.c_str()));
+    if (skins[i].id == current) selected = static_cast<int>(i);
   }
-  if (st->skins.empty()) {
-    // 内置目录被删也不让下拉框空着：保留当前 id 作唯一项
-    ::SendMessageW(st->hSkin, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(st->staged.skin.c_str()));
-    selected = 0;
-  } else if (selected < 0) {
-    // 配置里的皮肤文件没了（删了或改名）：把当前 id 补成一项显示出来，别悄悄
-    // 换成列表第一项——那样打开设置点「确定」就白改了配置。
-    ::SendMessageW(st->hSkin, CB_ADDSTRING, 0,
-                   reinterpret_cast<LPARAM>(st->staged.skin.c_str()));
-    selected = static_cast<int>(st->skins.size());
+  if (skins.empty() || selected < 0) {
+    ::SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(current.c_str()));
+    selected = static_cast<int>(skins.size());
   }
-  ::SendMessageW(st->hSkin, CB_SETCURSEL, selected, 0);
+  ::SendMessageW(combo, CB_SETCURSEL, selected, 0);
+}
+
+void RefreshSkins(DialogState* st) {
+  if (!st->hSkinLight || !st->hSkinDark) return;
+  SkinList(&st->skins);
+  FillSkinCombo(st->hSkinLight, st->skins, st->staged.skinLight);
+  FillSkinCombo(st->hSkinDark, st->skins, st->staged.skinDark);
 }
 
 // 「正文宽度」下面那句说明：勾了不限就讲不限，否则讲当前这条提示。
@@ -1572,8 +1572,14 @@ void LoadUiFromStaged(DialogState* st) {
 }
 
 void ReadUiIntoStaged(DialogState* st) {
-  const int sel = static_cast<int>(::SendMessageW(st->hSkin, CB_GETCURSEL, 0, 0));
-  if (sel >= 0 && sel < static_cast<int>(st->skins.size())) st->staged.skin = st->skins[sel].id;
+  const int selLight = static_cast<int>(::SendMessageW(st->hSkinLight, CB_GETCURSEL, 0, 0));
+  if (selLight >= 0 && selLight < static_cast<int>(st->skins.size())) {
+    st->staged.skinLight = st->skins[selLight].id;
+  }
+  const int selDark = static_cast<int>(::SendMessageW(st->hSkinDark, CB_GETCURSEL, 0, 0));
+  if (selDark >= 0 && selDark < static_cast<int>(st->skins.size())) {
+    st->staged.skinDark = st->skins[selDark].id;
+  }
 
   BOOL ok = FALSE;
   const UINT size = ::GetDlgItemInt(st->hwnd, kIdSize, &ok, FALSE);
@@ -1706,7 +1712,8 @@ bool ApplySettings(DialogState* st) {
   WebHostPrewarm(st->staged.prewarm, st->staged.idleReleaseMinutes);
   SetDirty(st, false);
   if (st->page == 3) RefreshWebViewCacheInfo(st);
-  LogLine(L"SETTINGS: 已应用 skin=\"%s\" size=%d lh=%.2f measure=%d net=%d", st->staged.skin.c_str(),
+  LogLine(L"SETTINGS: 已应用 skinLight=\"%s\" skinDark=\"%s\" size=%d lh=%.2f measure=%d net=%d",
+          st->staged.skinLight.c_str(), st->staged.skinDark.c_str(),
           st->staged.font.sizePx, st->staged.font.lineHeight, st->staged.font.measureEm,
           st->staged.netImageMode);
   return true;
@@ -2005,16 +2012,24 @@ void BuildUi(DialogState* st) {
   }
 
   // ---------------- 外观 ----------------
+  // 亮/暗两框列同一份皮肤清单，跟随 DOpus 深浅色各用一个；两框同值即固定皮肤。
   int y = 54;
-  AddControl(st, 0, L"STATIC", loc::T(loc::Str::Skin), SS_LEFT, 16, y + 3, 70, 20, 0);
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::SkinLight), SS_LEFT, 16, y + 3, 70, 20, 0);
   // 下拉框收窄到 280：右侧留给「打开皮肤目录」，找皮肤文件不用再跑去高级页
-  st->hSkin = AddControl(st, 0, L"COMBOBOX", L"",
-                         CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 100, y,
-                         280, 200, kIdSkin);
-  AddControl(st, 0, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 390, y,
+  st->hSkinLight = AddControl(st, 0, L"COMBOBOX", L"",
+                              CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 100, y,
+                              280, 200, kIdSkinLight);
+
+  y = 88;
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::SkinDark), SS_LEFT, 16, y + 3, 70, 20, 0);
+  st->hSkinDark = AddControl(st, 0, L"COMBOBOX", L"",
+                             CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 100, y,
+                             280, 200, kIdSkinDark);
+  // 按钮摆在亮色框右侧，但创建在两个下拉之后：Tab 顺序先走完两框再到按钮
+  AddControl(st, 0, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 390, 54,
              114, 24, kIdOpenSkins);
 
-  y = 92;
+  y = 122;
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::FontSize), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hSize = AddControl(st, 0, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 100, y, 70, 24,
                          kIdSize, WS_EX_CLIENTEDGE);
@@ -2025,7 +2040,7 @@ void BuildUi(DialogState* st) {
   ::SendMessageW(st->hSizeSpin, UDM_SETRANGE32, 8, 48);
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::FontSizeUnit), SS_LEFT, 180, y + 3, 180, 20, 0);
 
-  y = 126;
+  y = 156;
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::LineHeight), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hLh = AddControl(st, 0, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 100, y, 70, 24, kIdLh,
                        WS_EX_CLIENTEDGE);
@@ -2035,7 +2050,7 @@ void BuildUi(DialogState* st) {
   ::SendMessageW(st->hLhSpin, UDM_SETRANGE32, 120, 220);
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::LineHeightUnit), SS_LEFT, 180, y + 3, 260, 20, 0);
 
-  y = 160;
+  y = 190;
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::Measure), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hMeasure = AddControl(st, 0, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 100, y, 70, 24,
                             kIdMeasure, WS_EX_CLIENTEDGE);
@@ -2049,7 +2064,7 @@ void BuildUi(DialogState* st) {
   st->hUnlimited = AddControl(st, 0, L"BUTTON", loc::T(loc::Str::Unlimited),
                               BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 300, y, 120, 24,
                               kIdUnlimited);
-  st->hMeasureHint = AddControl(st, 0, L"STATIC", loc::T(loc::Str::MeasureHint), SS_LEFT, 16, 210,
+  st->hMeasureHint = AddControl(st, 0, L"STATIC", loc::T(loc::Str::MeasureHint), SS_LEFT, 16, 240,
                                 520, 20, kIdMeasureHint);
 
   // ---------------- 字体 ----------------
@@ -2398,7 +2413,8 @@ void ResetPageSettings(DialogState* st, int page) {
   Config& c = st->staged;
   switch (page) {
     case 0:
-      c.skin = def.skin;
+      c.skinLight = def.skinLight;
+      c.skinDark = def.skinDark;
       c.font.sizePx = def.font.sizePx;
       c.font.lineHeight = def.font.lineHeight;
       c.font.measureEm = def.font.measureEm;
@@ -2500,11 +2516,18 @@ void OnCommand(DialogState* st, int id, int code) {
       ::DestroyWindow(st->hwnd);
       return;
 
-    case kIdSkin:
+    case kIdSkinLight:
+    case kIdSkinDark:
       if (code == CBN_SELCHANGE) {
-        const int sel = static_cast<int>(::SendMessageW(st->hSkin, CB_GETCURSEL, 0, 0));
+        const bool dark = (id == kIdSkinDark);
+        const HWND combo = dark ? st->hSkinDark : st->hSkinLight;
+        const int sel = static_cast<int>(::SendMessageW(combo, CB_GETCURSEL, 0, 0));
         if (sel >= 0 && sel < static_cast<int>(st->skins.size())) {
-          st->staged.skin = st->skins[sel].id;
+          if (dark) {
+            st->staged.skinDark = st->skins[sel].id;
+          } else {
+            st->staged.skinLight = st->skins[sel].id;
+          }
         }
         SetDirty(st, true);
       }
