@@ -65,6 +65,8 @@ struct ViewerState {
   // 打印期间强制亮色皮肤；页面中止打印时不一定有 print-done，靠计时兜底恢复。
   bool printLight;
   ULONGLONG printStartTick;
+  // 当前皮肤 --md-bg：页面出来前宿主窗口先铺同色，暗色下不闪白。
+  COLORREF bgColor;
   // 页面最后右键的图片（imgctx 帧）：「打开方式」要还原磁盘路径，「放大查看」
   // 原样生效。只在弹菜单时读一次，空 = 无图片上下文（全局菜单不带图片动作区）。
   std::wstring imgCtxUrl;
@@ -139,17 +141,8 @@ void SendStatusText(ViewerState* st, const wchar_t* pszText) {
   ::SendMessageW(st->hwndParent, WM_NOTIFY, nmt.hdr.idFrom, reinterpret_cast<LPARAM>(&nmt));
 }
 
-// dopus.exe 的未公开导出，DOpus 自带查看器（text/multiview/opuswic）都按名取它。
-// 无参，TRUE = DOpus 当前处于暗色主题。
-using PFN_ISOPUSDARK = BOOL(WINAPI*)(void);
-
-bool HostDarkMode() {
-  static const auto isDark =
-      reinterpret_cast<PFN_ISOPUSDARK>([] {
-        const HMODULE host = ::GetModuleHandleW(nullptr);
-        return host ? ::GetProcAddress(host, "IsOpusInDarkMode") : nullptr;
-      }());
-  return isDark && isDark() != FALSE;
+int ColorLuma(COLORREF c) {
+  return (GetRValue(c) * 299 + GetGValue(c) * 587 + GetBValue(c) * 114) / 1000;
 }
 
 void SetStatus(ViewerState* st, const wchar_t* pszFormat, ...) {  va_list args;
@@ -272,12 +265,11 @@ void CopyLabeledText(ViewerState* st, const std::wstring& what, const std::wstri
 
 // 皮肤与字体永远成对推送：先皮肤，再 fx（fx 最后注入且写全量槽位，压住皮肤）。
 void PushChrome(ViewerState* st) {
-  if (!st->hasHost || st->webFailed || !WebHostIsReady()) return;
   const Config cfg = ConfigSnapshot();
-
-  std::wstring css;
   // 打印固定亮色；其余时刻跟随 DOpus 深浅色
   const bool dark = st->darkMode && !st->printLight;
+
+  std::wstring css;
   std::wstring skinId = dark ? cfg.skinDark : cfg.skinLight;
   if (!SkinLoad(skinId, &css)) {
     skinId = L"light";
@@ -286,6 +278,17 @@ void PushChrome(ViewerState* st) {
     }
   }
 
+  // 加载占位也用它铺底：页面没就绪时窗口是可见的，暗色下不能刷白
+  const COLORREF bg =
+      UtilParseSkinBg(css, dark ? RGB(0x28, 0x2c, 0x34) : ::GetSysColor(COLOR_WINDOW));
+  if (bg != st->bgColor) {
+    st->bgColor = bg;
+    if (st->hwndSelf) ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
+  }
+  // WebView2 自己也铺同色：换尺寸/恢复挂起时露出的默认底色不能是白的
+  WebHostSetBackground(bg);
+
+  if (!st->hasHost || st->webFailed || !WebHostIsReady()) return;
   const bool ok = WebHostPost(st->hwndSelf, msg::MakeSkin(skinId, css)) &&
                   WebHostPost(st->hwndSelf, msg::MakeFx(cfg.font)) &&
                   WebHostPost(st->hwndSelf, msg::MakeNetMode(cfg.netImageMode)) &&
@@ -1578,8 +1581,9 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
     case WM_ERASEBKGND: {
       RECT rc;
       ::GetClientRect(hwnd, &rc);
-      ::FillRect(reinterpret_cast<HDC>(wParam), &rc,
-                 ::GetSysColorBrush(COLOR_WINDOW));
+      HBRUSH brush = ::CreateSolidBrush(st->bgColor);
+      ::FillRect(reinterpret_cast<HDC>(wParam), &rc, brush);
+      ::DeleteObject(brush);
       return 1;
     }
 
@@ -1589,19 +1593,27 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       RECT rc;
       ::GetClientRect(hwnd, &rc);
 
+      // 每次自绘都先铺满皮肤底色。宿主已就绪但被藏起来时（复用实例）旧逻辑在这里
+      // 什么都不画，只靠 WM_ERASEBKGND，系统合成的那一帧会从这里漏出默认底色。
+      // WS_CLIPCHILDREN 会把可见的 WebView2 宿主区域自动剪掉，铺底不盖内容。
+      HBRUSH bgBrush = ::CreateSolidBrush(st->bgColor);
+      ::FillRect(hdc, &rc, bgBrush);
+      ::DeleteObject(bgBrush);
+      // ClearType 需要知道背景色；文字画在这块底色上。
+      ::SetBkMode(hdc, OPAQUE);
+      ::SetBkColor(hdc, st->bgColor);
+
+      const bool bgDark = ColorLuma(st->bgColor) < 128;
+      const COLORREF textColor = bgDark ? RGB(0xD8, 0xD8, 0xD8) : ::GetSysColor(COLOR_WINDOWTEXT);
+      const COLORREF hintColor = bgDark ? RGB(0x96, 0x96, 0x96) : ::GetSysColor(COLOR_GRAYTEXT);
+
       const bool loading = !st->webFailed && st->hasHost && !WebHostIsReady() && st->szFile[0];
-      if (st->webFailed || !st->hasHost || loading) {
-        EnsurePlaceholderFonts(st, hwnd);
-        ::FillRect(hdc, &rc, ::GetSysColorBrush(COLOR_WINDOW));
-        // ClearType 需要知道背景色；文字画在刚刷白的底色上。
-        ::SetBkMode(hdc, OPAQUE);
-        ::SetBkColor(hdc, ::GetSysColor(COLOR_WINDOW));
-      }
+      if (st->webFailed || !st->hasHost || loading) EnsurePlaceholderFonts(st, hwnd);
 
       if (st->webFailed) {
         HGDIOBJ oldFont = ::SelectObject(
             hdc, st->fontHint ? st->fontHint : ::GetStockObject(DEFAULT_GUI_FONT));
-        ::SetTextColor(hdc, ::GetSysColor(COLOR_WINDOWTEXT));
+        ::SetTextColor(hdc, textColor);
         ::DrawTextW(hdc, L"WebView2 不可用，无法预览 Markdown。详见日志。", -1, &rc,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         ::SelectObject(hdc, oldFont);
@@ -1609,7 +1621,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
         // 宿主在另一个查看器手里（或引擎还在启动）：给一行说明，别留一片白。
         HGDIOBJ oldFont = ::SelectObject(
             hdc, st->fontHint ? st->fontHint : ::GetStockObject(DEFAULT_GUI_FONT));
-        ::SetTextColor(hdc, ::GetSysColor(COLOR_GRAYTEXT));
+        ::SetTextColor(hdc, hintColor);
         ::DrawTextW(hdc, NoHostReason(), -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         ::SelectObject(hdc, oldFont);
       } else if (loading) {
@@ -1634,11 +1646,11 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
                        top + tmName.tmHeight + gap + tmHint.tmHeight};
 
         ::SelectObject(hdc, st->fontName ? st->fontName : ::GetStockObject(DEFAULT_GUI_FONT));
-        ::SetTextColor(hdc, ::GetSysColor(COLOR_WINDOWTEXT));
+        ::SetTextColor(hdc, textColor);
         ::DrawTextW(hdc, UtilLeafName(st->szFile), -1, &rcName,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         ::SelectObject(hdc, st->fontHint ? st->fontHint : ::GetStockObject(DEFAULT_GUI_FONT));
-        ::SetTextColor(hdc, ::GetSysColor(COLOR_GRAYTEXT));
+        ::SetTextColor(hdc, hintColor);
         ::DrawTextW(hdc, L"正在加载预览…", -1, &rcHint,
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         ::SelectObject(hdc, oldFont);
@@ -1721,7 +1733,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       // wParam=TRUE 时 lParam 是新背景色（viewer plugins.h:307）。颜色变了就说明
       // 主题换了：重查宿主，皮肤跟着换。
       {
-        const bool dark = HostDarkMode();
+        const bool dark = UtilIsOpusDarkMode();
         if (dark != st->darkMode) {
           st->darkMode = dark;
           LogLine(L"VIEWER: DOpus 深浅色切换 dark=%d（REDRAW），重推皮肤", dark ? 1 : 0);
@@ -1733,7 +1745,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
     case WM_TIMER:
       if (wParam == kDarkPollTimerId) {
-        const bool dark = HostDarkMode();
+        const bool dark = UtilIsOpusDarkMode();
         if (dark != st->darkMode) {
           st->darkMode = dark;
           LogLine(L"VIEWER: DOpus 深浅色切换 dark=%d，重推皮肤", dark ? 1 : 0);
@@ -1868,9 +1880,18 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->webFailed = false;
   st->hasHost = false;
   st->hasSelection = false;
-  st->darkMode = HostDarkMode();
+  st->darkMode = UtilIsOpusDarkMode();
   st->printLight = false;
   st->printStartTick = 0;
+  // 初始底色：第一帧占位就要按主题铺，不能等 PushChrome（它要页面就绪才跑）
+  st->bgColor = st->darkMode ? RGB(0x28, 0x2C, 0x34) : ::GetSysColor(COLOR_WINDOW);
+  {
+    const Config cfg = ConfigSnapshot();
+    std::wstring css;
+    if (SkinLoad(st->darkMode ? cfg.skinDark : cfg.skinLight, &css)) {
+      st->bgColor = UtilParseSkinBg(css, st->bgColor);
+    }
+  }
   st->pClaimed = nullptr;
   st->fontName = nullptr;
   st->fontHint = nullptr;

@@ -843,3 +843,45 @@ bool UtilDOpusViewerHandlesExt(const wchar_t* ext, const std::wstring& list) {
   if (!ext || ext[0] != L'.') return false;
   return ExtListContains(list.empty() ? UtilDOpusViewerDefaultExts() : list, ext);
 }
+
+bool UtilIsOpusDarkMode(void) {
+  using PFN_ISOPUSDARK = BOOL(WINAPI*)(void);
+  static const PFN_ISOPUSDARK isDark = reinterpret_cast<PFN_ISOPUSDARK>([]() -> FARPROC {
+    const HMODULE host = ::GetModuleHandleW(nullptr);
+    return host ? ::GetProcAddress(host, "IsOpusInDarkMode") : nullptr;
+  }());
+  return isDark && isDark() != FALSE;
+}
+
+COLORREF UtilParseSkinBg(const std::wstring& css, COLORREF fallback) {
+  const size_t pos = css.find(L"--md-bg:");
+  if (pos == std::wstring::npos) return fallback;
+  const wchar_t* p = css.c_str() + pos + 8;
+  while (*p == L' ' || *p == L'\t') ++p;
+  if (*p != L'#') return fallback;
+  ++p;
+  unsigned value = 0;
+  int n = 0;
+  for (; n < 6; ++n) {
+    const wchar_t c = p[n];
+    int d = -1;
+    if (c >= L'0' && c <= L'9') {
+      d = c - L'0';
+    } else if (c >= L'a' && c <= L'f') {
+      d = c - L'a' + 10;
+    } else if (c >= L'A' && c <= L'F') {
+      d = c - L'A' + 10;
+    } else {
+      break;
+    }
+    value = value * 16 + static_cast<unsigned>(d);
+  }
+  if (n == 6) return RGB((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF);
+  if (n == 3) {
+    const unsigned r = value >> 8;
+    const unsigned g = (value >> 4) & 0xF;
+    const unsigned b = value & 0xF;
+    return RGB(r * 17, g * 17, b * 17);
+  }
+  return fallback;
+}

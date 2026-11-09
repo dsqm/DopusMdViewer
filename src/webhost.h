@@ -79,6 +79,10 @@ bool WebHostSetDocFolder(HWND hViewer, const std::wstring& dir);
 // 关闭 controller（宿主线程保留）。当前只在需要强制重建时使用。
 void WebHostReleaseController(void);
 
+// 设置 WebView2 控制器的默认底色。页面没铺满、换尺寸或恢复挂起时的空档
+// 露的就是这块颜色（缺省白），跟随皮肤设置才不会闪白。
+void WebHostSetBackground(COLORREF color);
+
 // 只给 tools/hosttest 用：在页面里执行一段脚本（滚动验收）。
 bool WebHostExecuteScript(HWND hViewer, const std::wstring& script);
 

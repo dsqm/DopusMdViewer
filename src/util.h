@@ -143,3 +143,10 @@ std::wstring UtilDOpusViewerDefaultExts(void);
 // 分隔，带不带点都认）；**空串表示用内置名单**。名单外的类型交回系统默认程序，
 // 免得 DOpus 弹「无法显示」。
 bool UtilDOpusViewerHandlesExt(const wchar_t* ext, const std::wstring& list);
+
+// dopus.exe 当前是否暗色主题：自带 text/multiview/opuswic 查看器也按名取这个导出。
+// 取不到导出（独立测试宿主等）时按亮色处理。
+bool UtilIsOpusDarkMode(void);
+
+// 皮肤 CSS 里的 --md-bg（#rgb / #rrggbb）。用户皮肤用 rgb()/变量就取不到，回 fallback。
+COLORREF UtilParseSkinBg(const std::wstring& css, COLORREF fallback);

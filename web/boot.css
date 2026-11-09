@@ -1,0 +1,17 @@
+@charset "UTF-8";
+/* 首帧皮肤。宿主在每次导航/重载前按 DOpus 当前深浅色重写本文件，所以运行时
+   拿到的是完整皮肤；这份静态内容只在写入失败或开发服务器里生效，按系统明暗
+   给一组最小兜底变量，避免 --md-bg 未定义时退回浏览器默认白底。 */
+:root {
+  color-scheme: light;
+  --md-bg: #ffffff;
+  --md-fg: #1f2328;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --md-bg: #282c34;
+    --md-fg: #abb2bf;
+  }
+}

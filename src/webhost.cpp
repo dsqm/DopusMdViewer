@@ -44,6 +44,7 @@
 #include "config.h"
 #include "doc_source.h"
 #include "log.h"
+#include "skin.h"
 #include "util.h"
 
 using Microsoft::WRL::Callback;
@@ -86,11 +87,15 @@ const UINT kCmdRecover = kCmdBase + 11;  // 进程失效后的自愈，wParam 1 
 const UINT kCmdDevTools = kCmdBase + 12;  // 只给 hosttest：发一条 DevTools 方法（造崩溃用）
 const UINT kCmdClearUserData = kCmdBase + 13;  // lParam = const std::wstring*
 const UINT kCmdCleanupDone = kCmdBase + 14;  // 缓存清理线程完成（无参数）
+const UINT kCmdSetBg = kCmdBase + 15;        // wParam = COLORREF，设 WebView2 默认底色
 
 // 预热：InitEx 后等一会儿再开始，避开 DOpus 自己的启动高峰。
 const UINT_PTR kTimerPrewarm = 1;
 const UINT_PTR kTimerWatch = 2;
 const UINT_PTR kTimerIdle = 3;
+// 宿主等页面应用皮肤后再露出；皮肤消息若丢了，到点也得露，不能一直藏着。
+const UINT_PTR kTimerReveal = 4;
+const UINT kRevealTimeoutMs = 400;
 const UINT kPrewarmDelayMs = 3000;
 const UINT kWatchIntervalMs = 2000;
 const int kWatchEmptyLimit = 2;  // 连续两次看不见 DOpus 窗口才释放（约 4 秒）
@@ -111,6 +116,10 @@ struct Host {
   std::wstring userDataDir;  // 当前环境实际使用的 WebView2 目录
   bool creating = false;
   bool ready = false;
+  // 页面当前是否已应用过皮肤（skin-acked）。首帧颜色由 boot.css 保证；每次借用都
+  // 清零重握手，等本次样式落地、渲染器恢复后再露出。
+  bool chromeApplied = false;
+  bool revealPending = false;
   bool borrowed = false;
   bool prewarmEnabled = false;
   bool prewarmTimerArmed = false;  // 预热定时器已在等：重复 InitEx 不许把它往后推
@@ -298,6 +307,65 @@ void PostEvent(int kind, const wchar_t* text) {
 void Fail(const wchar_t* reason) {
   LogLine(L"WEBHOST: 失败 - %s", reason);
   PostEvent(MDV_EVT_FAILED, reason);
+}
+
+// boot.css 在 <head> 里是 render-blocking：页面第一帧就带着它。皮肤变量原先只由
+// C++ 在页面 ready 之后注入 <style id="skin">，首帧里 --md-bg 未定义，html/body 的
+// 背景会退回浏览器默认白底。藏窗口、设控制器底色、等 skin-acked 全发生在这一帧
+// 之后，补不回来。导航/重载前按当前主题把皮肤写进 boot.css，首帧就有正确的底与字；
+// 同时把控制器默认底色提前设好，页面没铺满的空档也不发白。
+void RefreshBootSkin() {
+  const Config cfg = ConfigSnapshot();
+  const bool dark = UtilIsOpusDarkMode();
+  std::wstring css;
+  if (!SkinLoad(dark ? cfg.skinDark : cfg.skinLight, &css)) SkinLoad(L"light", &css);
+  const COLORREF bg = UtilParseSkinBg(css, dark ? RGB(0x28, 0x2C, 0x34)
+                                               : ::GetSysColor(COLOR_WINDOW));
+
+  const std::wstring webDir = WebDir();
+  if (!webDir.empty()) {
+    // 皮肤可能按 GB18030 读进来，落盘统一 UTF-8；@charset 让编码不依赖响应头。
+    std::string bytes = "@charset \"UTF-8\";\n";
+    const int need = ::WideCharToMultiByte(CP_UTF8, 0, css.c_str(),
+                                           static_cast<int>(css.size()), nullptr, 0, nullptr,
+                                           nullptr);
+    if (need > 0) {
+      const size_t at = bytes.size();
+      bytes.resize(at + static_cast<size_t>(need));
+      ::WideCharToMultiByte(CP_UTF8, 0, css.c_str(), static_cast<int>(css.size()),
+                            &bytes[at], need, nullptr, nullptr);
+    }
+    const std::wstring path = UtilJoin(webDir, L"boot.css");
+    HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+      DWORD written = 0;
+      ::WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr);
+      ::CloseHandle(h);
+    } else {
+      LogLine(L"WEBHOST: boot.css 写入失败 err=%lu", ::GetLastError());
+    }
+  }
+
+  ComPtr<ICoreWebView2Controller2> controller2;
+  if (g_host.controller && SUCCEEDED(g_host.controller.As(&controller2)) && controller2) {
+    const COREWEBVIEW2_COLOR color = {255, GetRValue(bg), GetGValue(bg), GetBValue(bg)};
+    controller2->put_DefaultBackgroundColor(color);
+  }
+  LogLine(L"WEBHOST: 首帧皮肤 %s（%zu 字符），底色 #%02X%02X%02X",
+          dark ? L"暗色" : L"亮色", css.size(), GetRValue(bg), GetGValue(bg), GetBValue(bg));
+}
+
+// 页面皮肤已就绪（或等待超时）：露出宿主并强制重画一次。
+void RevealHost() {
+  if (!g_host.host) return;
+  if (g_host.revealPending) {
+    g_host.revealPending = false;
+    ::KillTimer(g_host.host, kTimerReveal);
+  }
+  ::ShowWindow(g_host.host, SW_SHOW);
+  ::RedrawWindow(g_host.host, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE);
 }
 
 // ---- 借用历史（只在宿主线程上访问） ----
@@ -674,6 +742,8 @@ void ReleaseController() {
   g_host.webview3.Reset();
   g_host.webview.Reset();
   g_host.ready = false;
+  g_host.chromeApplied = false;
+  g_host.revealPending = false;
   g_host.suspended = false;
   g_memLevel = -1;
   ::InterlockedExchange(&g_readyFlag, 0);
@@ -813,6 +883,7 @@ void CreateController() {
                         case COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED:
                           // 就地重载比整份实例重建便宜，页面会重新发 ready。
                           g_host.ready = false;
+                          g_host.chromeApplied = false;
                           ::InterlockedExchange(&g_readyFlag, 0);
                           if (g_host.host) ::PostMessageW(g_host.host, kCmdRecover, 0, 0);
                           break;
@@ -937,6 +1008,15 @@ void CreateController() {
                       const std::wstring frame(raw);
                       ::CoTaskMemFree(raw);
 
+                      if (frame == L"skin-acked") {
+                        g_host.chromeApplied = true;
+                        if (g_host.revealPending && g_host.borrower && g_host.host) {
+                          LogLine(L"WEBHOST: 本次皮肤已应用，露出宿主");
+                          RevealHost();
+                        }
+                        return S_OK;  // 内部握手，不再转给查看器
+                      }
+
                       if (frame == L"ready" || frame.rfind(L"ready|", 0) == 0) {
                         g_host.ready = true;
                         ::InterlockedExchange(&g_readyFlag, 1);
@@ -947,11 +1027,11 @@ void CreateController() {
                         LogLine(L"WEBHOST: 页面已就绪 +%.1fms（导航起）%s",
                                 QpcMs(g_host.tNav.QuadPart, now.QuadPart), perf.c_str());
                         if (g_host.borrower && g_host.host) {
-                          // 冷启动时宿主一直藏着，让查看器先画“正在加载”；页面好了再露出来。
-                          ::ShowWindow(g_host.host, SW_SHOW);
-                          ::RedrawWindow(g_host.host, nullptr, nullptr,
-                                         RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW |
-                                             RDW_ERASE);
+                          // 页面刚加载完、全套样式还没注入：等 skin-acked（或超时）再露，
+                          // 避免先看到半套样式。
+                          g_host.chromeApplied = false;
+                          g_host.revealPending = true;
+                          ::SetTimer(g_host.host, kTimerReveal, kRevealTimeoutMs, nullptr);
                           SetMemoryLevel(false);
                         } else if (g_host.prewarmEnabled) {
                           // 预热实例要一直保持可用：挂起后首次借用得唤醒渲染器、
@@ -1012,6 +1092,7 @@ void CreateController() {
             controller->put_Bounds(rc);
             controller->put_IsVisible(TRUE);
 
+            RefreshBootSkin();
             ::QueryPerformanceCounter(&g_host.tNav);
             LogLine(L"WEBHOST: controller 就绪 +%.1fms，导航到 %s",
                     QpcMs(g_host.tController.QuadPart, g_host.tNav.QuadPart), kShellUrl);
@@ -1105,6 +1186,7 @@ void RecoverPage() {
   }
   ResumeIfSuspended();
   if (g_host.controller) g_host.controller->put_IsVisible(TRUE);
+  RefreshBootSkin();
   ::QueryPerformanceCounter(&g_host.tNav);
   const HRESULT hr = g_host.webview->Reload();
   LogLine(L"WEBHOST: 重载页面 hr=0x%08X", static_cast<unsigned>(hr));
@@ -1155,18 +1237,25 @@ bool BorrowHost(HWND viewer, const RECT* rc) {
   ::SetParent(g_host.host, viewer);
   ::SetWindowPos(g_host.host, nullptr, 0, 0, rcClient.right - rcClient.left,
                  rcClient.bottom - rcClient.top, SWP_NOZORDER | SWP_FRAMECHANGED);
-  // 页面还没就绪时先别露宿主，让查看器窗口里的“正在加载”占位可见。
-  ::ShowWindow(g_host.host, g_host.ready ? SW_SHOW : SW_HIDE);
+  // 借用一律先藏。SetParent / 改 WS_CHILD / put_Bounds / 从挂起恢复都会让 WebView2
+  // 重新合成，这一串动作完成前露宿主，看到的是渲染器尚未提交帧时的空白默认底。
+  // 冷启动本来就藏到 skin-acked 才露；复用实例走同一条路径，别因为页面"早就
+  // ready 过"就直接显示——那次的帧属于旧窗口、旧尺寸，渲染器还可能是挂起态。
+  ::ShowWindow(g_host.host, SW_HIDE);
+  if (g_host.ready) {
+    // 上一次会话留下的 skin-acked 不算数：强制重握手。借用方 LOADW 时会重推皮肤，
+    // 页面回 skin-acked 后 RevealHost 才露出，样式与合成帧都对齐了。
+    g_host.chromeApplied = false;
+    g_host.revealPending = true;
+    ::KillTimer(g_host.host, kTimerReveal);
+    ::SetTimer(g_host.host, kTimerReveal, kRevealTimeoutMs, nullptr);
+    LogLine(L"WEBHOST: 借用后先藏宿主，等本次皮肤重推再露");
+  }
 
   if (g_host.controller) g_host.controller->put_Bounds(rcClient);
   ResumeIfSuspended();
   if (g_host.controller) g_host.controller->put_IsVisible(TRUE);
   SetMemoryLevel(false);
-  // 宿主可能刚被藏过一阵，强制重画一次，避免回来时是一片旧像素。
-  if (g_host.ready) {
-    ::RedrawWindow(g_host.host, nullptr, nullptr,
-                   RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE);
-  }
   // 空闲释放的定时器可能刚好在借用前把实例回收了：这里补一次 ensure。
   EnsureEnvironment();
   return true;
@@ -1292,6 +1381,15 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         WatchTick();
         return 0;
       }
+      if (wParam == kTimerReveal) {
+        ::KillTimer(hwnd, kTimerReveal);
+        // 皮肤握手丢了也不能一直藏着：到点照样露出来
+        if (g_host.borrower && g_host.host) {
+          LogLine(L"WEBHOST: 皮肤握手超时，兜底露出宿主");
+          RevealHost();
+        }
+        return 0;
+      }
       if (wParam == kTimerIdle) {
         ::KillTimer(hwnd, kTimerIdle);
         if (g_host.prewarmEnabled || g_host.borrower) return 0;
@@ -1400,6 +1498,17 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         EnsureEnvironment();
       }
       return 0;
+
+    case kCmdSetBg: {
+      // 页面没铺满或正在换尺寸/恢复挂起时，露出的是控制器的默认底色（缺省是白的）。
+      // 把它设成当前皮肤底色，这类空档才不会闪白。
+      if (!g_host.controller) return 0;
+      ComPtr<ICoreWebView2Controller2> controller2;
+      if (FAILED(g_host.controller.As(&controller2)) || !controller2) return 0;
+      const COLORREF color = static_cast<COLORREF>(wParam);
+      COREWEBVIEW2_COLOR bg = {255, GetRValue(color), GetGValue(color), GetBValue(color)};
+      return SUCCEEDED(controller2->put_DefaultBackgroundColor(bg)) ? 1 : 0;
+    }
 
     case kCmdPrint: {
       if (g_host.borrower != reinterpret_cast<HWND>(wParam)) return 0;
@@ -1715,6 +1824,12 @@ bool WebHostSetDocFolder(HWND hViewer, const std::wstring& dir) {
 }
 
 void WebHostReleaseController(void) { SendCommand(kCmdRelease, 0, 0); }
+
+void WebHostSetBackground(COLORREF color) {
+  HWND host = EnsureHostThread();
+  if (!host || !::IsWindow(host)) return;
+  ::SendMessageW(host, kCmdSetBg, static_cast<WPARAM>(color), 0);
+}
 
 bool WebHostShowPrintUI(HWND hViewer) {
   if (!hViewer) return false;

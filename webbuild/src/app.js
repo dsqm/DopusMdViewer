@@ -5525,6 +5525,7 @@ function onHostMessage(event) {
   if (type === 'skin') {
     const [id, css] = splitFirst(rest)
     applySkin(css, id || 'light')
+    postRaw('skin-acked')  // 宿主收到才把 WebView2 露出来，避免先闪白底
     return
   }
 
