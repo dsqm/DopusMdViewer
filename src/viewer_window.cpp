@@ -148,14 +148,14 @@ int ColorLuma(COLORREF c) {
 // 与首帧皮肤共用 util 里的同一套判定，别在这里另算一套：两处不一致会先显示
 // 一种主题、再切到另一种。每 10 秒记一行判定值便于取证。
 bool HostThemeDark(ViewerState* st) {
-  bool sampled = false;
-  const bool dark = UtilHostThemeDark(st->hwndParent, &sampled);
+  bool reliable = false;
+  const bool dark = UtilHostThemeDark(st->hwndParent, &reliable);
   static ULONGLONG lastLog = 0;
   const ULONGLONG now = ::GetTickCount64();
   if (!lastLog || now - lastLog > 10000) {
     lastLog = now;
-    LogLine(L"VIEWER: 主题判定 dark=%d 导出=%d 取样=%d", dark ? 1 : 0,
-            UtilIsOpusDarkMode() ? 1 : 0, sampled ? 1 : 0);
+    LogLine(L"VIEWER: 主题判定 dark=%d 导出=%d 可靠=%d", dark ? 1 : 0,
+            UtilIsOpusDarkMode() ? 1 : 0, reliable ? 1 : 0);
   }
   return dark;
 }

@@ -859,14 +859,16 @@ int WindowLuma(COLORREF c) {
   return (54 * GetRValue(c) + 183 * GetGValue(c) + 19 * GetBValue(c)) / 256;
 }
 
-// 标题栏沉浸式深色标记；只在取样打平或取不到时用来裁决。
-bool DwmUsesDarkMode(HWND hwnd) {
+// 标题栏沉浸式深色标记：不依赖窗口绘制，冷启动时窗口还没画过也能立刻判。
+// ok 标出查询是否成功，调用方据此决定要不要采信这个结果。
+bool DwmUsesDarkMode(HWND hwnd, bool* ok) {
   using GetAttrFn = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
   static GetAttrFn fn = reinterpret_cast<GetAttrFn>([]() -> FARPROC {
     HMODULE mod = ::GetModuleHandleW(L"dwmapi.dll");
     if (!mod) mod = ::LoadLibraryW(L"dwmapi.dll");
     return mod ? ::GetProcAddress(mod, "DwmGetWindowAttribute") : nullptr;
   }());
+  if (ok) *ok = false;
   if (!fn) return false;
   BOOL dark = FALSE;
   HRESULT hr = fn(hwnd, 20, &dark, sizeof(dark));
@@ -874,53 +876,60 @@ bool DwmUsesDarkMode(HWND hwnd) {
     dark = FALSE;
     hr = fn(hwnd, 19, &dark, sizeof(dark));
   }
+  if (ok) *ok = SUCCEEDED(hr);
   return SUCCEEDED(hr) && dark != FALSE;
 }
 
 }  // namespace
 
-// 上一次取样明确的主题。-1 = 还没有过；窗口刚创建、还没画过时有它才不会临时
-// 拿导出值顶上，导致首帧皮肤与随后注入的皮肤不同主题。
-LONG g_lastSampledDark = -1;
+// 上一次可信判定的主题。-1 = 还没有过；预热等拿不到窗口的场合沿用它。
+LONG g_lastThemeDark = -1;
 
-bool UtilHostThemeDark(HWND hwnd, bool* sampled) {
-  const bool exported = UtilIsOpusDarkMode();
+bool UtilHostThemeDark(HWND hwnd, bool* reliable) {
   bool ok = false;
   const bool painted = UtilWindowDark(hwnd, &ok);
-  if (sampled) *sampled = ok;
+  if (reliable) *reliable = ok;
   if (ok) {
-    ::InterlockedExchange(&g_lastSampledDark, painted ? 1 : 0);
+    ::InterlockedExchange(&g_lastThemeDark, painted ? 1 : 0);
     return painted;
   }
-  const LONG cached = ::InterlockedCompareExchange(&g_lastSampledDark, -1, -1);
-  return cached < 0 ? exported : cached != 0;
+  const LONG cached = ::InterlockedCompareExchange(&g_lastThemeDark, -1, -1);
+  // 导出只在既没有窗口判定、也没有历史结果时才用：它在主题切换后可能不刷新。
+  return cached >= 0 ? cached != 0 : UtilIsOpusDarkMode();
 }
 
-bool UtilWindowDark(HWND hwnd, bool* sampled) {
-  if (sampled) *sampled = false;
+bool UtilWindowDark(HWND hwnd, bool* reliable) {
+  if (reliable) *reliable = false;
   if (!hwnd || !::IsWindow(hwnd)) return false;
   HDC dc = ::GetDC(hwnd);
-  if (!dc) return false;
-  RECT rc = {};
-  ::GetClientRect(hwnd, &rc);
-  const POINT pts[3] = {{2, 2}, {2, (rc.top + rc.bottom) / 2}, {2, rc.bottom - 3}};
-  int dark = 0;
-  int light = 0;
-  for (const POINT& pt : pts) {
-    const COLORREF c = ::GetPixel(dc, pt.x, pt.y);
-    if (c == CLR_INVALID) continue;
-    if (WindowLuma(c) < 128) {
-      ++dark;
-    } else {
-      ++light;
+  if (dc) {
+    RECT rc = {};
+    ::GetClientRect(hwnd, &rc);
+    const POINT pts[3] = {{2, 2}, {2, (rc.top + rc.bottom) / 2}, {2, rc.bottom - 3}};
+    int dark = 0;
+    int light = 0;
+    for (const POINT& pt : pts) {
+      const COLORREF c = ::GetPixel(dc, pt.x, pt.y);
+      if (c == CLR_INVALID) continue;
+      if (WindowLuma(c) < 128) {
+        ++dark;
+      } else {
+        ++light;
+      }
+    }
+    ::ReleaseDC(hwnd, dc);
+    if (dark + light > 0 && dark != light) {
+      if (reliable) *reliable = true;
+      return dark > light;
     }
   }
-  ::ReleaseDC(hwnd, dc);
-  if (dark + light > 0 && dark != light) {
-    if (sampled) *sampled = true;
-    return dark > light;
-  }
-  return DwmUsesDarkMode(hwnd);
+  // 窗口还没画过时像素不可靠，改问顶层窗口的沉浸式深色标记：立即可用，
+  // 冷启动这一帧也能判对，不必退回导出。该属性在子窗口上常取不到，所以用顶层祖先。
+  const HWND root = ::GetAncestor(hwnd, GA_ROOT);
+  bool dwmOk = false;
+  const bool dwmDark = DwmUsesDarkMode(root ? root : hwnd, &dwmOk);
+  if (reliable) *reliable = dwmOk;
+  return dwmDark;
 }
 
 COLORREF UtilParseSkinBg(const std::wstring& css, COLORREF fallback) {
