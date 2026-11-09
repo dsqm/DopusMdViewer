@@ -879,6 +879,23 @@ bool DwmUsesDarkMode(HWND hwnd) {
 
 }  // namespace
 
+// 上一次取样明确的主题。-1 = 还没有过；窗口刚创建、还没画过时有它才不会临时
+// 拿导出值顶上，导致首帧皮肤与随后注入的皮肤不同主题。
+LONG g_lastSampledDark = -1;
+
+bool UtilHostThemeDark(HWND hwnd, bool* sampled) {
+  const bool exported = UtilIsOpusDarkMode();
+  bool ok = false;
+  const bool painted = UtilWindowDark(hwnd, &ok);
+  if (sampled) *sampled = ok;
+  if (ok) {
+    ::InterlockedExchange(&g_lastSampledDark, painted ? 1 : 0);
+    return painted;
+  }
+  const LONG cached = ::InterlockedCompareExchange(&g_lastSampledDark, -1, -1);
+  return cached < 0 ? exported : cached != 0;
+}
+
 bool UtilWindowDark(HWND hwnd, bool* sampled) {
   if (sampled) *sampled = false;
   if (!hwnd || !::IsWindow(hwnd)) return false;

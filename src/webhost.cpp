@@ -316,7 +316,11 @@ void Fail(const wchar_t* reason) {
 // 同时把控制器默认底色提前设好，页面没铺满的空档也不发白。
 void RefreshBootSkin() {
   const Config cfg = ConfigSnapshot();
-  const bool dark = UtilIsOpusDarkMode();
+  // 与查看器用同一套判定：首帧皮肤和随后注入的皮肤必须同主题，否则先显示深色
+  // 再切到亮色。预热时还没有借用方窗口，取样不可用会沿用上次明确的结果。
+  const HWND sampling = g_host.borrower ? ::GetParent(g_host.borrower) : nullptr;
+  bool sampled = false;
+  const bool dark = UtilHostThemeDark(sampling, &sampled);
   std::wstring css;
   if (!SkinLoad(dark ? cfg.skinDark : cfg.skinLight, &css)) SkinLoad(L"light", &css);
   const COLORREF bg = UtilParseSkinBg(css, dark ? RGB(0x28, 0x2C, 0x34)
@@ -352,8 +356,9 @@ void RefreshBootSkin() {
     const COREWEBVIEW2_COLOR color = {255, GetRValue(bg), GetGValue(bg), GetBValue(bg)};
     controller2->put_DefaultBackgroundColor(color);
   }
-  LogLine(L"WEBHOST: 首帧皮肤 %s（%zu 字符），底色 #%02X%02X%02X",
-          dark ? L"暗色" : L"亮色", css.size(), GetRValue(bg), GetGValue(bg), GetBValue(bg));
+  LogLine(L"WEBHOST: 首帧皮肤 %s（%zu 字符），底色 #%02X%02X%02X，取样=%d",
+          dark ? L"暗色" : L"亮色", css.size(), GetRValue(bg), GetGValue(bg), GetBValue(bg),
+          sampled ? 1 : 0);
 }
 
 // 页面皮肤已就绪（或等待超时）：露出宿主并强制重画一次。

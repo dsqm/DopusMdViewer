@@ -154,3 +154,8 @@ COLORREF UtilParseSkinBg(const std::wstring& css, COLORREF fallback);
 // 按窗口客户区左侧空白列的实际底色判断深浅（三点取多数），判据与设置窗口的界面配色一致。
 // sampled 标出取样是否明确；票数打平或取不到时退回标题栏沉浸式深色标记，sampled 为 false。
 bool UtilWindowDark(HWND hwnd, bool* sampled);
+
+// 宿主当前深浅色，首帧皮肤与查看器皮肤必须用同一个结果。DOpus 导出为主，宿主窗口
+// 实际配色作交叉校验：取样明确时以实际配色为准并记住，取样不可用时沿用上次明确的
+// 结果，都没有才退回导出。sampled 回传本次取样是否明确。
+bool UtilHostThemeDark(HWND hwnd, bool* sampled);

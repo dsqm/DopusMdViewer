@@ -145,21 +145,19 @@ int ColorLuma(COLORREF c) {
   return (GetRValue(c) * 299 + GetGValue(c) * 587 + GetBValue(c) * 114) / 1000;
 }
 
-// 主题信号：DOpus 的 IsOpusInDarkMode 为主，宿主窗口实际底色作交叉校验。导出在
-// 主题切换后可能不刷新，而宿主实际配色会变；取样明确且两者不一致时以实际配色为准。
-// 每 10 秒记一行三个信号值，便于判断导出有没有跟随主题。
+// 与首帧皮肤共用 util 里的同一套判定，别在这里另算一套：两处不一致会先显示
+// 一种主题、再切到另一种。每 10 秒记一行判定值便于取证。
 bool HostThemeDark(ViewerState* st) {
-  const bool exported = UtilIsOpusDarkMode();
   bool sampled = false;
-  const bool painted = UtilWindowDark(st->hwndParent, &sampled);
+  const bool dark = UtilHostThemeDark(st->hwndParent, &sampled);
   static ULONGLONG lastLog = 0;
   const ULONGLONG now = ::GetTickCount64();
   if (!lastLog || now - lastLog > 10000) {
     lastLog = now;
-    LogLine(L"VIEWER: 主题信号 导出=%d 宿主窗口=%d 取样=%d", exported ? 1 : 0,
-            painted ? 1 : 0, sampled ? 1 : 0);
+    LogLine(L"VIEWER: 主题判定 dark=%d 导出=%d 取样=%d", dark ? 1 : 0,
+            UtilIsOpusDarkMode() ? 1 : 0, sampled ? 1 : 0);
   }
-  return sampled && painted != exported ? painted : exported;
+  return dark;
 }
 
 void SetStatus(ViewerState* st, const wchar_t* pszFormat, ...) {  va_list args;
