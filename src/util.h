@@ -150,3 +150,7 @@ bool UtilIsOpusDarkMode(void);
 
 // 皮肤 CSS 里的 --md-bg（#rgb / #rrggbb）。用户皮肤用 rgb()/变量就取不到，回 fallback。
 COLORREF UtilParseSkinBg(const std::wstring& css, COLORREF fallback);
+
+// 按窗口客户区左侧空白列的实际底色判断深浅（三点取多数），判据与设置窗口的界面配色一致。
+// sampled 标出取样是否明确；票数打平或取不到时退回标题栏沉浸式深色标记，sampled 为 false。
+bool UtilWindowDark(HWND hwnd, bool* sampled);

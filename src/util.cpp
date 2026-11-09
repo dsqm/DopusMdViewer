@@ -853,6 +853,59 @@ bool UtilIsOpusDarkMode(void) {
   return isDark && isDark() != FALSE;
 }
 
+namespace {
+
+int WindowLuma(COLORREF c) {
+  return (54 * GetRValue(c) + 183 * GetGValue(c) + 19 * GetBValue(c)) / 256;
+}
+
+// 标题栏沉浸式深色标记；只在取样打平或取不到时用来裁决。
+bool DwmUsesDarkMode(HWND hwnd) {
+  using GetAttrFn = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
+  static GetAttrFn fn = reinterpret_cast<GetAttrFn>([]() -> FARPROC {
+    HMODULE mod = ::GetModuleHandleW(L"dwmapi.dll");
+    if (!mod) mod = ::LoadLibraryW(L"dwmapi.dll");
+    return mod ? ::GetProcAddress(mod, "DwmGetWindowAttribute") : nullptr;
+  }());
+  if (!fn) return false;
+  BOOL dark = FALSE;
+  HRESULT hr = fn(hwnd, 20, &dark, sizeof(dark));
+  if (FAILED(hr)) {
+    dark = FALSE;
+    hr = fn(hwnd, 19, &dark, sizeof(dark));
+  }
+  return SUCCEEDED(hr) && dark != FALSE;
+}
+
+}  // namespace
+
+bool UtilWindowDark(HWND hwnd, bool* sampled) {
+  if (sampled) *sampled = false;
+  if (!hwnd || !::IsWindow(hwnd)) return false;
+  HDC dc = ::GetDC(hwnd);
+  if (!dc) return false;
+  RECT rc = {};
+  ::GetClientRect(hwnd, &rc);
+  const POINT pts[3] = {{2, 2}, {2, (rc.top + rc.bottom) / 2}, {2, rc.bottom - 3}};
+  int dark = 0;
+  int light = 0;
+  for (const POINT& pt : pts) {
+    const COLORREF c = ::GetPixel(dc, pt.x, pt.y);
+    if (c == CLR_INVALID) continue;
+    if (WindowLuma(c) < 128) {
+      ++dark;
+    } else {
+      ++light;
+    }
+  }
+  ::ReleaseDC(hwnd, dc);
+  if (dark + light > 0 && dark != light) {
+    if (sampled) *sampled = true;
+    return dark > light;
+  }
+  return DwmUsesDarkMode(hwnd);
+}
+
 COLORREF UtilParseSkinBg(const std::wstring& css, COLORREF fallback) {
   const size_t pos = css.find(L"--md-bg:");
   if (pos == std::wstring::npos) return fallback;

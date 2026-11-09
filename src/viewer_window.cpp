@@ -145,6 +145,23 @@ int ColorLuma(COLORREF c) {
   return (GetRValue(c) * 299 + GetGValue(c) * 587 + GetBValue(c) * 114) / 1000;
 }
 
+// 主题信号：DOpus 的 IsOpusInDarkMode 为主，宿主窗口实际底色作交叉校验。导出在
+// 主题切换后可能不刷新，而宿主实际配色会变；取样明确且两者不一致时以实际配色为准。
+// 每 10 秒记一行三个信号值，便于判断导出有没有跟随主题。
+bool HostThemeDark(ViewerState* st) {
+  const bool exported = UtilIsOpusDarkMode();
+  bool sampled = false;
+  const bool painted = UtilWindowDark(st->hwndParent, &sampled);
+  static ULONGLONG lastLog = 0;
+  const ULONGLONG now = ::GetTickCount64();
+  if (!lastLog || now - lastLog > 10000) {
+    lastLog = now;
+    LogLine(L"VIEWER: 主题信号 导出=%d 宿主窗口=%d 取样=%d", exported ? 1 : 0,
+            painted ? 1 : 0, sampled ? 1 : 0);
+  }
+  return sampled && painted != exported ? painted : exported;
+}
+
 void SetStatus(ViewerState* st, const wchar_t* pszFormat, ...) {  va_list args;
   va_start(args, pszFormat);
   ::StringCchVPrintfW(st->szStatus, ARRAYSIZE(st->szStatus), pszFormat, args);
@@ -1430,6 +1447,14 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
   // （外部程序用 Go 定位文件时，DOpus 可能一条消息都不发，日志里必须能看出「没收到」）。
   LogLine(L"VIEWER: LOADW \"%s\" host=%d", pszPath, st->hasHost ? 1 : 0);
 
+  // 预览窗口关闭期间发生的主题切换走不到轮询；每次打开文件重查一次，
+  // 别沿用创建窗口时那个已经过期的判定。OpenDoc 随后会按新判定重推皮肤。
+  const bool dark = HostThemeDark(st);
+  if (dark != st->darkMode) {
+    st->darkMode = dark;
+    LogLine(L"VIEWER: LOADW 时主题已变 dark=%d", dark ? 1 : 0);
+  }
+
   WIN32_FILE_ATTRIBUTE_DATA fad;
   st->ullFileSize = 0;
   bool haveInfo = false;
@@ -1733,7 +1758,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       // wParam=TRUE 时 lParam 是新背景色（viewer plugins.h:307）。颜色变了就说明
       // 主题换了：重查宿主，皮肤跟着换。
       {
-        const bool dark = UtilIsOpusDarkMode();
+        const bool dark = HostThemeDark(st);
         if (dark != st->darkMode) {
           st->darkMode = dark;
           LogLine(L"VIEWER: DOpus 深浅色切换 dark=%d（REDRAW），重推皮肤", dark ? 1 : 0);
@@ -1745,7 +1770,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
     case WM_TIMER:
       if (wParam == kDarkPollTimerId) {
-        const bool dark = UtilIsOpusDarkMode();
+        const bool dark = HostThemeDark(st);
         if (dark != st->darkMode) {
           st->darkMode = dark;
           LogLine(L"VIEWER: DOpus 深浅色切换 dark=%d，重推皮肤", dark ? 1 : 0);
@@ -1880,7 +1905,7 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->webFailed = false;
   st->hasHost = false;
   st->hasSelection = false;
-  st->darkMode = UtilIsOpusDarkMode();
+  st->darkMode = HostThemeDark(st);
   st->printLight = false;
   st->printStartTick = 0;
   // 初始底色：第一帧占位就要按主题铺，不能等 PushChrome（它要页面就绪才跑）
