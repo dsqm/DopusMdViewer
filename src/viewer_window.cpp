@@ -33,6 +33,11 @@ namespace {
 const wchar_t kClassName[] = L"DopusMdViewerWindow";
 const wchar_t kTitle[] = L"DopusMdViewer";
 const wchar_t kDocBase[] = L"https://mddoc.localhost/";
+// 深浅色没有可订阅的宿主通知，按半秒轮询 IsOpusInDarkMode；打印亮色的兜底恢复
+// 要覆盖页面 5 分钟的打印超时。
+constexpr UINT_PTR kDarkPollTimerId = 1;
+constexpr UINT kDarkPollMs = 500;
+constexpr ULONGLONG kPrintLightMaxMs = 6ull * 60 * 1000;
 
 struct ViewerState {
   HWND hwndSelf;
@@ -57,6 +62,9 @@ struct ViewerState {
   bool hasSelection;  // 页面里此刻有没有非折叠选区，DVPLUGINMSG_TESTSELECTION 靠它回答
   // DOpus 当前深浅色：true = 暗色。拿不到信号时保持 false（用亮色框皮肤兜底）。
   bool darkMode;
+  // 打印期间强制亮色皮肤；页面中止打印时不一定有 print-done，靠计时兜底恢复。
+  bool printLight;
+  ULONGLONG printStartTick;
   // 页面最后右键的图片（imgctx 帧）：「打开方式」要还原磁盘路径，「放大查看」
   // 原样生效。只在弹菜单时读一次，空 = 无图片上下文（全局菜单不带图片动作区）。
   std::wstring imgCtxUrl;
@@ -131,19 +139,17 @@ void SendStatusText(ViewerState* st, const wchar_t* pszText) {
   ::SendMessageW(st->hwndParent, WM_NOTIFY, nmt.hdr.idFrom, reinterpret_cast<LPARAM>(&nmt));
 }
 
-// PROBE(dark-follow): 临时探针，真机确认后整块删除。
-// 此前实测 DVPN_GETBGCOL 恒返回 0（宿主不应答）；这里复核，重点看深浅色切换时
-// REDRAW 是否带新背景色。无视日志开关，前缀 PROBE: 便于过滤。
-COLORREF ProbeBgCol(ViewerState* st, const wchar_t* when) {
-  if (!st->hwndParent) return 0;
-  NMHDR hdr = {};
-  hdr.hwndFrom = st->hwndSelf;
-  hdr.idFrom = static_cast<UINT_PTR>(::GetDlgCtrlID(st->hwndSelf));
-  hdr.code = static_cast<UINT>(DVPN_GETBGCOL);
-  const LRESULT r = ::SendMessageW(st->hwndParent, WM_NOTIFY, hdr.idFrom,
-                                   reinterpret_cast<LPARAM>(&hdr));
-  LogLineAlways(L"PROBE: GETBGCOL @%s = 0x%08lX", when, static_cast<unsigned long>(r));
-  return static_cast<COLORREF>(r);
+// dopus.exe 的未公开导出，DOpus 自带查看器（text/multiview/opuswic）都按名取它。
+// 无参，TRUE = DOpus 当前处于暗色主题。
+using PFN_ISOPUSDARK = BOOL(WINAPI*)(void);
+
+bool HostDarkMode() {
+  static const auto isDark =
+      reinterpret_cast<PFN_ISOPUSDARK>([] {
+        const HMODULE host = ::GetModuleHandleW(nullptr);
+        return host ? ::GetProcAddress(host, "IsOpusInDarkMode") : nullptr;
+      }());
+  return isDark && isDark() != FALSE;
 }
 
 void SetStatus(ViewerState* st, const wchar_t* pszFormat, ...) {  va_list args;
@@ -270,7 +276,9 @@ void PushChrome(ViewerState* st) {
   const Config cfg = ConfigSnapshot();
 
   std::wstring css;
-  std::wstring skinId = st->darkMode ? cfg.skinDark : cfg.skinLight;
+  // 打印固定亮色；其余时刻跟随 DOpus 深浅色
+  const bool dark = st->darkMode && !st->printLight;
+  std::wstring skinId = dark ? cfg.skinDark : cfg.skinLight;
   if (!SkinLoad(skinId, &css)) {
     skinId = L"light";
     if (!SkinLoad(skinId, &css)) {
@@ -319,6 +327,9 @@ void StartPrint(ViewerState* st) {
   }
   LogLine(L"VIEWER: 打印请求，等页面准备全文");
   SetStatus(st, L"正在准备打印…");
+  st->printLight = true;
+  st->printStartTick = ::GetTickCount64();
+  PushChrome(st);  // 打印固定亮色皮肤，打完再恢复
   if (!WebHostPost(st->hwndSelf, L"print|")) SetStatus(st, L"打印准备失败：页面不可达");
 }
 
@@ -1245,6 +1256,10 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
 
   if (type == L"print-done") {
     LogLine(L"VIEWER: 打印对话框已关闭");
+    if (st->printLight) {
+      st->printLight = false;
+      PushChrome(st);
+    }
     return;
   }
 
@@ -1486,6 +1501,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       WebHostEnsure();
       st->hasHost = WebHostBorrow(hwnd, ClientRectOf(hwnd));
       RegisterViewer(hwnd);
+      ::SetTimer(hwnd, kDarkPollTimerId, kDarkPollMs, nullptr);
       return 0;
     }
 
@@ -1633,7 +1649,6 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
 
     case DVPLUGINMSG_LOADW:
       // 这个返回值是「加载成功/失败」。返回 FALSE 会让 DOpus 立刻 CLEAR 并销毁窗口。
-      ProbeBgCol(st, L"LOADW");  // PROBE(dark-follow)
       HandleLoad(st, reinterpret_cast<const wchar_t*>(lParam));
       return TRUE;
 
@@ -1699,18 +1714,40 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       // 只是通知，不销毁窗口（viewer plugins.h:319）。配置变了就重推皮肤与字体；
       // 字号变化后的位置恢复由前端按锚点处理。
       LogLine(L"VIEWER: REINITIALIZE，重推皮肤与字体");
-      ProbeBgCol(st, L"REINITIALIZE");  // PROBE(dark-follow)
       if (WebHostIsReady()) PushChrome(st);
       return 0;
 
     case DVPLUGINMSG_REDRAW:
-      // PROBE(dark-follow): wParam=TRUE 时 lParam 应是新背景色（viewer plugins.h:307）
-      LogLineAlways(L"PROBE: REDRAW wParam=%llu lParam=0x%08llX",
-                    static_cast<unsigned long long>(wParam),
-                    static_cast<unsigned long long>(lParam));
-      if (wParam) ProbeBgCol(st, L"REDRAW");
+      // wParam=TRUE 时 lParam 是新背景色（viewer plugins.h:307）。颜色变了就说明
+      // 主题换了：重查宿主，皮肤跟着换。
+      {
+        const bool dark = HostDarkMode();
+        if (dark != st->darkMode) {
+          st->darkMode = dark;
+          LogLine(L"VIEWER: DOpus 深浅色切换 dark=%d（REDRAW），重推皮肤", dark ? 1 : 0);
+          PushChrome(st);
+        }
+      }
       ::InvalidateRect(hwnd, nullptr, TRUE);
       return 0;
+
+    case WM_TIMER:
+      if (wParam == kDarkPollTimerId) {
+        const bool dark = HostDarkMode();
+        if (dark != st->darkMode) {
+          st->darkMode = dark;
+          LogLine(L"VIEWER: DOpus 深浅色切换 dark=%d，重推皮肤", dark ? 1 : 0);
+          PushChrome(st);
+        }
+        // 页面中止打印时不一定发 print-done；亮色皮肤不能一直留着
+        if (st->printLight && ::GetTickCount64() - st->printStartTick > kPrintLightMaxMs) {
+          st->printLight = false;
+          LogLine(L"VIEWER: 打印亮色超时未收到 print-done，已恢复跟随皮肤");
+          PushChrome(st);
+        }
+        return 0;
+      }
+      return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
 
     default:
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
@@ -1750,24 +1787,6 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
   }
 
   if (!st) return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
-
-  // PROBE(dark-follow): 系统明暗变化是否转发到查看器子窗口（正常只广播顶层窗口，
-  // 这里若收到说明 DOpus 有转发）。字符串指针先 VirtualQuery 防越界。
-  if (uMsg == WM_SETTINGCHANGE || uMsg == WM_SYSCOLORCHANGE) {
-    wchar_t section[64] = L"";
-    if (uMsg == WM_SETTINGCHANGE && lParam) {
-      MEMORY_BASIC_INFORMATION mbi = {};
-      if (::VirtualQuery(reinterpret_cast<void*>(lParam), &mbi, sizeof(mbi)) &&
-          (mbi.Protect & (PAGE_READWRITE | PAGE_READONLY | PAGE_WRITECOPY |
-                          PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
-        ::StringCchCopyNW(section, ARRAYSIZE(section),
-                          reinterpret_cast<const wchar_t*>(lParam), ARRAYSIZE(section) - 1);
-      }
-    }
-    LogLineAlways(L"PROBE: %s wParam=%llu section=\"%s\"",
-                  uMsg == WM_SETTINGCHANGE ? L"WM_SETTINGCHANGE" : L"WM_SYSCOLORCHANGE",
-                  static_cast<unsigned long long>(wParam), section);
-  }
 
   return HandleMessage(st, hwnd, uMsg, wParam, lParam);
 }
@@ -1849,7 +1868,9 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->webFailed = false;
   st->hasHost = false;
   st->hasSelection = false;
-  st->darkMode = false;
+  st->darkMode = HostDarkMode();
+  st->printLight = false;
+  st->printStartTick = 0;
   st->pClaimed = nullptr;
   st->fontName = nullptr;
   st->fontHint = nullptr;

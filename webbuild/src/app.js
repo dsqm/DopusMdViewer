@@ -5325,11 +5325,13 @@ async function buildPrintView() {
 async function startPrint() {
   if (!V.active) {
     postRaw('status|没有可打印的文档')
+    postRaw('print-done')  // 宿主已切到打印皮肤，这里不会再有 afterprint
     return
   }
   if (PRINT.busy) return
   if (V.fileSize > PRINT_MAX_FILE) {
     postRaw('status|文档超过 2 MB，暂不支持打印')
+    postRaw('print-done')
     return
   }
   PRINT.busy = true
@@ -5341,6 +5343,7 @@ async function startPrint() {
     if (PRINT.docId !== V.docId || !V.active) {
       root.remove()
       PRINT.busy = false
+      postRaw('print-done')
       return
     }
     PRINT.root = root
@@ -5348,9 +5351,13 @@ async function startPrint() {
     report('print-ready', (performance.now() - t0).toFixed(0) + '|' + n)
     postRaw('print-ready')
     // 正常会收到 afterprint；收不到时 5 分钟后兜底清掉，别把全文 DOM 留在页面里
-    PRINT.timer = setTimeout(cleanupPrint, 5 * 60 * 1000)
+    PRINT.timer = setTimeout(() => {
+      cleanupPrint()
+      postRaw('print-done')
+    }, 5 * 60 * 1000)
   } catch (err) {
     cleanupPrint()
+    postRaw('print-done')
     const msg = String((err && err.message) || err)
     postRaw('status|打印准备失败：' + msg)
     report('print-error', msg)
