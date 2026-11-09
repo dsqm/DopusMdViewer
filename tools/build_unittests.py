@@ -56,7 +56,7 @@ SRC_UNITS = [
     'doc_search', 'encoding_detect', 'localize', 'log', 'msg', 'util',
 ]
 TEST_FILES = [
-    'main', 'test_config', 'test_doc_index', 'test_doc_regex', 'test_doc_search',
+    'main', 'host_shim', 'test_config', 'test_doc_index', 'test_doc_regex', 'test_doc_search',
     'test_encoding', 'test_localize', 'test_msg', 'test_util',
 ]
 
@@ -74,6 +74,9 @@ def run(name, argv):
 
 
 def main():
+    # cl 的诊断是 GBK，解码后再打印可能撞上控制台编码：替换掉别让脚本自己崩
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(errors='replace')
     os.makedirs(OBJDIR, exist_ok=True)
     for d in (os.path.join(ROOT, 'build', 'obj-ced'),
               os.path.join(ROOT, 'build', 'obj-pcre2', '8')):

@@ -3,6 +3,7 @@ bin/
 build/
 obj/
 *.obj
+*.lib
 *.res
 *.exp
 *.pdb
