@@ -213,19 +213,11 @@ void MaybeCleanCacheOnStart(const std::wstring& userData) {
   if (size >= kWebViewCacheAutoCleanBytes) {
     LogLine(L"WEBHOST: 缓存 %llu B 超过上限，自动清理 %s",
             static_cast<unsigned long long>(size), userData.c_str());
-    if (UtilRemoveTree(userData)) {
-      UtilEnsureDir(userData);
-    } else {
+    // 只删不建：清理完成后 EnsureEnvironment 会重新进 StartEnvironment，
+    // 那里的 UserDataDir() 负责按需建目录。
+    if (!UtilRemoveTree(userData)) {
       LogLine(L"WEBHOST: 自动清理失败，目录可能仍被占用");
     }
-  }
-
-  // 旧版把缓存放在数据根下；默认迁走后顺手清掉，失败下次启动再试。
-  const std::wstring legacy = UtilJoin(UtilDataDir(), L"WebView2");
-  if (_wcsicmp(legacy.c_str(), userData.c_str()) != 0 && UtilIsWebView2UserDataDir(legacy) &&
-      UtilDirExists(legacy)) {
-    LogLine(L"WEBHOST: 清理旧缓存 %s", legacy.c_str());
-    UtilRemoveTree(legacy);
   }
 }
 
@@ -1765,6 +1757,9 @@ bool WebHostClearUserData(const std::wstring& userDataDir) {
 
   // 删除与重试在调用线程上做：宿主线程不能被 Sleep 循环占住，调用方（设置界面）
   // 本来就挂着等待光标同步等结果。
+  // 清理只删不建：目录不存在就是已经干净，别再建一个空目录回来——
+  // 否则「清理」一个不存在的位置反而会把它造出来。下次建环境时 UserDataDir()
+  // 会按需创建当前缓存目录，WebView2 本身也会创建用户数据目录。
   bool ok = false;
   for (int i = 0; i < 30; ++i) {
     if (!UtilDirExists(userDataDir)) {
@@ -1777,7 +1772,6 @@ bool WebHostClearUserData(const std::wstring& userDataDir) {
     }
     ::Sleep(100);
   }
-  if (ok) ok = UtilEnsureDir(userDataDir);
   if (ok) {
     LogLine(L"WEBHOST: 已清理缓存 %s", userDataDir.c_str());
   } else {

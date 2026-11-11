@@ -112,7 +112,7 @@ def main():
 
     rc = run('link', [LINK, '/nologo', '/MACHINE:X64', '/SUBSYSTEM:CONSOLE',
                       '/INCREMENTAL:NO', '/OUT:' + OUT] + objs + libs +
-             ['kernel32.lib', 'user32.lib', 'version.lib'])
+             ['kernel32.lib', 'user32.lib', 'gdi32.lib', 'version.lib'])
     if rc:
         return rc
     print('OK  ' + OUT)

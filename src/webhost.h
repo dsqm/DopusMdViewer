@@ -54,7 +54,8 @@ bool WebHostIsPinned(void);
 bool WebHostIsReady(void);
 
 // 清理指定 WebView2 用户数据目录。目录正被本进程使用时先释放宿主；
-// 目录被占用或不是 ...\WebView2 时返回 false。
+// 目录被占用或不是 ...\WebView2 时返回 false。只删不建：目录不存在即算清理完成，
+// 重建由下次建环境的 UserDataDir() 负责。
 bool WebHostClearUserData(const std::wstring& userDataDir);
 
 // 发一条控制消息。页面未就绪、controller 不在，或 hViewer 不是当前借用方时返回
