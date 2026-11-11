@@ -161,6 +161,14 @@ const wchar_t* const kZh[kCount] = {
     /* Ok               */ L"确定",
     /* Cancel           */ L"取消",
 
+    /* TabAbout         */ L"关于",
+    /* AboutDesc        */ L"DOpus 的 Markdown 预览插件，页面由 WebView2 渲染。",
+    /* AboutCopyright   */ L"Copyright (c) 2026 dsqm / DopusMdViewer",
+    /* AboutLicense     */ L"开源协议：MIT",
+    /* AboutGithub      */ L"GitHub 仓库",
+    /* AboutSponsor     */ L"支持或赞助",
+    /* AboutOpenFailed  */ L"打不开外部链接，请检查默认浏览器设置。",
+
     /* SaveFailed       */ L"无法保存设置。",
     /* SaveFailedPath   */ L"路径：%s",
     /* SaveFailedError  */ L"错误：%lu - %s",

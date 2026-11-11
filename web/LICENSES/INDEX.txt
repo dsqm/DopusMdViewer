@@ -21,6 +21,7 @@ txt 后缀只是便于 Windows 记事本打开。
   katex.txt                       KaTeX 0.19.1（代码与 CSS）       MIT
   katex-fonts-NOTE.txt            KaTeX 字体（woff2）              SIL OFL 1.1
   mermaid.txt                     Mermaid 12.2.0                  MIT
+  elkjs.txt                       elkjs 0.9.3（打进 mermaid.js）   EPL-2.0
   pcre2.txt                       PCRE2 10.45（静态链入 DLL）      BSD-3-Clause
   compact-enc-det.txt             Compact Encoding Detection       Apache-2.0
   nlohmann-json.txt               nlohmann/json 3.11.3             MIT
@@ -28,9 +29,10 @@ txt 后缀只是便于 Windows 记事本打开。
 说明
 ----
 - 非 MIT 组件：markdown-it-task-lists（ISC，义务与 MIT 相同）、DOMPurify（双许可，
-  取 MPL-2.0 分支，未修改源码，保留声明即可）、highlight.js 与 PCRE2
-  （BSD-3-Clause）、Compact Encoding Detection（Apache-2.0）、KaTeX 字体
-  （SIL OFL 1.1）。分发时都要保留版权声明与许可全文。
+  取 Apache-2.0 分支，未修改源码，保留声明即可）、elkjs（EPL-2.0，随 Mermaid
+  打进 mermaid.js，按该许可独立分发）、highlight.js 与 PCRE2（BSD-3-Clause）、
+  Compact Encoding Detection（Apache-2.0）、KaTeX 字体（SIL OFL 1.1）。
+  分发时都要保留版权声明与许可全文；elkjs 源码见 https://github.com/kieler/elkjs。
 - KaTeX 的 woff2 字体单独说明见 katex-fonts-NOTE.txt。
 - Esbuild 只用于构建，不随插件分发，因此不在本清单内。
 - PCRE2、Compact Encoding Detection、nlohmann/json 静态链接或头文件内联进

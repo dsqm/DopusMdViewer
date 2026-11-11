@@ -1,6 +1,6 @@
-// settings_dlg.cpp - 非模态设置窗口（外观 / 字体 / 渲染 / 高级四页）。
+// settings_dlg.cpp - 非模态设置窗口（外观 / 字体 / 渲染 / 高级 / 关于五页）。
 //
-// 四页共用一个窗口，靠控件的 ShowWindow 切换，不建子对话框；改动只进 staged
+// 五页共用一个窗口，靠控件的 ShowWindow 切换，不建子对话框；改动只进 staged
 // 副本，点“应用/确定”才写 config.json 并通知查看器。
 
 #include "settings_dlg.h"
@@ -30,11 +30,17 @@ namespace {
 
 const wchar_t kClass[] = L"DopusMdViewerSettings";
 
+// 关于页的两个外链：项目固定信息，不进 config.json。
+const wchar_t kGithubUrl[] = L"https://github.com/dsqm/DopusMdViewer";
+const wchar_t kSponsorUrl[] =
+    L"https://docs.qq.com/aio/DRWtMY3FQS0ZHRGRG?p=qIniwAv5QQjaAipgIvwLF5";
+
 enum {
   kIdTabAppearance = 3001,
   kIdTabFont,
   kIdTabRender,
   kIdTabAdvanced,
+  kIdTabAbout,
   kIdSkinLight = 3100,
   kIdSkinDark,
   kIdSize,
@@ -106,11 +112,13 @@ enum {
   kIdApply,
   kIdOk,
   kIdCancel,
+  kIdAboutGithub = 3600,
+  kIdAboutSponsor,
 };
 
 struct FontPanel;
 
-constexpr int kPages = 4;
+constexpr int kPages = 5;
 // 「复制版本信息」按下后按钮文字短暂变成「已复制」，靠这个计时器改回来。
 constexpr UINT_PTR kCopyHintTimerId = 1;
 // 字体预览区的未缩放矩形：创建与 DPI 重排共用一份。
@@ -781,7 +789,7 @@ std::vector<HWND> TabStops(DialogState* st) {
   std::vector<HWND> out;
   if (!st || !st->hwnd) return out;
 
-  // 页签组单独处理：四个单选按钮是一组，Windows 会在 BM_SETCHECK 之后搬动甚至清掉
+  // 页签组单独处理：五个单选按钮是一组，Windows 会在 BM_SETCHECK 之后搬动甚至清掉
   // 同组按钮的 WS_TABSTOP，靠样式位枚举会整组漏掉（实测第一个 Tab 直接落到皮肤下拉，
   // 于是 ←/→ 换页在键盘上永远用不上）。这里按「当前选中的那个」占一个站位，放最前。
   HWND tab = ::GetDlgItem(st->hwnd, kIdTabAppearance + st->page);
@@ -793,7 +801,7 @@ std::vector<HWND> TabStops(DialogState* st) {
   // 正好是 Tab 该走的顺序：页签 → 当页控件 → 底部按钮。
   for (HWND h = ::GetWindow(st->hwnd, GW_CHILD); h; h = ::GetWindow(h, GW_HWNDNEXT)) {
     const int id = ::GetDlgCtrlID(h);
-    if (id >= kIdTabAppearance && id <= kIdTabAdvanced) continue;  // 页签已在最前
+    if (id >= kIdTabAppearance && id <= kIdTabAbout) continue;  // 页签已在最前
     if (!(::GetWindowLongPtrW(h, GWL_STYLE) & WS_TABSTOP)) continue;
     if (!::IsWindowVisible(h) || !::IsWindowEnabled(h)) continue;
     out.push_back(h);
@@ -848,7 +856,7 @@ void FocusPageFirst(DialogState* st) {
   std::vector<HWND> stops = TabStops(st);
   for (HWND h : stops) {
     const int id = ::GetDlgCtrlID(h);
-    if (id >= kIdTabAppearance && id <= kIdTabAdvanced) continue;
+    if (id >= kIdTabAppearance && id <= kIdTabAbout) continue;
     ::SetFocus(h);
     ShowFocusCues(st, h);
     return;
@@ -858,7 +866,7 @@ void FocusPageFirst(DialogState* st) {
 
 bool IsPageTab(HWND hwnd) {
   const int id = ::GetDlgCtrlID(hwnd);
-  return id >= kIdTabAppearance && id <= kIdTabAdvanced;
+  return id >= kIdTabAppearance && id <= kIdTabAbout;
 }
 
 bool ComboDropped(DialogState* st) {
@@ -1016,7 +1024,7 @@ void ShowPage(DialogState* st, int page) {
   for (int p = 0; p < kPages; ++p) {
     for (HWND h : st->pageCtrls[p]) ::ShowWindow(h, p == page ? SW_SHOW : SW_HIDE);
   }
-  ::CheckRadioButton(st->hwnd, kIdTabAppearance, kIdTabAdvanced, kIdTabAppearance + page);
+  ::CheckRadioButton(st->hwnd, kIdTabAppearance, kIdTabAbout, kIdTabAppearance + page);
   for (int i = 0; i < kPages; ++i) {
     HWND tab = ::GetDlgItem(st->hwnd, kIdTabAppearance + i);
     if (tab) ::InvalidateRect(tab, nullptr, TRUE);
@@ -2144,9 +2152,10 @@ void BuildUi(DialogState* st) {
   const TabDef tabs[] = {{kIdTabAppearance, loc::T(loc::Str::TabAppearance)},
                          {kIdTabFont, loc::T(loc::Str::TabFont)},
                          {kIdTabRender, loc::T(loc::Str::TabRender)},
-                         {kIdTabAdvanced, loc::T(loc::Str::TabAdvanced)}};
-  for (int i = 0; i < 4; ++i) {
-    // 四个页签是一个单选组：只给组里第一个 WS_TABSTOP，整组占一个 Tab 站位
+                         {kIdTabAdvanced, loc::T(loc::Str::TabAdvanced)},
+                         {kIdTabAbout, loc::T(loc::Str::TabAbout)}};
+  for (int i = 0; i < kPages; ++i) {
+    // 五个页签是一个单选组：只给组里第一个 WS_TABSTOP，整组占一个 Tab 站位
     //（Windows 对同组单选按钮也会把其余的清掉，这里写明白就不靠它）。
     // 换页用左右方向键，也照旧能点。
     // 自绘：单选只负责互斥状态，外观由 DrawTab 画（当前页更亮 + 加粗 + 强调色下划线），
@@ -2379,34 +2388,20 @@ void BuildUi(DialogState* st) {
                            BS_AUTORADIOBUTTON | WS_TABSTOP, 28, y + 78, 200, 24, kIdNetOff);
 
   // ---------------- 高级 ----------------
-  std::wstring version = UtilModuleVersion();
-  if (version.empty()) version = loc::T(loc::Str::Unknown);
-  std::wstring runtime = WebHostRuntimeInfo();
-  if (runtime.empty()) runtime = loc::T(loc::Str::RuntimeMissing);
-
-  y = 50;
-  AddControl(st, 3, L"STATIC", loc::T(loc::Str::Version), SS_LEFT, 16, y + 2, 90, 20, 0);
-  AddControl(st, 3, L"STATIC", version.c_str(), SS_LEFT, 110, y + 2, 280, 20, kIdVersion);
-  st->hCopyVersion = AddControl(st, 3, L"BUTTON", loc::T(loc::Str::CopyVersionInfo),
-                                BS_PUSHBUTTON | WS_TABSTOP, 400, y - 2, 124, 26,
-                                kIdCopyVersion);
-
-  y = 78;
-  AddControl(st, 3, L"STATIC", L"WebView2", SS_LEFT, 16, y + 2, 90, 20, 0);
-  AddControl(st, 3, L"STATIC", runtime.c_str(), SS_LEFT, 110, y + 2, 280, 20, kIdWebView);
-
+  // 版本信息与运行时版本在「关于」页，这里从日志开关开始；起始 y 与其余各页一致，
+  // 省下来的高度匀到各组之间，页面不会顶上留一块空白、底下挤成一堆。
   // 排查问题先看日志，所以日志与它的目录放最上面；再往下才是引擎生命周期
   // （预热、空闲释放）。
-  y = 110;
+  y = 48;
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::LogEnabled), BS_AUTOCHECKBOX | WS_TABSTOP,
              16, y, 300, 24, kIdEnableLog);
 
   // 日志目录紧贴「记录日志」：开关和它的落点不该隔着三个控件。
-  y = 140;
+  y = 78;
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenLog), BS_PUSHBUTTON | WS_TABSTOP, 16, y,
              130, 26, kIdOpenLog);
 
-  y = 178;
+  y = 132;
   {
     // 问号紧跟描述。复选框的宽度必须收在文字后面——给宽了它就会盖住右侧的问号
     // （两个都是子窗口，重叠时谁最后重绘谁在上）。
@@ -2418,7 +2413,7 @@ void BuildUi(DialogState* st) {
                kIdPrewarmHelp);
   }
 
-  y = 212;
+  y = 166;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::IdleRelease), SS_LEFT, 16, y + 3, 120, 20, 0);
   st->hIdle = AddControl(st, 3, L"EDIT", L"",
                          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 140, y, 70, 24, kIdIdle,
@@ -2432,7 +2427,7 @@ void BuildUi(DialogState* st) {
 
   // 文档内链接：这是内容行为，和上面的引擎开关、下面的路径各成一组。
   // 名单有几十项，页面上放不下多行框，用一个按钮开对话框编辑；选了系统默认程序时置灰。
-  y = 252;
+  y = 214;
   {
     // 下拉框而不是勾选框：勾选框只说明「开」是什么，「关」会变成什么得靠猜。
     const wchar_t* label = loc::T(loc::Str::LinkOpenMode);
@@ -2455,7 +2450,7 @@ void BuildUi(DialogState* st) {
 
   // 外部链接确认：紧跟着上面那行链接设置。下拉而不是勾选框——勾选框只说明「开」
   // 是什么，「关」会变成什么（弹窗还在、只是不用等）得靠猜。
-  y = 280;
+  y = 246;
   {
     const wchar_t* label = loc::T(loc::Str::LinkConfirmWait);
     const int labelW = UnscaleOf(st, TextWidth(st, label)) + 4;
@@ -2472,7 +2467,7 @@ void BuildUi(DialogState* st) {
     }
   }
 
-  y = 308;
+  y = 292;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::ConfigFolder), SS_LEFT, 16, y, 200, 20, 0);
   std::wstring dataDir = UtilDataDir();
   if (dataDir.empty()) dataDir = loc::T(loc::Str::NoFolder);
@@ -2512,7 +2507,7 @@ void BuildUi(DialogState* st) {
   AddControl(st, 3, L"BUTTON", loc::T(loc::Str::OpenConfig), BS_PUSHBUTTON | WS_TABSTOP, 16,
              openConfigY, 104, 26, kIdOpenConfig);
 
-  y = openConfigY + 40;
+  y = openConfigY + 48;
   const int cacheLabelW = UnscaleOf(st, TextWidth(st, loc::T(loc::Str::WebViewCache))) + 10;
   AddControl(st, 3, L"STATIC", loc::T(loc::Str::WebViewCache), SS_LEFT, 16, y + 3, cacheLabelW,
              20, 0);
@@ -2535,6 +2530,33 @@ void BuildUi(DialogState* st) {
   // 提示行与左侧标签对齐并占满整行：从按钮下面起（x=114）只有 434 单位，
   // 168 dpi 下约 760px，稍长一点的文案就会换行被单行控件裁掉。
   st->hWebViewInfo = AddControl(st, 3, L"STATIC", L"", SS_LEFT, 16, y + 66, 532, 20, 0);
+
+  // ---------------- 关于 ----------------
+  std::wstring version = UtilModuleVersion();
+  if (version.empty()) version = loc::T(loc::Str::Unknown);
+  std::wstring runtime = WebHostRuntimeInfo();
+  if (runtime.empty()) runtime = loc::T(loc::Str::RuntimeMissing);
+
+  AddControl(st, 4, L"STATIC", loc::T(loc::Str::AboutDesc), SS_LEFT, 16, 54, 524, 22, 0);
+
+  y = 92;
+  AddControl(st, 4, L"STATIC", loc::T(loc::Str::Version), SS_LEFT, 16, y + 2, 90, 20, 0);
+  AddControl(st, 4, L"STATIC", version.c_str(), SS_LEFT, 110, y + 2, 280, 20, kIdVersion);
+  st->hCopyVersion = AddControl(st, 4, L"BUTTON", loc::T(loc::Str::CopyVersionInfo),
+                                BS_PUSHBUTTON | WS_TABSTOP, 400, y - 2, 124, 26,
+                                kIdCopyVersion);
+
+  y = 120;
+  AddControl(st, 4, L"STATIC", L"WebView2", SS_LEFT, 16, y + 2, 90, 20, 0);
+  AddControl(st, 4, L"STATIC", runtime.c_str(), SS_LEFT, 110, y + 2, 280, 20, kIdWebView);
+
+  AddControl(st, 4, L"STATIC", loc::T(loc::Str::AboutCopyright), SS_LEFT, 16, 160, 524, 20, 0);
+  AddControl(st, 4, L"STATIC", loc::T(loc::Str::AboutLicense), SS_LEFT, 16, 182, 524, 20, 0);
+
+  AddControl(st, 4, L"BUTTON", loc::T(loc::Str::AboutGithub), BS_PUSHBUTTON | WS_TABSTOP,
+             16, 222, 150, 28, kIdAboutGithub);
+  AddControl(st, 4, L"BUTTON", loc::T(loc::Str::AboutSponsor), BS_PUSHBUTTON | WS_TABSTOP,
+             178, 222, 150, 28, kIdAboutSponsor);
 
   // 底部按钮：两个重置在左（本页在前、全部在后），右侧是 应用/确定/取消
   AddControl(st, -1, L"BUTTON", loc::T(loc::Str::ResetPage), BS_PUSHBUTTON | WS_TABSTOP, 16,
@@ -2604,6 +2626,8 @@ void ResetPageSettings(DialogState* st, int page) {
       c.webviewBaseDir = def.webviewBaseDir;
       c.webviewBaseDirUsb = def.webviewBaseDirUsb;
       break;
+    case 4:
+      return;  // 关于页没有可重置的设置项
     default:
       return;
   }
@@ -2612,12 +2636,22 @@ void ResetPageSettings(DialogState* st, int page) {
   LogLine(L"SETTINGS: 重置第 %d 页", page + 1);
 }
 
+// 外链交给系统默认浏览器：OpenFolder 会先建目录，不能拿来开 URL。
+void OpenExternalLink(HWND owner, const wchar_t* url) {
+  const HINSTANCE r = ::ShellExecuteW(owner, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+  if (reinterpret_cast<INT_PTR>(r) <= 32) {
+    ::MessageBoxW(owner, loc::T(loc::Str::AboutOpenFailed), L"DopusMdViewer",
+                  MB_OK | MB_ICONERROR);
+  }
+}
+
 void OnCommand(DialogState* st, int id, int code) {
   switch (id) {
     case kIdTabAppearance:
     case kIdTabFont:
     case kIdTabRender:
     case kIdTabAdvanced:
+    case kIdTabAbout:
       ShowPage(st, id - kIdTabAppearance);
       return;
 
@@ -2652,6 +2686,14 @@ void OnCommand(DialogState* st, int id, int code) {
     case kIdPrewarmHelp:
       ShowTextHelp(st->hwnd, loc::T(loc::Str::Prewarm), loc::T(loc::Str::PrewarmHelp), nullptr,
                    loc::T(loc::Str::Copy), st->font);
+      return;
+
+    case kIdAboutGithub:
+      if (code == BN_CLICKED) OpenExternalLink(st->hwnd, kGithubUrl);
+      return;
+
+    case kIdAboutSponsor:
+      if (code == BN_CLICKED) OpenExternalLink(st->hwnd, kSponsorUrl);
       return;
 
     case kIdApply:
@@ -2957,7 +2999,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
     case WM_DRAWITEM: {
       const DRAWITEMSTRUCT* dis = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
-      if (st && dis && dis->CtlID >= kIdTabAppearance && dis->CtlID <= kIdTabAdvanced) {
+      if (st && dis && dis->CtlID >= kIdTabAppearance && dis->CtlID <= kIdTabAbout) {
         DrawTab(st, dis);
         return TRUE;
       }

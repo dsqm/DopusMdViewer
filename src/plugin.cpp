@@ -38,8 +38,8 @@ wchar_t g_szLanguage[128] = L"(未提供)";
 wchar_t g_szHandleExts[] = L".md;.markdown";
 wchar_t g_szName[] = L"Markdown";
 wchar_t g_szDescription[] = L"Markdown 预览（WebView2）";
-wchar_t g_szCopyright[] = L"(c) 2026 DopusMdViewer contributors";
-wchar_t g_szUrl[] = L"https://example.com/dopusmdviewer";
+wchar_t g_szCopyright[] = L"Copyright (c) 2026 dsqm / DopusMdViewer";
+wchar_t g_szUrl[] = L"https://github.com/dsqm/DopusMdViewer";
 
 // {A7C1E4F2-3B6D-4E59-9C2A-1F8B7D0E5A31}
 const GUID kPluginId = {0xA7C1E4F2, 0x3B6D, 0x4E59, {0x9C, 0x2A, 0x1F, 0x8B, 0x7D, 0x0E, 0x5A, 0x31}};

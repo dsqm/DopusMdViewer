@@ -64,7 +64,7 @@ BEGIN
             VALUE "FileDescription",  "DopusMdViewer - Markdown viewer for Directory Opus"
             VALUE "FileVersion",      MDV_VER_STRING
             VALUE "InternalName",     "DopusMdViewer"
-            VALUE "LegalCopyright",   "(c) 2026 DopusMdViewer contributors"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 dsqm / DopusMdViewer"
             VALUE "OriginalFilename", "DopusMdViewer.dll"
             VALUE "ProductName",      "DopusMdViewer"
             VALUE "ProductVersion",   MDV_VER_STRING

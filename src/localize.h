@@ -141,6 +141,15 @@ enum class Str : int {
   Ok,
   Cancel,
 
+  // 关于页
+  TabAbout,
+  AboutDesc,
+  AboutCopyright,
+  AboutLicense,
+  AboutGithub,
+  AboutSponsor,
+  AboutOpenFailed,
+
   // 提示
   SaveFailed,
   SaveFailedPath,     // 一个 %s：目标文件
