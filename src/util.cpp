@@ -399,7 +399,10 @@ bool UtilIsWebView2UserDataDir(const std::wstring& path) {
   if (!UtilIsLocalAbsolutePath(s)) return false;
   const size_t pos = s.find_last_of(L"\\/");
   if (pos == std::wstring::npos || pos + 1 >= s.size()) return false;
-  return ::_wcsicmp(s.c_str() + pos + 1, L"WebView2") == 0;
+  // 查看器与设置页字体预览各有一份独立的用户数据目录，两者都是可再生的缓存。
+  const wchar_t* leaf = s.c_str() + pos + 1;
+  return ::_wcsicmp(leaf, L"WebView2") == 0 ||
+         ::_wcsicmp(leaf, L"WebView2-Settings") == 0;
 }
 
 uint64_t UtilDirSize(const std::wstring& dir, uint64_t stopAt) {

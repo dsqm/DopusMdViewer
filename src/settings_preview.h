@@ -32,4 +32,9 @@ void SettingsPreviewSetFont(SettingsPreview* p, const std::vector<std::wstring>&
 // 页面尚未导航完成时先记下状态，就绪后自动下发。
 void SettingsPreviewSetTheme(SettingsPreview* p, bool dark);
 
+// 删掉预览的用户数据目录并在同一个窗口上重建：先释放 Environment，再删目录，
+// 窗口句柄与已下发的字体/配色都不变。userDataDir 必须是 UtilWebView2SettingsDir
+// 给出的 ...\WebView2-Settings。返回 false 表示目录仍被占用、没删干净，预览照样重建。
+bool SettingsPreviewClearCache(SettingsPreview* p, const std::wstring& userDataDir);
+
 void SettingsPreviewDestroy(SettingsPreview* p);

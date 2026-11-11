@@ -3,9 +3,10 @@
 // 流程：建子窗口 → 异步建 Environment（独立用户数据目录）→ 建 Controller →
 // NavigateToString 一个极简页面 → 之后只靠 ExecuteScript 改 font-family 与字号。
 //
-// 生命周期：内部状态由 shared_ptr 持有，异步回调各拿一份。设置窗口关掉时把
-// hwnd 置空并释放 COM 引用，晚到的回调看到 hwnd 为空直接退出——否则「开了就关」
-// 会让回调去读已经 delete 的对象。
+// 生命周期：内部状态由 shared_ptr 持有，异步回调各拿一份。关窗或清理缓存换状态时
+// 都把旧状态的 hwnd 置空并释放 COM 引用，晚到的回调看到 hwnd 为空直接退出——
+// 否则「开了就关」会让回调去读已经作废的实例。清理缓存复用同一个窗口，只换状态，
+// 设置页的显隐与布局都不用改。
 
 #include "settings_preview.h"
 
@@ -174,52 +175,24 @@ struct SettingsPreview {
 
 HWND SettingsPreviewHwnd(SettingsPreview* p) { return p && p->s ? p->s->hwnd : nullptr; }
 
-SettingsPreview* SettingsPreviewCreate(HWND parent, const RECT& rc) {
-  if (!parent) return nullptr;
+namespace {
 
-  static bool registered = false;
-  if (!registered) {
-    WNDCLASSEXW wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = ::DefWindowProcW;
-    wc.hInstance = ThisModule();
-    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = kPreviewClass;
-    // 同名旧类可能来自上一次加载的 DLL：它的窗口过程也是 DefWindowProcW，
-    // 直接复用不会指向已卸载的代码。
-    if (!::RegisterClassExW(&wc) && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-      return nullptr;
-    }
-    registered = true;
+// 建 Environment → Controller → 导航极简页面。清理缓存后会在同一个窗口上换一份
+// 新的 PreviewState 再走一遍，所以这段必须能重复调用，且只依赖传入的状态。
+void StartEnvironment(const std::shared_ptr<PreviewState>& s, const std::wstring& dataDir) {
+  // 目录可能刚被清理按钮删掉；建环境前备好它，不把这件事推给运行时。
+  if (!UtilEnsureDir(dataDir)) {
+    LogLine(L"SETTINGS: 预览缓存目录不可写 %s", dataDir.c_str());
+    return;
   }
 
-  SettingsPreview* p = new (std::nothrow) SettingsPreview();
-  if (!p) return nullptr;
-  p->s = std::make_shared<PreviewState>();
-  std::shared_ptr<PreviewState> s = p->s;
-
-  s->hwnd = ::CreateWindowExW(WS_EX_CLIENTEDGE, kPreviewClass, L"", WS_CHILD | WS_VISIBLE, rc.left,
-                              rc.top, rc.right - rc.left, rc.bottom - rc.top, parent, nullptr,
-                              ThisModule(), nullptr);
-  if (!s->hwnd) {
-    delete p;
-    return nullptr;
+  // 已经在别的套间里初始化过就沿用，WebView2 两种套间都能跑。同一线程重复
+  // CoInitializeEx 只会累增引用计数，这里只做一次。
+  static bool comReady = false;
+  if (!comReady) {
+    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    comReady = true;
   }
-  ::SetWindowLongPtrW(s->hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(s.get()));
-  ::SetWindowLongPtrW(s->hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&PreviewWndProc));
-
-  // 用户数据目录独立：同一份目录不能被两个 Environment 同时用。位置与查看器缓存
-  // 同一个父目录（U 盘模式下按同一套选路），设置里改了缓存位置这里也跟着走。
-  std::wstring dataDir = UtilWebView2SettingsDir(ConfigWebViewBaseDir(ConfigSnapshot()));
-  if (dataDir.empty()) {
-    ::DestroyWindow(s->hwnd);
-    s->hwnd = nullptr;
-    delete p;
-    return nullptr;
-  }
-
-  // 已经在别的套间里初始化过就沿用，WebView2 两种套间都能跑。
-  ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
   HRESULT hr = ::CreateCoreWebView2EnvironmentWithOptions(
       nullptr, dataDir.c_str(), nullptr,
@@ -278,6 +251,55 @@ SettingsPreview* SettingsPreviewCreate(HWND parent, const RECT& rc) {
   if (FAILED(hr)) {
     LogLine(L"SETTINGS: 预览 Environment 创建失败 hr=0x%08lX", hr);
   }
+}
+
+}  // namespace
+
+SettingsPreview* SettingsPreviewCreate(HWND parent, const RECT& rc) {
+  if (!parent) return nullptr;
+
+  static bool registered = false;
+  if (!registered) {
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ThisModule();
+    wc.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = kPreviewClass;
+    // 同名旧类可能来自上一次加载的 DLL：它的窗口过程也是 DefWindowProcW，
+    // 直接复用不会指向已卸载的代码。
+    if (!::RegisterClassExW(&wc) && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+      return nullptr;
+    }
+    registered = true;
+  }
+
+  SettingsPreview* p = new (std::nothrow) SettingsPreview();
+  if (!p) return nullptr;
+  p->s = std::make_shared<PreviewState>();
+  std::shared_ptr<PreviewState> s = p->s;
+
+  s->hwnd = ::CreateWindowExW(WS_EX_CLIENTEDGE, kPreviewClass, L"", WS_CHILD | WS_VISIBLE, rc.left,
+                              rc.top, rc.right - rc.left, rc.bottom - rc.top, parent, nullptr,
+                              ThisModule(), nullptr);
+  if (!s->hwnd) {
+    delete p;
+    return nullptr;
+  }
+  ::SetWindowLongPtrW(s->hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(s.get()));
+  ::SetWindowLongPtrW(s->hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&PreviewWndProc));
+
+  // 用户数据目录独立：同一份目录不能被两个 Environment 同时用。位置与查看器缓存
+  // 同一个父目录（U 盘模式下按同一套选路），设置里改了缓存位置这里也跟着走。
+  std::wstring dataDir = UtilWebView2SettingsDir(ConfigWebViewBaseDir(ConfigSnapshot()));
+  if (dataDir.empty()) {
+    ::DestroyWindow(s->hwnd);
+    s->hwnd = nullptr;
+    delete p;
+    return nullptr;
+  }
+
+  StartEnvironment(s, dataDir);
   return p;
 }
 
@@ -307,6 +329,49 @@ void SettingsPreviewSetTheme(SettingsPreview* p, bool dark) {
   PushTheme(p->s);
   // 页面还没导航完时，先把窗口底色换成同一档，免得加载期间闪一块白。
   if (p->s->hwnd) ::InvalidateRect(p->s->hwnd, nullptr, TRUE);
+}
+
+// 释放预览实例 → 删掉它的用户数据目录 → 在同一个窗口上用新状态重建。
+// 旧状态摘掉 hwnd 后，在路上的异步回调会自行退出；窗口句柄不变，设置页的
+// 页显隐表、DPI 重排表不用改，字体链与配色也能原样续上。
+bool SettingsPreviewClearCache(SettingsPreview* p, const std::wstring& userDataDir) {
+  if (!p || !p->s || !p->s->hwnd || !UtilIsWebView2UserDataDir(userDataDir)) return false;
+
+  const HWND hwnd = p->s->hwnd;
+  const std::shared_ptr<PreviewState> old = p->s;
+  old->hwnd = nullptr;
+  if (old->controller) old->controller->Close();
+  old->web.Reset();
+  old->controller.Reset();
+  old->env.Reset();
+
+  // 浏览器进程退出是异步的，给目录一点时间放手。删不掉也照常重建，
+  // 不能因为一次清理失败就把预览永久留成空白。
+  bool removed = false;
+  for (int i = 0; i < 20; ++i) {
+    if (!UtilDirExists(userDataDir)) {
+      removed = true;
+      break;
+    }
+    if (UtilRemoveTree(userDataDir)) {
+      removed = true;
+      break;
+    }
+    ::Sleep(50);
+  }
+  if (!removed) {
+    LogLine(L"SETTINGS: 预览缓存清理失败（目录仍被占用）%s", userDataDir.c_str());
+  }
+
+  auto next = std::make_shared<PreviewState>();
+  next->hwnd = hwnd;
+  next->css = old->css;
+  next->sizePx = old->sizePx;
+  next->dark = old->dark;
+  ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(next.get()));
+  p->s = next;
+  StartEnvironment(next, userDataDir);
+  return removed;
 }
 
 void SettingsPreviewDestroy(SettingsPreview* p) {

@@ -125,12 +125,16 @@ TEST(util, normalize_local_dir) {
 }
 
 TEST(util, webview2_dir_names) {
-  // 叶子目录名是 WebView2（大小写不敏感、尾分隔符可带），且必须是本地绝对路径
+  // 叶子目录名是 WebView2 或 WebView2-Settings（大小写不敏感、尾分隔符可带），
+  // 且必须是本地绝对路径
   CHECK(UtilIsWebView2UserDataDir(L"C:\\a\\WebView2"));
   CHECK(UtilIsWebView2UserDataDir(L"C:\\a\\webview2\\"));
   CHECK(UtilIsWebView2UserDataDir(L"C:\\WebView2"));
+  CHECK(UtilIsWebView2UserDataDir(L"C:\\a\\WebView2-Settings"));
+  CHECK(UtilIsWebView2UserDataDir(L"C:\\a\\webview2-settings\\"));
   CHECK(!UtilIsWebView2UserDataDir(L"C:\\a\\WebView"));       // 只差一段
   CHECK(!UtilIsWebView2UserDataDir(L"C:\\a\\WebView2x"));
+  CHECK(!UtilIsWebView2UserDataDir(L"C:\\a\\WebView2-Settingsx"));
   CHECK(!UtilIsWebView2UserDataDir(L"rel\\WebView2"));        // 非绝对路径
   CHECK(!UtilIsWebView2UserDataDir(L""));
 

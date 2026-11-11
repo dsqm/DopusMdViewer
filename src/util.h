@@ -79,7 +79,7 @@ bool UtilEnsureDir(const std::wstring& dir);
 
 bool UtilDirExists(const std::wstring& dir);
 
-// 路径本身是否是 ...\WebView2（大小写不敏感，且必须是本地绝对路径）。
+// 路径末级是否是 WebView2 或 WebView2-Settings（大小写不敏感，且必须是本地绝对路径）。
 bool UtilIsWebView2UserDataDir(const std::wstring& path);
 
 // 目录递归占用字节数；stopAt > 0 时达到该值即提前返回。

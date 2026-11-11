@@ -1910,9 +1910,18 @@ void ClearWebViewCache(DialogState* st) {
 
   HCURSOR old = ::SetCursor(::LoadCursorW(nullptr, IDC_WAIT));
   const bool ok = WebHostClearUserData(actual);
-  // 设置页字体预览用的是 <位置>\WebView2-Settings，由设置窗口自己的 WebView2
-  // 实例持有。窗口开着时目录正被占用，运行中删除会破坏那个 Environment，
-  // 这份缓存不由本按钮处理。
+  // 设置页字体预览那份缓存由它自己的 WebView2 实例持有：先释放实例再删目录，
+  // 随后在同一窗口上重建。清理按钮在高级页，预览窗口此刻是隐藏的，
+  // 重建过程不会露出空白。路径按输入框当前值算，与信息行的统计口径一致。
+  const std::wstring settings = UtilWebView2SettingsDir(WebViewBaseFromUi(st));
+  if (UtilIsWebView2UserDataDir(settings) &&
+      _wcsicmp(settings.c_str(), actual.c_str()) != 0) {
+    if (st->preview) {
+      SettingsPreviewClearCache(st->preview, settings);
+    } else {
+      UtilRemoveTree(settings);
+    }
+  }
   ::SetCursor(old);
   if (!ok) {
     const wchar_t* message = ViewerLiveCount() > 0 ? loc::T(loc::Str::WebViewClearCloseFirst)
