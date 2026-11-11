@@ -55,6 +55,7 @@ enum {
   kIdChainDown,
   kIdChainDel,
   kIdPreviewNote,
+  kIdPreviewTextBtn,
   kIdRenderMermaid = 3300,
   kIdRenderKatex,
   kIdRenderHighlight,
@@ -116,7 +117,8 @@ constexpr UINT_PTR kCopyHintTimerId = 1;
 constexpr int kPreviewX = 100;
 constexpr int kPreviewY = 332;
 constexpr int kPreviewW = 430;
-constexpr int kPreviewH = 64;
+// 留够四行：预览文字可能不止两行，多出来的由预览页自己滚动。
+constexpr int kPreviewH = 96;
 // 客户区目标尺寸（未缩放单位）与窗口样式：算窗口大小、按工作区裁剪都要用。
 constexpr int kClientW = 560;
 // 高级页在「文档内链接」下面多了一行「外部链接确认」，整页于是高出 24 个单位；
@@ -516,6 +518,7 @@ bool ValidateWebViewDir(const std::wstring& raw, std::wstring* error);
 std::wstring ReadText(HWND hwnd);
 bool HandleDialogKey(DialogState* st, HWND focus, WPARAM vk);
 bool EditViewerExts(HWND owner, std::wstring* exts, HFONT font);
+bool EditPreviewText(HWND owner, std::wstring* text, HFONT font);
 
 /* ---------------- 扩展名名单对话框 ----------------
    名单有几十项，主设置页放不下多行框，单独开一个模态对话框。初值是当前名单；
@@ -609,6 +612,145 @@ bool EditViewerExts(HWND owner, std::wstring* exts, HFONT font) {
   const std::wstring text = UtilTrim(data.text);
   // 与内置名单一致就存空串：以后内置名单更新，没改过的用户自动跟着变。
   *exts = (text == UtilDOpusViewerDefaultExts()) ? std::wstring() : text;
+  return true;
+}
+
+/* ---------------- 字体预览文字 ----------------
+   与扩展名名单同一套：多行编辑框 +「恢复默认」+ 确定/取消。配置里存空串表示
+   用内置示例，所以弹窗初值要先展开；存回时若与内置示例一致又折回空串，
+   内置文案以后改了，没自定义过的用户会跟着变。 */
+
+struct PreviewTextDialogData {
+  std::wstring text;  // 生效文字；空 = 内置示例
+  HFONT font;
+};
+
+// EDIT 控件用 \r\n 换行，页面与配置统一用 \n。
+std::wstring NormalizeNewlines(const std::wstring& text) {
+  std::wstring out;
+  out.reserve(text.size());
+  for (size_t i = 0; i < text.size(); ++i) {
+    if (text[i] == L'\r') {
+      if (i + 1 < text.size() && text[i + 1] == L'\n') ++i;
+      out.push_back(L'\n');
+    } else {
+      out.push_back(text[i]);
+    }
+  }
+  return out;
+}
+
+std::wstring ToEditNewlines(const std::wstring& text) {
+  const std::wstring plain = NormalizeNewlines(text);
+  std::wstring out;
+  out.reserve(plain.size() + 4);
+  for (wchar_t c : plain) {
+    if (c == L'\n') out.push_back(L'\r');
+    out.push_back(c);
+  }
+  return out;
+}
+
+std::wstring EffectivePreviewText(const std::wstring& stored) {
+  return stored.empty() ? std::wstring(SettingsPreviewDefaultText()) : stored;
+}
+
+INT_PTR CALLBACK PreviewTextDlgProc(HWND dlg, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  switch (uMsg) {
+    case WM_INITDIALOG: {
+      auto* data = reinterpret_cast<PreviewTextDialogData*>(lParam);
+      ::SetWindowLongPtrW(dlg, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
+      ::SetWindowTextW(dlg, loc::T(loc::Str::PreviewTextTitle));
+      ::SetDlgItemTextW(dlg, IDC_PREVIEW_HINT, loc::T(loc::Str::PreviewTextHint));
+      ::SetDlgItemTextW(dlg, IDC_PREVIEW_TEXT,
+                        ToEditNewlines(EffectivePreviewText(data ? data->text : std::wstring()))
+                            .c_str());
+      ::SetDlgItemTextW(dlg, IDC_PREVIEW_DEFAULT, loc::T(loc::Str::ResetDefault));
+      ::SetDlgItemTextW(dlg, IDOK, loc::T(loc::Str::Ok));
+      ::SetDlgItemTextW(dlg, IDCANCEL, loc::T(loc::Str::Cancel));
+      if (data && data->font) {
+        HWND controls[] = {::GetDlgItem(dlg, IDC_PREVIEW_HINT),
+                           ::GetDlgItem(dlg, IDC_PREVIEW_TEXT),
+                           ::GetDlgItem(dlg, IDC_PREVIEW_DEFAULT), ::GetDlgItem(dlg, IDOK),
+                           ::GetDlgItem(dlg, IDCANCEL)};
+        for (HWND h : controls) {
+          if (h) ::SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(data->font), TRUE);
+        }
+      }
+      HWND edit = ::GetDlgItem(dlg, IDC_PREVIEW_TEXT);
+      if (edit) {
+        ::SendMessageW(edit, EM_LIMITTEXT, static_cast<WPARAM>(kMaxPreviewTextChars), 0);
+        ::SetFocus(edit);
+      }
+      return FALSE;  // 焦点已经自己给
+    }
+
+    case WM_COMMAND:
+      switch (LOWORD(wParam)) {
+        case IDC_PREVIEW_DEFAULT:
+          if (HIWORD(wParam) == BN_CLICKED) {
+            ::SetDlgItemTextW(dlg, IDC_PREVIEW_TEXT,
+                              ToEditNewlines(SettingsPreviewDefaultText()).c_str());
+            return TRUE;
+          }
+          return FALSE;
+        case IDOK: {
+          auto* data = reinterpret_cast<PreviewTextDialogData*>(
+              ::GetWindowLongPtrW(dlg, GWLP_USERDATA));
+          if (data) {
+            const std::wstring typed =
+                NormalizeNewlines(ReadText(::GetDlgItem(dlg, IDC_PREVIEW_TEXT)));
+            // 全空白或与内置示例一致都存空串：预览回到默认两行，也不把一份
+            // 以后改不动的旧文案写进配置。
+            data->text = (UtilTrim(typed).empty() || typed == SettingsPreviewDefaultText())
+                             ? std::wstring()
+                             : typed;
+          }
+          ::EndDialog(dlg, 1);
+          return TRUE;
+        }
+        case IDCANCEL:
+          ::EndDialog(dlg, 0);
+          return TRUE;
+      }
+      return FALSE;
+
+    // 说明也是 STATIC，深色模式下同样会变成黑字黑底。
+    case WM_CTLCOLORSTATIC: {
+      const UiTheme t = UiThemeFor(dlg);
+      if (!t.dark) return FALSE;
+      HDC hdc = reinterpret_cast<HDC>(wParam);
+      ::SetBkMode(hdc, TRANSPARENT);
+      ::SetTextColor(hdc, t.text);
+      return reinterpret_cast<LRESULT>(::GetStockObject(NULL_BRUSH));
+    }
+
+    case WM_CLOSE:
+      ::EndDialog(dlg, 0);
+      return TRUE;
+
+    default:
+      return FALSE;
+  }
+}
+
+bool EditPreviewText(HWND owner, std::wstring* text, HFONT font) {
+  if (!text) return false;
+  PreviewTextDialogData data;
+  data.text = *text;
+  data.font = font;
+  const INT_PTR result = ::DialogBoxParamW(ModuleHandle(), MAKEINTRESOURCEW(IDD_PREVIEW_TEXT),
+                                           owner, PreviewTextDlgProc,
+                                           reinterpret_cast<LPARAM>(&data));
+  if (result == -1) {
+    // 资源缺失时 DialogBoxParam 只返回 -1，不弹任何东西；静默失败最难查
+    LogLine(L"SETTINGS: 预览文字对话框打不开 err=%lu", ::GetLastError());
+    ::MessageBoxW(owner, loc::T(loc::Str::PreviewTextOpenFailed), L"DopusMdViewer",
+                  MB_OK | MB_ICONERROR);
+    return false;
+  }
+  if (result != 1) return false;
+  *text = data.text;
   return true;
 }
 
@@ -978,6 +1120,8 @@ void UpdatePreview(DialogState* st) {
 
   // 整条回退链交给浏览器：第一项缺失时它会自己按顺序往下找，预览里看到的就是最终效果。
   SettingsPreviewSetFont(st->preview, *stack, st->staged.font.sizePx);
+  // 预览文字随 staged 走：改字、重置本页、重置全部都从这里同步到预览页。
+  SettingsPreviewSetText(st->preview, EffectivePreviewText(st->staged.previewText));
 
   st->previewMissing = !stack->empty() && !FamilyInstalled(st, stack->front());
   if (st->previewMissing) {
@@ -2114,8 +2258,12 @@ void BuildUi(DialogState* st) {
       st->layout.push_back({st->hPreview, kPreviewX, kPreviewY, kPreviewW, kPreviewH});
     }
   }
-  st->hPreviewNote = AddControl(st, 1, L"STATIC", L"", SS_LEFT, 100, y + 70, 430, 20,
+  st->hPreviewNote = AddControl(st, 1, L"STATIC", L"", SS_LEFT, 100, y + 102, 430, 20,
                                 kIdPreviewNote);
+  // 预览文字由独立弹窗编辑：说明行下面还有一整行空白，不挤占预览区。
+  // 按钮宽度按完整文案留量，别把「自定义预览文字…」截成半句。
+  AddControl(st, 1, L"BUTTON", loc::T(loc::Str::PreviewTextBtn),
+             BS_PUSHBUTTON | WS_TABSTOP, 100, y + 130, 160, 26, kIdPreviewTextBtn);
 
   // ---------------- 渲染 ----------------
   // 按「渲染什么 / 界面多出什么 / 代码块 / 外部图片」分四组纵排。原来左右两列没有
@@ -2424,6 +2572,7 @@ void ResetPageSettings(DialogState* st, int page) {
       c.font.ui = def.font.ui;
       c.font.body = def.font.body;
       c.font.mono = def.font.mono;
+      c.previewText = def.previewText;
       break;
     case 2:
       c.renderMermaid = def.renderMermaid;
@@ -2559,6 +2708,17 @@ void OnCommand(DialogState* st, int id, int code) {
         std::wstring exts = st->staged.viewerExts;
         if (EditViewerExts(st->hwnd, &exts, st->font)) {
           st->staged.viewerExts = exts;
+          SetDirty(st, true);
+        }
+      }
+      return;
+
+    case kIdPreviewTextBtn:
+      if (code == BN_CLICKED) {
+        std::wstring text = st->staged.previewText;
+        if (EditPreviewText(st->hwnd, &text, st->font)) {
+          st->staged.previewText = text;
+          UpdatePreview(st);
           SetDirty(st, true);
         }
       }

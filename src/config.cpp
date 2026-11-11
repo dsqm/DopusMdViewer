@@ -40,6 +40,7 @@ void SetDefaults(Config* c) {
   c->font.sizePx = 15;
   c->font.lineHeight = 1.65;
   c->font.measureEm = 40;
+  c->previewText.clear();
   c->netImageMode = 1;  // 每主机一次（DOpus 运行期间记住）
   c->allowParentImages = false;
   c->allowAbsoluteImages = false;
@@ -144,6 +145,14 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
 
   if (root.contains("viewerExts") && root["viewerExts"].is_string()) {
     c->viewerExts = Utf8ToWide(root["viewerExts"].get<std::string>());
+  }
+
+  // 字体预览文字：空串与缺键都表示用内置示例，超长只截断不判整份非法。
+  if (root.contains("previewText") && root["previewText"].is_string()) {
+    c->previewText = Utf8ToWide(root["previewText"].get<std::string>());
+    if (c->previewText.size() > static_cast<size_t>(kMaxPreviewTextChars)) {
+      c->previewText.resize(static_cast<size_t>(kMaxPreviewTextChars));
+    }
   }
 
   // 旧配置没有这一项：保持默认的「等 3 秒」
@@ -409,6 +418,9 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   c.font.lineHeight = ClampDouble(c.font.lineHeight, 1.2, 2.2, 1.65);
   if (c.font.measureEm != 0) c.font.measureEm = ClampInt(c.font.measureEm, 8, 200, 40);
   c.idleReleaseMinutes = ClampInt(c.idleReleaseMinutes, 0, 1440, 3);
+  if (c.previewText.size() > static_cast<size_t>(kMaxPreviewTextChars)) {
+    c.previewText.resize(static_cast<size_t>(kMaxPreviewTextChars));
+  }
   if (c.tableCopyMode != 1) c.tableCopyMode = 0;
   c.codeWsRange = ClampInt(c.codeWsRange, 1, 3, 2);
 
@@ -474,6 +486,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   root["webviewBaseDirUsb"] = WideToUtf8(c.webviewBaseDirUsb);
   root["openLinksInOpusViewer"] = c.openLinksInOpusViewer;
   root["viewerExts"] = WideToUtf8(c.viewerExts);
+  root["previewText"] = WideToUtf8(c.previewText);
   root["linkConfirmWait"] = c.linkConfirmWait;
   root["prewarm"] = c.prewarm;
   root["idleReleaseMinutes"] = c.idleReleaseMinutes;

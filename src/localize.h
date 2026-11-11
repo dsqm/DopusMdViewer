@@ -47,6 +47,10 @@ enum class Str : int {
   PreviewMissing,   // 带一个 %s：字体名
   PreviewInherited,
   PreviewUnavailable,
+  PreviewTextBtn,
+  PreviewTextTitle,
+  PreviewTextHint,
+  PreviewTextOpenFailed,
 
   // 渲染
   RenderGroupContent,
@@ -132,6 +136,7 @@ enum class Str : int {
   MeasureHintUnlimited,
   RenderHtmlHint,
   Restore,
+  ResetDefault,
   Apply,
   Ok,
   Cancel,

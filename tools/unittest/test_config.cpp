@@ -33,6 +33,7 @@ TEST(config, defaults) {
   CHECK(c.font.ui.size() == 4 && c.font.ui[0] == L"Segoe UI");
   CHECK(c.font.body.empty());  // 空 = 继承界面
   CHECK(c.font.mono.size() == 4 && c.font.mono[0] == L"Cascadia Mono");
+  CHECK(c.previewText.empty());     // 空 = 内置示例
   CHECK_EQ_INT(c.netImageMode, 1);  // 每主机一次
   CHECK(!c.allowParentImages && !c.allowAbsoluteImages);  // 目录外图片默认都关
   CHECK(c.renderMermaid && c.renderKatex && c.renderHighlight && c.renderInlineHtml);
@@ -93,6 +94,7 @@ TEST(config, save_roundtrip) {
   c.enableLog = false;  // 不产生日志文件
   c.openLinksInOpusViewer = false;
   c.viewerExts = L".epub;-.html";
+  c.previewText = L"自定义示例\n第二行";
   c.webviewBaseDir = L"D:\\cache";
   c.prewarm = true;
   c.idleReleaseMinutes = 30;
@@ -106,6 +108,7 @@ TEST(config, save_roundtrip) {
   CHECK_EQ_INT(now.font.sizePx, 20);
   CHECK(now.prewarm);
   CHECK_EQ_STR(now.viewerExts.c_str(), L".epub;-.html");
+  CHECK_EQ_STR(now.previewText.c_str(), L"自定义示例\n第二行");
   CHECK_EQ_INT(now.netImageMode, 2);
 
   // 落盘内容：自定义值、布尔与枚举字符串、未知键三路都验到
@@ -125,6 +128,7 @@ TEST(config, save_roundtrip) {
   CHECK(JsonHas(bytes, "\"webviewBaseDir\": \"D:\\\\cache\""));
   CHECK(JsonHas(bytes, "\"openLinksInOpusViewer\": false"));
   CHECK(JsonHas(bytes, "\"viewerExts\": \".epub;-.html\""));
+  CHECK(JsonHas(bytes, "\"previewText\":"));
   // 目录外图片拆成两个键，同时留一个旧版能读的总开关
   CHECK(JsonHas(bytes, "\"allowParentImages\": true"));
   CHECK(JsonHas(bytes, "\"allowAbsoluteImages\": false"));
@@ -148,6 +152,7 @@ TEST(config, save_clamps) {
   c.tableCopyMode = 9;           // → 0（tsv）
   c.font.ui.clear();             // → 默认链
   c.font.mono.clear();           // → 默认链
+  c.previewText.assign(3000, L'x');  // → 截到上限
 
   REQUIRE(ConfigSave(c));
 
@@ -158,6 +163,7 @@ TEST(config, save_clamps) {
   CHECK_EQ_INT(now.font.measureEm, 40);
   CHECK_EQ_INT(now.idleReleaseMinutes, 3);
   CHECK_EQ_INT(now.tableCopyMode, 0);
+  CHECK_EQ_INT(static_cast<int>(now.previewText.size()), kMaxPreviewTextChars);
   CHECK(now.font.ui.size() == 4 && now.font.ui[0] == L"Segoe UI");
   CHECK(now.font.mono.size() == 4 && now.font.mono[0] == L"Cascadia Mono");
 

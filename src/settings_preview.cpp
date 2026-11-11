@@ -29,8 +29,14 @@ namespace {
 
 const wchar_t kPreviewClass[] = L"DopusMdViewerSettingsPreview";
 
-// 预览页：两行示例，字体与字号都由脚本改，避免每次改字体重建页面。
-// 底色与字色走 CSS 变量：宿主深色时由 __mdvTheme 切到深色一组，页面不会是白块。
+// 内置示例文字：配置为空时用这一份，弹窗里「恢复默认」也填这一份。
+const wchar_t kDefaultPreviewText[] =
+    L"中文示例：永和九年，岁在癸丑\nEnglish sample 0123 — Aa Bb Cc";
+
+// 预览页：默认两行示例，文字、字体与字号都由脚本改，避免每次改动重建页面。
+// 文字走 textContent，自定义内容里的尖括号不会被当成 HTML；#txt 自己滚动，
+// 行数多了也不会被 flex 居中裁掉顶部。底色与字色走 CSS 变量，由 __mdvTheme
+// 切到深色一组，页面不会是白块。
 const wchar_t kPreviewHtml[] =
     L"<!doctype html><html><head><meta charset=\"utf-8\"><style>"
     L":root{--mdv-bg:#fff;--mdv-fg:#1a1a1a;--mdv-dim:#5a5a5a}"
@@ -38,15 +44,20 @@ const wchar_t kPreviewHtml[] =
     L"html,body{margin:0;height:100%;background:var(--mdv-bg);color:var(--mdv-fg);"
     L"font-family:'Segoe UI';overflow:hidden}"
     L"#box{display:flex;flex-direction:column;justify-content:center;height:100%;"
-    L"padding:0 10px;box-sizing:border-box}"
-    L".l1,.l2{line-height:1.5}"
+    L"padding:0 10px;box-sizing:border-box;overflow:hidden}"
+    L"#txt{max-height:100%;overflow-y:auto;scrollbar-width:thin}"
+    L".l1,.l2{line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}"
     L".l2{color:var(--mdv-dim)}"
-    L"</style></head><body><div id=box>"
+    L"</style></head><body><div id=box><div id=txt>"
     L"<div class=l1 id=a>中文示例：永和九年，岁在癸丑</div>"
     L"<div class=l2 id=b>English sample 0123 — Aa Bb Cc</div>"
-    L"</div><script>window.__mdv=function(f,s){document.getElementById('box').style.fontFamily=f;"
+    L"</div></div><script>window.__mdv=function(f,s){"
+    L"document.getElementById('txt').style.fontFamily=f;"
     L"document.getElementById('a').style.fontSize=s+'px';"
     L"document.getElementById('b').style.fontSize=s+'px';};"
+    L"window.__mdvText=function(t){var p=String(t).split('\\n');"
+    L"document.getElementById('a').textContent=p.length?p[0]:'';"
+    L"document.getElementById('b').textContent=p.length>1?p.slice(1).join('\\n'):'';};"
     L"window.__mdvTheme=function(d){document.documentElement.classList.toggle('mdv-dark',d);}"
     L"</script></body></html>";
 
@@ -98,9 +109,12 @@ std::wstring BuildCssList(const std::vector<std::wstring>& chain) {
   return out;
 }
 
-// 整条 CSS 字体链要作为一个 JS 字符串实参传进去，不能直接拼进实参列表：
+// CSS 字体链与预览文字都要作为 JS 字符串实参传进去，不能直接拼进实参列表：
 // 链里的逗号会被当成参数分隔符，字号就落到了第三个参数上被浏览器丢掉。
+// 控制字符与 U+2028/2029 一律写成 \uXXXX：后两个在 JS 里等价于换行，直接放进
+// 字符串字面量会截断脚本；其余控制字符写成转义才不会丢字。
 std::wstring JsString(const std::wstring& text) {
+  static const wchar_t kHex[] = L"0123456789ABCDEF";
   std::wstring out = L"\"";
   for (wchar_t c : text) {
     if (c == L'\\' || c == L'"') {
@@ -110,7 +124,16 @@ std::wstring JsString(const std::wstring& text) {
       out += L"\\n";
     } else if (c == L'\r') {
       out += L"\\r";
-    } else if (c >= 0x20) {
+    } else if (c == L'\t') {
+      out += L"\\t";
+    } else if (c < 0x20 || c == 0x2028 || c == 0x2029) {
+      const unsigned u = static_cast<unsigned>(c);
+      out += L"\\u";
+      out.push_back(kHex[(u >> 12) & 0xF]);
+      out.push_back(kHex[(u >> 8) & 0xF]);
+      out.push_back(kHex[(u >> 4) & 0xF]);
+      out.push_back(kHex[u & 0xF]);
+    } else {
       out.push_back(c);
     }
   }
@@ -127,6 +150,7 @@ struct PreviewState {
   bool dark = false;
   std::wstring css = L"'Segoe UI', sans-serif";
   int sizePx = 15;
+  std::wstring text = kDefaultPreviewText;
 };
 
 // WebView2 建起来之前窗口是空的：类背景刷不跟宿主主题走，会先露一块白，
@@ -157,6 +181,12 @@ void PushFont(const std::shared_ptr<PreviewState>& s) {
   if (!Alive(s) || !s->ready || !s->web) return;
   std::wstring script = L"window.__mdv(" + JsString(s->css) + L"," +
                         std::to_wstring(s->sizePx) + L");";
+  s->web->ExecuteScript(script.c_str(), nullptr);
+}
+
+void PushText(const std::shared_ptr<PreviewState>& s) {
+  if (!Alive(s) || !s->ready || !s->web) return;
+  std::wstring script = L"window.__mdvText(" + JsString(s->text) + L");";
   s->web->ExecuteScript(script.c_str(), nullptr);
 }
 
@@ -235,6 +265,7 @@ void StartEnvironment(const std::shared_ptr<PreviewState>& s, const std::wstring
                                 if (!Alive(s)) return S_OK;
                                 s->ready = true;
                                 PushFont(s);
+                                PushText(s);
                                 PushTheme(s);
                                 return S_OK;
                               })
@@ -323,6 +354,14 @@ void SettingsPreviewSetFont(SettingsPreview* p, const std::vector<std::wstring>&
   PushFont(p->s);
 }
 
+const wchar_t* SettingsPreviewDefaultText(void) { return kDefaultPreviewText; }
+
+void SettingsPreviewSetText(SettingsPreview* p, const std::wstring& text) {
+  if (!p || !p->s || p->s->text == text) return;
+  p->s->text = text;
+  PushText(p->s);
+}
+
 void SettingsPreviewSetTheme(SettingsPreview* p, bool dark) {
   if (!p || !p->s || p->s->dark == dark) return;
   p->s->dark = dark;
@@ -367,6 +406,7 @@ bool SettingsPreviewClearCache(SettingsPreview* p, const std::wstring& userDataD
   next->hwnd = hwnd;
   next->css = old->css;
   next->sizePx = old->sizePx;
+  next->text = old->text;
   next->dark = old->dark;
   ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(next.get()));
   p->s = next;

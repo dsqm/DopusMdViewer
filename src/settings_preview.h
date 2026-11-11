@@ -28,6 +28,13 @@ void SettingsPreviewResize(SettingsPreview* p, const RECT& rc);
 // 所以预览里能看到真实的回退结果。
 void SettingsPreviewSetFont(SettingsPreview* p, const std::vector<std::wstring>& chain, int sizePx);
 
+// 内置示例文字：两行，\n 分隔。配置里的空串即表示用这一份。
+const wchar_t* SettingsPreviewDefaultText(void);
+
+// 预览框显示的文字。换行分行，第一行用主色、其余用辅助色；用 textContent 写入，
+// 用户文字里的尖括号不会被当成 HTML。页面尚未就绪时先记下，就绪后自动下发。
+void SettingsPreviewSetText(SettingsPreview* p, const std::wstring& text);
+
 // 预览页跑在独立 WebView2 里，看不到宿主的深色模式，由设置窗口显式告知。
 // 页面尚未导航完成时先记下状态，就绪后自动下发。
 void SettingsPreviewSetTheme(SettingsPreview* p, bool dark);

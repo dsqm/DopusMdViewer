@@ -45,6 +45,12 @@ const wchar_t* const kZh[kCount] = {
     /* PreviewMissing   */ L"未找到：%s（仍可保存，系统会回退）",
     /* PreviewInherited */ L"正文未设置，跟随界面字体",
     /* PreviewUnavailable */ L"字体预览不可用：WebView2 运行时缺失或初始化失败。",
+    /* PreviewTextBtn    */ L"自定义预览文字…",
+    /* PreviewTextTitle  */ L"预览文字",
+    /* PreviewTextHint   */
+    L"每行显示一行，回车换行；可输入任意中英文。\r\n"
+    L"留空或点「恢复默认」都用内置示例，点「确定」后生效。",
+    /* PreviewTextOpenFailed */ L"打不开「预览文字」对话框。",
 
     /* RenderGroupContent */ L"内容渲染",
     /* RenderGroupUi    */ L"界面控件",
@@ -150,6 +156,7 @@ const wchar_t* const kZh[kCount] = {
     /* MeasureHintUnlimited */ L"不限宽：正文宽度随窗口自适应，不再按 em 限制。",
     /* RenderHtmlHint   */ L"关闭「渲染原始 HTML」后，正文里的 HTML 标签按原文显示，不会被解释成元素。",
     /* Restore          */ L"重置全部",
+    /* ResetDefault     */ L"恢复默认",
     /* Apply            */ L"应用",
     /* Ok               */ L"确定",
     /* Cancel           */ L"取消",

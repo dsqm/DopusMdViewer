@@ -12,3 +12,9 @@
 #define IDC_EXTS_HINT    2011
 #define IDC_EXTS_TEXT    2012
 #define IDC_EXTS_DEFAULT 2013
+
+// Font preview text editor (PreviewTextDlgProc in settings_dlg.cpp).
+#define IDD_PREVIEW_TEXT    2020
+#define IDC_PREVIEW_HINT    2021
+#define IDC_PREVIEW_TEXT    2022
+#define IDC_PREVIEW_DEFAULT 2023

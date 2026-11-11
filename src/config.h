@@ -11,6 +11,9 @@
 // 一条有序回退链（每槽一条链，Chromium 逐字符回退，不按脚本分组）。
 using FontStack = std::vector<std::wstring>;
 
+// 字体预览文字的长度上限（字符数）：编辑框限长与写盘钳制共用同一个界。
+constexpr int kMaxPreviewTextChars = 2000;
+
 struct FontSettings {
   FontStack ui;
   FontStack body;  // 空 = 继承 ui（Obsidian 形态）；落盘原样写空数组，推给页面之前由
@@ -27,6 +30,9 @@ struct Config {
   std::wstring skinLight;
   std::wstring skinDark;
   FontSettings font;
+  // 设置窗口字体预览框显示的文字：换行分行，空 = 用内置示例。
+  // 与内置示例相同也存空串，示例文案以后改了没自定义过的用户会跟着变。
+  std::wstring previewText;
   // 网络图片的确认粒度（两个档位的答复都只对当前文档有效，换文件全部重问）：
   //   0 = 不确认直接加载；
   //   1 = 每主机一次：一篇里每个主机各问一次，各自记各自的；
