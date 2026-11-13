@@ -64,9 +64,8 @@ const SEL_EDGE = 42           // 拖选到离视口边缘多少 px 开始自动�
 const PRINT_MAX_FILE = 2 * 1024 * 1024
 const PRINT_BATCH = 200
 
-// 分段导出：每份按「内容量」切，不按块数——块大小差得很远（5 MB 样本有 14.7 万块，
-// 平均每块只有几十字节）。超过上限就拒绝，再多份数也没有使用价值。
-const EXPORT_SEG_BYTES = 512 * 1024
+// 分段导出的份数上限：与宿主侧同一档，宿主算好的每份块数由 export| 帧带下来，
+// 这里只按实际块数核对，超了就拒绝（再多份数也没有使用价值）。
 const EXPORT_MAX_SEGS = 30
 const EXPORT_ACK_MS = 180000  // 等宿主写完一份的上限
 
@@ -2722,7 +2721,7 @@ function onKeyDown(e) {
     if (PRINT.mode === 'export' && PRINT.busy) {
       e.preventDefault()
       PRINT.cancel = true
-      postRaw('status|正在取消导出…')
+      postRaw('status|正在取消（当前份写完后停止）…')
       return
     }
     if (IMGZ.open) {  // 遮罩最先消费 Esc，其次才是搜索条与大纲抽屉
@@ -5370,8 +5369,8 @@ async function buildPrintView(onProgress, first, last) {
       if (it.flags & 0x80) html += '<p>（块过大，打印时已截断）</p>'
       parts.push('<div class="pblk">' + html + '</div>')
     }
-    // 进度按全文块数算：分段时条子也是整篇走到 100%
-    if (onProgress) onProgress(from + count, total)
+    // 进度按本份块数算：分段时条子在每份内从 0 走到 100%
+    if (onProgress) onProgress(from - begin + count, end - begin)
   }
   if (docId !== V.docId) throw new Error('文档已切换')
 
@@ -5432,7 +5431,7 @@ async function startPrint() {
 
 /* 导出 PDF：与打印共用铺全文这一段，但不弹打印对话框——宿主让引擎直接把页面
    写成 PDF，不经过打印机驱动，文字才保持可复制。进度按块数回报，Esc 可取消。 */
-async function startExport() {
+async function startExport(planSegBlocks) {
   if (!V.active) {
     postRaw('export-error|没有可导出的文档')
     return
@@ -5442,13 +5441,8 @@ async function startExport() {
     return
   }
 
-  // 超大文档按内容量切成几份，一份一个 PDF：整篇塞进一个 DOM 时引擎分页会长时间
-  // 不返回（5 MB 实测如此），切成小份才能真的产出来。小文档仍是一份。
-  let segBlocks = V.blockCount
-  if (V.fileSize > PRINT_MAX_FILE && V.blockCount > 0) {
-    const avg = V.fileSize / V.blockCount
-    if (avg > 0) segBlocks = Math.max(PRINT_BATCH * 2, Math.floor(EXPORT_SEG_BYTES / avg))
-  }
+  // 每份多少块由宿主算好（与它弹的确认框里那份数同源），这里按实际块数核对段数
+  const segBlocks = planSegBlocks > 0 ? planSegBlocks : V.blockCount
   const segs = Math.max(1, Math.ceil(V.blockCount / Math.max(1, segBlocks)))
   if (segs > EXPORT_MAX_SEGS) {
     postRaw('export-error|文档太大：需要切成 ' + segs + ' 份，超过上限 ' + EXPORT_MAX_SEGS)
@@ -5473,7 +5467,8 @@ async function startExport() {
       const to = Math.min(from + segBlocks, V.blockCount)
       const root = await buildPrintView((done, total) => {
         if (PRINT.cancel) return
-        postRaw('export-progress|' + done + '|' + total)
+        // 进度按「本份」算：整篇口径下第一份要爬很久，看起来像卡住
+        postRaw('export-progress|' + seg + '|' + segs + '|' + done + '|' + total)
       }, from, to)
 
       if (PRINT.docId !== V.docId || !V.active) {
@@ -5487,8 +5482,7 @@ async function startExport() {
       PRINT.root = root
       const n = root.querySelectorAll('.pblk').length
       report('export-ready', (performance.now() - t0).toFixed(0) + '|' + n + '|' + seg + '/' + segs)
-      // 铺完只是把 DOM 造好：引擎还要排版分页，这一段没有进度可报
-      postRaw('status|正在生成 PDF' + (segs > 1 ? '（' + (seg + 1) + '/' + segs + '）' : '') + '…')
+      // 铺完之后引擎要排版分页，这一段没有进度；状态由宿主按份数给出
       postRaw('export-ready|' + seg + '|' + segs)
 
       // 等宿主把这一份写完再铺下一份：容器同时只能有一份
@@ -5618,7 +5612,9 @@ function onHostMessage(event) {
   }
 
   if (type === 'export') {
-    startExport()
+    // export|<每份块数，0 = 整篇一份>|<宿主预估份数>
+    const f = rest.split('|')
+    startExport(parseInt(f[0], 10) || 0)
     return
   }
 
