@@ -43,6 +43,7 @@ enum {
   kIdTabAbout,
   kIdSkinLight = 3100,
   kIdSkinDark,
+  kIdPrintSkin,
   kIdSize,
   kIdSizeSpin,
   kIdLh,
@@ -151,6 +152,7 @@ struct DialogState {
 
   HWND hSkinLight = nullptr;
   HWND hSkinDark = nullptr;
+  HWND hPrintSkin = nullptr;
   HWND hSize = nullptr;
   HWND hSizeSpin = nullptr;
   HWND hLh = nullptr;
@@ -1586,10 +1588,11 @@ void FillSkinCombo(HWND combo, const std::vector<SkinEntry>& skins, const std::w
 }
 
 void RefreshSkins(DialogState* st) {
-  if (!st->hSkinLight || !st->hSkinDark) return;
+  if (!st->hSkinLight || !st->hSkinDark || !st->hPrintSkin) return;
   SkinList(&st->skins);
   FillSkinCombo(st->hSkinLight, st->skins, st->staged.skinLight);
   FillSkinCombo(st->hSkinDark, st->skins, st->staged.skinDark);
+  FillSkinCombo(st->hPrintSkin, st->skins, st->staged.printSkin);
 }
 
 // 「正文宽度」下面那句说明：勾了不限就讲不限，否则讲当前这条提示。
@@ -1732,6 +1735,10 @@ void ReadUiIntoStaged(DialogState* st) {
   if (selDark >= 0 && selDark < static_cast<int>(st->skins.size())) {
     st->staged.skinDark = st->skins[selDark].id;
   }
+  const int selPrint = static_cast<int>(::SendMessageW(st->hPrintSkin, CB_GETCURSEL, 0, 0));
+  if (selPrint >= 0 && selPrint < static_cast<int>(st->skins.size())) {
+    st->staged.printSkin = st->skins[selPrint].id;
+  }
 
   BOOL ok = FALSE;
   const UINT size = ::GetDlgItemInt(st->hwnd, kIdSize, &ok, FALSE);
@@ -1864,8 +1871,10 @@ bool ApplySettings(DialogState* st) {
   WebHostPrewarm(st->staged.prewarm, st->staged.idleReleaseMinutes);
   SetDirty(st, false);
   if (st->page == 3) RefreshWebViewCacheInfo(st);
-  LogLine(L"SETTINGS: 已应用 skinLight=\"%s\" skinDark=\"%s\" size=%d lh=%.2f measure=%d net=%d",
+  LogLine(L"SETTINGS: 已应用 skinLight=\"%s\" skinDark=\"%s\" printSkin=\"%s\" "
+          L"size=%d lh=%.2f measure=%d net=%d",
           st->staged.skinLight.c_str(), st->staged.skinDark.c_str(),
+          st->staged.printSkin.c_str(),
           st->staged.font.sizePx, st->staged.font.lineHeight, st->staged.font.measureEm,
           st->staged.netImageMode);
   return true;
@@ -2183,7 +2192,14 @@ void BuildUi(DialogState* st) {
   AddControl(st, 0, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 390, 54,
              114, 24, kIdOpenSkins);
 
+  // 打印与导出 PDF 都用这一份皮肤（清单与上面两框相同）。
   y = 122;
+  AddControl(st, 0, L"STATIC", loc::T(loc::Str::PrintSkin), SS_LEFT, 16, y + 3, 70, 20, 0);
+  st->hPrintSkin = AddControl(st, 0, L"COMBOBOX", L"",
+                              CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, 100, y,
+                              280, 200, kIdPrintSkin);
+
+  y = 156;
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::FontSize), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hSize = AddControl(st, 0, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 100, y, 70, 24,
                          kIdSize, WS_EX_CLIENTEDGE);
@@ -2194,7 +2210,7 @@ void BuildUi(DialogState* st) {
   ::SendMessageW(st->hSizeSpin, UDM_SETRANGE32, 8, 48);
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::FontSizeUnit), SS_LEFT, 180, y + 3, 180, 20, 0);
 
-  y = 156;
+  y = 190;
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::LineHeight), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hLh = AddControl(st, 0, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 100, y, 70, 24, kIdLh,
                        WS_EX_CLIENTEDGE);
@@ -2204,7 +2220,7 @@ void BuildUi(DialogState* st) {
   ::SendMessageW(st->hLhSpin, UDM_SETRANGE32, 120, 220);
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::LineHeightUnit), SS_LEFT, 180, y + 3, 260, 20, 0);
 
-  y = 190;
+  y = 224;
   AddControl(st, 0, L"STATIC", loc::T(loc::Str::Measure), SS_LEFT, 16, y + 3, 70, 20, 0);
   st->hMeasure = AddControl(st, 0, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 100, y, 70, 24,
                             kIdMeasure, WS_EX_CLIENTEDGE);
@@ -2218,7 +2234,7 @@ void BuildUi(DialogState* st) {
   st->hUnlimited = AddControl(st, 0, L"BUTTON", loc::T(loc::Str::Unlimited),
                               BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 300, y, 120, 24,
                               kIdUnlimited);
-  st->hMeasureHint = AddControl(st, 0, L"STATIC", loc::T(loc::Str::MeasureHint), SS_LEFT, 16, 240,
+  st->hMeasureHint = AddControl(st, 0, L"STATIC", loc::T(loc::Str::MeasureHint), SS_LEFT, 16, 274,
                                 520, 20, kIdMeasureHint);
 
   // ---------------- 字体 ----------------
@@ -2586,6 +2602,7 @@ void ResetPageSettings(DialogState* st, int page) {
     case 0:
       c.skinLight = def.skinLight;
       c.skinDark = def.skinDark;
+      c.printSkin = def.printSkin;
       c.font.sizePx = def.font.sizePx;
       c.font.lineHeight = def.font.lineHeight;
       c.font.measureEm = def.font.measureEm;
@@ -2710,16 +2727,17 @@ void OnCommand(DialogState* st, int id, int code) {
 
     case kIdSkinLight:
     case kIdSkinDark:
+    case kIdPrintSkin:
       if (code == CBN_SELCHANGE) {
+        // 打印皮肤只影响打印与导出，不改预览区（预览看的是当前显示皮肤）
         const bool dark = (id == kIdSkinDark);
-        const HWND combo = dark ? st->hSkinDark : st->hSkinLight;
+        const bool print = (id == kIdPrintSkin);
+        const HWND combo = print ? st->hPrintSkin : (dark ? st->hSkinDark : st->hSkinLight);
         const int sel = static_cast<int>(::SendMessageW(combo, CB_GETCURSEL, 0, 0));
         if (sel >= 0 && sel < static_cast<int>(st->skins.size())) {
-          if (dark) {
-            st->staged.skinDark = st->skins[sel].id;
-          } else {
-            st->staged.skinLight = st->skins[sel].id;
-          }
+          std::wstring& target = print ? st->staged.printSkin
+                                       : (dark ? st->staged.skinDark : st->staged.skinLight);
+          target = st->skins[sel].id;
         }
         SetDirty(st, true);
       }

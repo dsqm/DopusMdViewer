@@ -273,7 +273,9 @@ body.dev #doc {
   margin: 0 auto var(--md-space-block);
 }
 
-@page { margin: 15mm; }
+/* 纸张与边距必须和 C++ 侧 PrintSettings 一致：导出的 PDF 由那边设定 A4 + 10 mm，
+   打印预览走这里。两处不一致时按谁为准取决于引擎，属于不该有的不确定性。 */
+@page { margin: 10mm; }
 
 @media print {
   html, body { height: auto; overflow: visible; }

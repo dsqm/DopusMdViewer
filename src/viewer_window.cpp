@@ -15,6 +15,7 @@
 #include <psapi.h>
 #include <shellapi.h>
 #include <shlobj.h>     // SHAssocEnumHandlers / SHOpenWithDialog：图片「打开方式」
+#include <shobjidl.h>   // IFileSaveDialog：导出 PDF 的保存位置
 #include <shlwapi.h>    // AssocQueryString：ProgID → 友好应用名
 #include <strsafe.h>
 #include <wincodec.h>   // WIC：UWP 图标引用解析出的 AppList PNG → 菜单位图
@@ -38,6 +39,10 @@ const wchar_t kDocBase[] = L"https://mddoc.localhost/";
 constexpr UINT_PTR kDarkPollTimerId = 1;
 constexpr UINT kDarkPollMs = 500;
 constexpr ULONGLONG kPrintLightMaxMs = 6ull * 60 * 1000;
+// 超过这个大小的文档，导出前先确认一次：铺全文期间页面没有中间反馈。
+constexpr ULONGLONG kExportConfirmBytes = 2ull * 1024 * 1024;
+// 导出等引擎回调的上限：渲染进程崩掉时回调不会来。
+constexpr ULONGLONG kExportTimeoutMs = 10ull * 60 * 1000;
 
 struct ViewerState {
   HWND hwndSelf;
@@ -62,9 +67,13 @@ struct ViewerState {
   bool hasSelection;  // 页面里此刻有没有非折叠选区，DVPLUGINMSG_TESTSELECTION 靠它回答
   // DOpus 当前深浅色：true = 暗色。拿不到信号时保持 false（用亮色框皮肤兜底）。
   bool darkMode;
-  // 打印期间强制亮色皮肤；页面中止打印时不一定有 print-done，靠计时兜底恢复。
-  bool printLight;
-  ULONGLONG printStartTick;
+  // 打印/导出期间改用配置里的打印皮肤；页面中止打印时不一定有 print-done，
+  // 靠计时兜底恢复跟随。
+  bool pagedSkin;
+  ULONGLONG pagedStartTick;
+  // 导出 PDF：路径在保存对话框里定下后一直留到 done/error 落地。
+  bool exporting;
+  std::wstring exportPath;
   // 当前皮肤 --md-bg：页面出来前宿主窗口先铺同色，暗色下不闪白。
   COLORREF bgColor;
   // 页面最后右键的图片（imgctx 帧）：「打开方式」要还原磁盘路径，「放大查看」
@@ -281,11 +290,12 @@ void CopyLabeledText(ViewerState* st, const std::wstring& what, const std::wstri
 // 皮肤与字体永远成对推送：先皮肤，再 fx（fx 最后注入且写全量槽位，压住皮肤）。
 void PushChrome(ViewerState* st) {
   const Config cfg = ConfigSnapshot();
-  // 打印固定亮色；其余时刻跟随 DOpus 深浅色
-  const bool dark = st->darkMode && !st->printLight;
+  // 打印与导出期间用设置里的打印皮肤；其余时刻跟随 DOpus 深浅色
+  const bool paged = st->pagedSkin;
+  const bool dark = st->darkMode && !paged;
 
   std::wstring css;
-  std::wstring skinId = dark ? cfg.skinDark : cfg.skinLight;
+  std::wstring skinId = paged ? cfg.printSkin : (dark ? cfg.skinDark : cfg.skinLight);
   if (!SkinLoad(skinId, &css)) {
     skinId = L"light";
     if (!SkinLoad(skinId, &css)) {
@@ -345,10 +355,135 @@ void StartPrint(ViewerState* st) {
   }
   LogLine(L"VIEWER: 打印请求，等页面准备全文");
   SetStatus(st, L"正在准备打印…");
-  st->printLight = true;
-  st->printStartTick = ::GetTickCount64();
-  PushChrome(st);  // 打印固定亮色皮肤，打完再恢复
+  st->pagedSkin = true;
+  st->pagedStartTick = ::GetTickCount64();
+  PushChrome(st);  // 打印期间用设置里的打印皮肤，打完再恢复跟随
   if (!WebHostPost(st->hwndSelf, L"print|")) SetStatus(st, L"打印准备失败：页面不可达");
+}
+
+/* ---------------- 导出 PDF ----------------
+   和打印共用「页面铺全文」那一段，区别只在于不弹打印对话框：由引擎直接把页面
+   写成 PDF 文件，不经过任何打印机驱动，文字才保持可复制（走 Adobe PDF 一类
+   虚拟打印机时，打印栈会把文本转成轮廓）。 */
+
+// 默认文件名：源文件主干 + .pdf。
+std::wstring PdfDefaultName(const wchar_t* path) {
+  std::wstring leaf = UtilLeafName(path);
+  const size_t dot = leaf.find_last_of(L'.');
+  if (dot != std::wstring::npos && dot > 0) leaf = leaf.substr(0, dot);
+  if (leaf.empty()) return L"document.pdf";
+  return leaf + L".pdf";
+}
+
+// 标准保存对话框：默认源文件目录 + 同名 .pdf。取消或失败返回 false。
+bool PickPdfTarget(ViewerState* st, std::wstring* out) {
+  // 保存对话框要 COM STA。查看器窗口建在 DOpus 的 UI 线程上，那里通常已初始化，
+  // 重复调用返回 S_FALSE——照样要 CoUninitialize，所以成败都要配对。
+  struct ComGuard {
+    const HRESULT hr;
+    ComGuard() : hr(::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+    ~ComGuard() {
+      if (SUCCEEDED(hr)) ::CoUninitialize();
+    }
+  } com;
+
+  IFileSaveDialog* dlg = nullptr;
+  const HRESULT hr =
+      ::CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER,
+                         IID_PPV_ARGS(&dlg));
+  if (FAILED(hr) || !dlg) {
+    LogLine(L"VIEWER: 保存对话框创建失败 hr=0x%08X", static_cast<unsigned>(hr));
+    return false;
+  }
+
+  DWORD options = 0;
+  dlg->GetOptions(&options);
+  dlg->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT | FOS_PATHMUSTEXIST);
+  const COMDLG_FILTERSPEC filter[] = {{L"PDF 文档", L"*.pdf"}};
+  dlg->SetFileTypes(ARRAYSIZE(filter), filter);
+  dlg->SetDefaultExtension(L"pdf");
+  const std::wstring name = PdfDefaultName(st->szFile);
+  dlg->SetFileName(name.c_str());
+
+  const std::wstring dir = UtilParentDir(st->szFile);
+  if (!dir.empty()) {
+    IShellItem* folder = nullptr;
+    if (SUCCEEDED(::SHCreateItemFromParsingName(dir.c_str(), nullptr, IID_PPV_ARGS(&folder))) &&
+        folder) {
+      dlg->SetFolder(folder);
+      folder->Release();
+    }
+  }
+
+  bool picked = false;
+  HWND owner = ::GetAncestor(st->hwndSelf, GA_ROOT);
+  if (!owner) owner = st->hwndSelf;
+  if (SUCCEEDED(dlg->Show(owner))) {
+    IShellItem* item = nullptr;
+    if (SUCCEEDED(dlg->GetResult(&item)) && item) {
+      LPWSTR psz = nullptr;
+      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &psz)) && psz) {
+        *out = psz;
+        ::CoTaskMemFree(psz);
+        picked = true;
+      }
+      item->Release();
+    }
+  }
+  dlg->Release();
+  return picked;
+}
+
+void EndExport(ViewerState* st, const wchar_t* status) {
+  st->exporting = false;
+  st->exportPath.clear();
+  if (st->pagedSkin) {
+    st->pagedSkin = false;
+    PushChrome(st);
+  }
+  // 页面要自己清掉打印容器：宿主这边收尾与页面收尾是两条线
+  if (st->hasHost && WebHostIsReady()) WebHostPost(st->hwndSelf, L"export-end|");
+  if (status) SetStatus(st, L"%s", status);
+}
+
+void StartExport(ViewerState* st) {
+  if (!st->docOpened) {
+    SetStatus(st, L"没有可导出的文档");
+    return;
+  }
+  if (!st->hasHost || st->webFailed || !WebHostIsReady()) {
+    SetStatus(st, L"预览未就绪，无法导出");
+    return;
+  }
+  if (st->exporting) {
+    SetStatus(st, L"正在导出，请稍候…");
+    return;
+  }
+
+  // 铺全文没有中间反馈，大文档先给一次机会反悔（快捷键触发时尤其是）
+  if (st->ullFileSize > kExportConfirmBytes) {
+    wchar_t text[512];
+    ::StringCchPrintfW(text, ARRAYSIZE(text),
+                       L"文档约 %llu MB，导出需要较长时间。\n"
+                       L"过程中可在状态栏看进度，按 Esc 取消。\n\n继续导出？",
+                       static_cast<unsigned long long>(st->ullFileSize / (1024ull * 1024ull)));
+    if (::MessageBoxW(st->hwndSelf, text, kTitle, MB_ICONQUESTION | MB_OKCANCEL) != IDOK) return;
+  }
+
+  std::wstring path;
+  if (!PickPdfTarget(st, &path)) {
+    LogLine(L"VIEWER: 导出取消（保存对话框）");
+    return;
+  }
+
+  st->exportPath = path;
+  st->exporting = true;
+  st->pagedSkin = true;
+  st->pagedStartTick = ::GetTickCount64();
+  LogLine(L"VIEWER: 导出 PDF 请求 -> %s", path.c_str());
+  SetStatus(st, L"正在准备导出…");
+  PushChrome(st);
+  if (!WebHostPost(st->hwndSelf, L"export|")) EndExport(st, L"导出准备失败：页面不可达");
 }
 
 void PushIndex(ViewerState* st) {
@@ -382,6 +517,13 @@ void MaybePushIndexFull(ViewerState* st) {
 
 void OpenDoc(ViewerState* st) {
   if (!st->hasHost || st->webFailed) return;
+
+  // 换文档会重推索引，页面上的打印容器也就作废了：先让导出停手，
+  // 否则写出去的是上一份内容的半截
+  if (st->exporting) {
+    LogLine(L"VIEWER: 导出途中切换文档，取消本次导出");
+    EndExport(st, L"导出已取消：文档已切换");
+  }
 
   // 换文档后旧图片 URL 的语义不再成立（mdblocks 按当前文档目录解析）
   st->imgCtxUrl.clear();
@@ -1057,6 +1199,7 @@ constexpr UINT kCtxCopy = 0x6D80;
 constexpr UINT kCtxSelectAll = 0x6D81;
 constexpr UINT kCtxPrint = 0x6D82;
 constexpr UINT kCtxReload = 0x6D83;
+constexpr UINT kCtxExportPdf = 0x6D84;
 
 // 右键菜单：预览窗格与独立查看器用同一份自绘菜单。
 // 自绘的命令号由 TrackPopupMenu 直接带回，不会像 DOpus 自己的菜单那样丢掉
@@ -1166,6 +1309,7 @@ void ShowOwnContextMenu(ViewerState* st) {
   ::AppendMenuW(menu, MF_STRING | docFlags, kCtxCopy, L"复制");
   ::AppendMenuW(menu, MF_STRING | docFlags, kCtxSelectAll, L"全选");
   ::AppendMenuW(menu, MF_STRING | docFlags, kCtxPrint, L"打印…");
+  ::AppendMenuW(menu, MF_STRING | docFlags, kCtxExportPdf, L"导出 PDF…");
   ::AppendMenuW(menu, MF_STRING | docFlags, kCtxReload, L"刷新");
 
   POINT pt = {};
@@ -1226,6 +1370,10 @@ void ShowOwnContextMenu(ViewerState* st) {
     StartPrint(st);
     return;
   }
+  if (cmd == kCtxExportPdf) {
+    StartExport(st);
+    return;
+  }
   if (cmd == kCtxReload) {
     LogLine(L"VIEWER: 右键菜单刷新文档");
     if (st->szFile[0]) OpenDoc(st);
@@ -1274,10 +1422,49 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
 
   if (type == L"print-done") {
     LogLine(L"VIEWER: 打印对话框已关闭");
-    if (st->printLight) {
-      st->printLight = false;
+    // 导出期间也可能收到迟到的 print-done：打印皮肤不能在这时候被提前撤销
+    if (st->pagedSkin && !st->exporting) {
+      st->pagedSkin = false;
       PushChrome(st);
     }
+    return;
+  }
+
+  if (type == L"export-request") {
+    // 快捷键与菜单都走这里：保存对话框必须在查看器线程上弹
+    StartExport(st);
+    return;
+  }
+
+  if (type == L"export-ready") {
+    if (!st->exporting) return;
+    const bool ok = WebHostExportPdf(st->hwndSelf, st->exportPath);
+    LogLine(L"VIEWER: 导出内容就绪，PrintToPdfStream %s", ok ? L"成功" : L"失败");
+    if (!ok) EndExport(st, L"导出失败：预览引擎不可用");
+    return;
+  }
+
+  if (type == L"export-progress") {
+    if (!st->exporting) return;
+    // export-progress|<已铺块数>|<总块数>
+    const size_t sep = rest.find(L'|');
+    const int done = _wtoi(rest.c_str());
+    const int total = sep == std::wstring::npos ? 0 : _wtoi(rest.c_str() + sep + 1);
+    if (total > 0) SetStatus(st, L"正在导出… %d%%", done * 100 / total);
+    return;
+  }
+
+  if (type == L"export-done") {
+    LogLine(L"VIEWER: 导出完成 %s", rest.c_str());
+    EndExport(st, nullptr);
+    SetStatus(st, L"已导出 PDF：%s", UtilLeafName(rest.c_str()));
+    return;
+  }
+
+  if (type == L"export-error") {
+    LogLine(L"VIEWER: 导出失败：%s", rest.c_str());
+    EndExport(st, nullptr);
+    SetStatus(st, L"%s", rest.empty() ? L"导出失败" : rest.c_str());
     return;
   }
 
@@ -1774,11 +1961,17 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
           LogLine(L"VIEWER: DOpus 深浅色切换 dark=%d，重推皮肤", dark ? 1 : 0);
           PushChrome(st);
         }
-        // 页面中止打印时不一定发 print-done；亮色皮肤不能一直留着
-        if (st->printLight && ::GetTickCount64() - st->printStartTick > kPrintLightMaxMs) {
-          st->printLight = false;
-          LogLine(L"VIEWER: 打印亮色超时未收到 print-done，已恢复跟随皮肤");
+        // 页面中止打印时不一定发 print-done；打印皮肤不能一直留着
+        if (st->pagedSkin && !st->exporting &&
+            ::GetTickCount64() - st->pagedStartTick > kPrintLightMaxMs) {
+          st->pagedSkin = false;
+          LogLine(L"VIEWER: 打印超时未收到 print-done，已恢复跟随皮肤");
           PushChrome(st);
+        }
+        // 导出在等引擎回调：渲染进程崩掉时回调不会来，别让「正在导出」永久挂住
+        if (st->exporting && ::GetTickCount64() - st->pagedStartTick > kExportTimeoutMs) {
+          LogLine(L"VIEWER: 导出超时未收到结果，已放弃本次导出");
+          EndExport(st, L"导出超时，已放弃");
         }
         return 0;
       }
@@ -1904,8 +2097,10 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->hasHost = false;
   st->hasSelection = false;
   st->darkMode = HostThemeDark(st);
-  st->printLight = false;
-  st->printStartTick = 0;
+  st->pagedSkin = false;
+  st->pagedStartTick = 0;
+  st->exporting = false;
+  st->exportPath.clear();
   // 初始底色：第一帧占位就要按主题铺，不能等 PushChrome（它要页面就绪才跑）
   st->bgColor = st->darkMode ? RGB(0x28, 0x2C, 0x34) : ::GetSysColor(COLOR_WINDOW);
   {

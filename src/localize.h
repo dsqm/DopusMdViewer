@@ -18,6 +18,7 @@ enum class Str : int {
   // 外观
   SkinLight,
   SkinDark,
+  PrintSkin,
   FontSize,
   FontSizeUnit,
   LineHeight,

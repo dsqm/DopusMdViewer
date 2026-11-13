@@ -88,6 +88,7 @@ const UINT kCmdDevTools = kCmdBase + 12;  // 只给 hosttest：发一条 DevTool
 const UINT kCmdClearUserData = kCmdBase + 13;  // lParam = const std::wstring*
 const UINT kCmdCleanupDone = kCmdBase + 14;  // 缓存清理线程完成（无参数）
 const UINT kCmdSetBg = kCmdBase + 15;        // wParam = COLORREF，设 WebView2 默认底色
+const UINT kCmdExportPdf = kCmdBase + 16;    // wParam = 借用方，lParam = const std::wstring*
 
 // 预热：InitEx 后等一会儿再开始，避开 DOpus 自己的启动高峰。
 const UINT_PTR kTimerPrewarm = 1;
@@ -103,6 +104,8 @@ const int kMaxRoots = 8;
 // 自愈预算：一分钟内连续崩这么多次就停手，免得卡在崩—恢复—再崩的循环里。
 const int kRecoverBudget = 3;
 const LONGLONG kRecoverWindowMs = 60000;
+// 导出等回调的上限：渲染进程崩掉时 Completed handler 不会来。
+const ULONGLONG kPdfStuckMs = 5ull * 60 * 1000;
 
 // 以下状态只在宿主线程上访问。
 struct Host {
@@ -126,6 +129,8 @@ struct Host {
   bool everSawViewer = false;  // 预热后是否真的被查看器借过
   bool sawDOpusWindow = false;
   bool suspended = false;
+  bool pdfBusy = false;  // 生成 PDF 在途：同一时刻只许一个打印任务
+  ULONGLONG pdfStartTick = 0;  // pdfBusy 起点，用来放过「回调已经丢了」的死锁
   int idleReleaseMinutes = 3;
   int watchEmpty = 0;
   // 自愈状态：最近一次恢复的时刻与一分钟内的累计次数（只在宿主线程上读写）。
@@ -299,6 +304,87 @@ void PostEvent(int kind, const wchar_t* text) {
 void Fail(const wchar_t* reason) {
   LogLine(L"WEBHOST: 失败 - %s", reason);
   PostEvent(MDV_EVT_FAILED, reason);
+}
+
+// ---- 导出 PDF ----
+// PrintToPdfStream 不经过任何打印机驱动：Chromium 直接写 PDF，文字带字体子集与
+// ToUnicode 映射，复制/搜索都正常。经 Adobe PDF 一类虚拟打印机的那条路则会被
+// 打印栈转成轮廓，文本层丢失——这是这条路存在的唯一理由。
+//
+// 纸张 A4、四边 10 mm、打背景、不带页眉页脚。接口单位是英寸（没有毫米版本），
+// 这里统一用 1/25.4 换算，别在调用点写死小数。
+void ApplyPdfSettings(ICoreWebView2PrintSettings* s) {
+  constexpr double kInchPerMm = 1.0 / 25.4;
+  constexpr double kMarginMm = 10.0;
+  s->put_PageWidth(210.0 * kInchPerMm);
+  s->put_PageHeight(297.0 * kInchPerMm);
+  s->put_MarginTop(kMarginMm * kInchPerMm);
+  s->put_MarginBottom(kMarginMm * kInchPerMm);
+  s->put_MarginLeft(kMarginMm * kInchPerMm);
+  s->put_MarginRight(kMarginMm * kInchPerMm);
+  // 打背景是必须的：深色打印皮肤靠它出底色，亮色皮肤靠它保住代码块底色。
+  s->put_ShouldPrintBackgrounds(TRUE);
+  // 页眉页脚的内容由引擎写死为「日期/标题 / URI/页码」，URI 是 mddoc.localhost
+  // 内部地址，对拿到 PDF 的人只是噪声；WebView2 不暴露自定义模板。
+  s->put_ShouldPrintHeaderAndFooter(FALSE);
+  s->put_ScaleFactor(1.0);
+  s->put_Orientation(COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT);
+}
+
+// 把 PDF 流写成文件：先落 .tmp 再替换，中途失败不会留下半个 PDF。
+void WritePdfStream(IStream* stream, HRESULT errorCode, const std::wstring& path) {
+  if (FAILED(errorCode) || !stream) {
+    LogLine(L"WEBHOST: PrintToPdfStream 失败 hr=0x%08X", static_cast<unsigned>(errorCode));
+    PostEvent(MDV_EVT_MESSAGE, L"export-error|生成 PDF 失败");
+    return;
+  }
+
+  const std::wstring tmp = path + L".tmp";
+  HANDLE file = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    LogLine(L"WEBHOST: 导出 PDF 打不开目标 %s（错误 %lu）", tmp.c_str(), ::GetLastError());
+    PostEvent(MDV_EVT_MESSAGE, L"export-error|无法写入目标文件");
+    return;
+  }
+
+  // 文档说流已 rewind；仍显式从头读，避免依赖实现细节。
+  LARGE_INTEGER zero = {};
+  stream->Seek(zero, STREAM_SEEK_SET, nullptr);
+
+  ULONGLONG total = 0;
+  bool ok = true;
+  char buf[64 * 1024];
+  for (;;) {
+    ULONG got = 0;
+    const HRESULT hr = stream->Read(buf, static_cast<ULONG>(sizeof(buf)), &got);
+    if (FAILED(hr)) {
+      ok = false;
+      break;
+    }
+    if (got == 0) break;
+    DWORD written = 0;
+    if (!::WriteFile(file, buf, got, &written, nullptr) || written != got) {
+      ok = false;
+      break;
+    }
+    total += got;
+  }
+  ::CloseHandle(file);
+
+  if (ok && !::MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    LogLine(L"WEBHOST: 导出 PDF 替换目标失败（错误 %lu）", ::GetLastError());
+    ok = false;
+  }
+  if (!ok) {
+    ::DeleteFileW(tmp.c_str());
+    PostEvent(MDV_EVT_MESSAGE, L"export-error|写入 PDF 失败");
+    return;
+  }
+
+  LogLine(L"WEBHOST: 已导出 PDF %s（%llu 字节）", path.c_str(), total);
+  const std::wstring done = L"export-done|" + path;
+  PostEvent(MDV_EVT_MESSAGE, done.c_str());
 }
 
 // boot.css 在 <head> 里是 render-blocking：页面第一帧就带着它。皮肤变量原先只由
@@ -1520,6 +1606,58 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       return SUCCEEDED(hr) ? 1 : 0;
     }
 
+    case kCmdExportPdf: {
+      // 异步：PrintToPdfStream 的回调回到本线程，结果用事件送回查看器。
+      // 不能在这里等回调——宿主线程的消息泵一停，回调永远不会到达。
+      if (g_host.borrower != reinterpret_cast<HWND>(wParam)) return 0;
+      const std::wstring* path = reinterpret_cast<const std::wstring*>(lParam);
+      if (!g_host.webview || !g_host.env || !path || path->empty()) return 0;
+      if (g_host.pdfBusy) {
+        // 回调丢了（渲染进程崩过）不能让导出永久锁死
+        if (::GetTickCount64() - g_host.pdfStartTick < kPdfStuckMs) {
+          PostEvent(MDV_EVT_MESSAGE, L"export-error|上一次导出还没结束");
+          return 0;
+        }
+        LogLine(L"WEBHOST: 上一次导出长时间没有回调，按失败清掉");
+        g_host.pdfBusy = false;
+      }
+      ComPtr<ICoreWebView2_16> wv16;
+      if (FAILED(g_host.webview.As(&wv16)) || !wv16) {
+        LogLine(L"WEBHOST: 运行时没有 ICoreWebView2_16，无法生成 PDF");
+        PostEvent(MDV_EVT_MESSAGE, L"export-error|预览引擎版本过旧，无法生成 PDF");
+        return 0;
+      }
+      ComPtr<ICoreWebView2Environment6> env6;
+      ComPtr<ICoreWebView2PrintSettings> settings;
+      if (FAILED(g_host.env.As(&env6)) || !env6 ||
+          FAILED(env6->CreatePrintSettings(&settings)) || !settings) {
+        LogLine(L"WEBHOST: 取不到 ICoreWebView2PrintSettings");
+        PostEvent(MDV_EVT_MESSAGE, L"export-error|取不到打印设置");
+        return 0;
+      }
+      ApplyPdfSettings(settings.Get());
+
+      const std::wstring target = *path;
+      g_host.pdfBusy = true;
+      g_host.pdfStartTick = ::GetTickCount64();
+      const HRESULT hr = wv16->PrintToPdfStream(
+          settings.Get(),
+          Callback<ICoreWebView2PrintToPdfStreamCompletedHandler>(
+              [target](HRESULT errorCode, IStream* stream) -> HRESULT {
+                g_host.pdfBusy = false;
+                WritePdfStream(stream, errorCode, target);
+                return S_OK;
+              }).Get());
+      if (FAILED(hr)) {
+        g_host.pdfBusy = false;
+        LogLine(L"WEBHOST: PrintToPdfStream 发起失败 hr=0x%08X", static_cast<unsigned>(hr));
+        PostEvent(MDV_EVT_MESSAGE, L"export-error|发起导出失败");
+        return 0;
+      }
+      LogLine(L"WEBHOST: PrintToPdfStream 已发起 -> %s", target.c_str());
+      return 1;
+    }
+
     case kCmdRecover: {
       // 实例已经被回收过就什么都不用做：POST 可能来两次（ProcessFailed 与
       // BrowserProcessExited 都会报浏览器进程退出）。但还有查看器在借用时不能
@@ -1834,6 +1972,16 @@ bool WebHostShowPrintUI(HWND hViewer) {
   if (!hViewer) return false;
   LRESULT result = 0;
   if (!SendCommand(kCmdPrint, reinterpret_cast<WPARAM>(hViewer), 0, &result)) return false;
+  return result != 0;
+}
+
+bool WebHostExportPdf(HWND hViewer, const std::wstring& path) {
+  if (!hViewer || path.empty()) return false;
+  LRESULT result = 0;
+  if (!SendCommand(kCmdExportPdf, reinterpret_cast<WPARAM>(hViewer),
+                   reinterpret_cast<LPARAM>(&path), &result)) {
+    return false;
+  }
   return result != 0;
 }
 

@@ -8,6 +8,8 @@
 
 #include <windows.h>
 
+#include <cstdarg>
+#include <cstdio>
 #include <new>
 #include <stdlib.h>
 #include <string>
@@ -58,6 +60,9 @@ const UINT_PTR kCrashTimerId = 31;
 const UINT_PTR kWsSelTimerId = 34;
 const UINT_PTR kSettingsCloseTimerId = 35;
 const UINT_PTR kTableGeomTimerId = 36;
+const UINT_PTR kExportPushTimerId = 37;
+const UINT_PTR kExportGoTimerId = 38;
+const UINT_PTR kExportCheckTimerId = 39;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
 const UINT kCycleAfterMs = 5000;
@@ -98,6 +103,9 @@ wchar_t g_findQuery[128] = L"中文";
 bool g_outline = false;     // 5 秒后打开大纲、点第 3 项，回流条目数与滚动位置
 bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，回流映射与滚动位置
 bool g_settingsClose = false;  // settings 模式：打开 6 秒后关掉设置窗口，验关窗是否干净
+// export 模式：先让页面铺全文，再让宿主把页面写成 PDF，用来核对产出的文本层。
+bool g_export = false;
+wchar_t g_szPdf[MAX_PATH * 2] = L"";
 bool g_settingsRender = false; // settings 模式：开窗后切到「渲染」页，便于截图核对布局
 bool g_settingsAdv = false;    // settings 模式：开窗后切到「高级」页
 HWND g_settingsHwnd = nullptr;
@@ -113,6 +121,25 @@ HWND g_hwndMain = nullptr;
 HWND g_viewer = nullptr;
 HWND g_hwndTimer = nullptr;  // release 模式：主窗口销毁后用它继续跑计时器
 HINSTANCE g_hInst = nullptr;
+
+// export 模式的旁路记录：hosttest 里 DOpus 别名解析不出数据目录时 LogLine 会空转，
+// 结果另写一份文本，跑完直接读。
+void ExportNote(const wchar_t* fmt, ...) {
+  if (!g_szPdf[0]) return;
+  wchar_t path[MAX_PATH * 2];
+  ::StringCchCopyW(path, ARRAYSIZE(path), g_szPdf);
+  wchar_t* dot = wcsrchr(path, L'.');
+  if (dot) *dot = 0;
+  ::StringCchCatW(path, ARRAYSIZE(path), L".txt");
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, path, L"a, ccs=UTF-8") != 0 || !f) return;
+  va_list ap;
+  va_start(ap, fmt);
+  vfwprintf(f, fmt, ap);
+  va_end(ap);
+  fwprintf(f, L"\n");
+  fclose(f);
+}
 
 // 建一个查看器并让它加载当前文件。cycle 模式用它做第二次。
 HWND CreateViewerOnce() {
@@ -405,6 +432,33 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"else window.chrome.webview.postMessage('event|fps|frames='+n+\" max=\"+Math.round(max));}"
             L"requestAnimationFrame(step);},3000);";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
+      } else if (wParam == kExportPushTimerId) {
+        // export 模式第 1 步：与右键菜单同一条消息，让页面把全文铺进打印容器。
+        // 页面未就绪就 1 秒后再看：这里不依赖固定延时去猜加载速度。
+        ::KillTimer(hwnd, kExportPushTimerId);
+        if (!g_viewer) {
+          ExportNote(L"没有查看器");
+          return 0;
+        }
+        if (!WebHostIsReady()) {
+          ::SetTimer(hwnd, kExportPushTimerId, 1000, nullptr);
+          return 0;
+        }
+        const bool posted = WebHostPost(g_viewer, L"export|");
+        ExportNote(L"铺全文请求 %s", posted ? L"已发出" : L"失败");
+        if (posted) ::SetTimer(hwnd, kExportGoTimerId, 4000, nullptr);
+      } else if (wParam == kExportGoTimerId) {
+        // 第 2 步：宿主侧 PrintToPdfStream（异步，回调里写文件）
+        ::KillTimer(hwnd, kExportGoTimerId);
+        const bool ok = g_viewer && WebHostExportPdf(g_viewer, g_szPdf);
+        ExportNote(L"PrintToPdfStream %s -> %s", ok ? L"已发起" : L"失败", g_szPdf);
+        ::SetTimer(hwnd, kExportCheckTimerId, 6000, nullptr);
+      } else if (wParam == kExportCheckTimerId) {
+        ::KillTimer(hwnd, kExportCheckTimerId);
+        const DWORD attr = ::GetFileAttributesW(g_szPdf);
+        ExportNote(L"结果 %s（attr=0x%08lX）",
+                   attr == INVALID_FILE_ATTRIBUTES ? L"文件不存在" : L"文件已生成",
+                   static_cast<unsigned long>(attr));
       } else if (wParam == kDumpTimerId) {
         ::KillTimer(hwnd, kDumpTimerId);
         const wchar_t* script =
@@ -817,6 +871,7 @@ void ExtractArgs(LPWSTR pszCmdLine) {
     g_settingsClose = true;
   }
   if (*p && wcsstr(p, L"dump")) g_dump = true;
+  if (*p && wcsstr(p, L"export")) g_export = true;
   if (*p && wcsstr(p, L"seam")) g_seam = true;
   if (*p && wcsstr(p, L"consent")) g_consent = true;
   if (*p && wcsstr(p, L"reload")) g_reload = true;
@@ -957,6 +1012,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   }
   if (g_seam) {
     ::SetTimer(g_hwndMain, kSeamTimerId, kDumpAfterMs, nullptr);
+  }
+  if (g_export) {
+    // 输出放在 exe 同目录，跑完直接用 PDF 工具核对文本层
+    wchar_t exe[MAX_PATH] = L"";
+    ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    wchar_t* slash = wcsrchr(exe, L'\\');
+    if (slash) *(slash + 1) = 0;
+    ::StringCchPrintfW(g_szPdf, ARRAYSIZE(g_szPdf), L"%shosttest-export.pdf", exe);
+    ExportNote(L"export 模式启动，输出 %s", g_szPdf);
+    ::SetTimer(g_hwndMain, kExportPushTimerId, g_shotAfterMs, nullptr);
   }
   if (g_consent) {
     ::SetTimer(g_hwndMain, kConsentTimerId, 5000, nullptr);

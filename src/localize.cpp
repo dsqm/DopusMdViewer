@@ -17,6 +17,7 @@ const wchar_t* const kZh[kCount] = {
 
     /* SkinLight        */ L"亮色主题",
     /* SkinDark         */ L"暗色主题",
+    /* PrintSkin        */ L"打印主题",
     /* FontSize         */ L"字号",
     /* FontSizeUnit     */ L"px（8–48）",
     /* LineHeight       */ L"行高",

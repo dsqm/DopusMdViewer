@@ -26,9 +26,12 @@ struct FontSettings {
 
 struct Config {
   // 皮肤 id（文件名去扩展名）。跟随 DOpus 深浅色：亮色时用 skinLight，
-  // 暗色时用 skinDark；两框同值即事实上的固定皮肤。打印固定用 skinLight。
+  // 暗色时用 skinDark；两框同值即事实上的固定皮肤。
   std::wstring skinLight;
   std::wstring skinDark;
+  // 打印与导出 PDF 期间用的皮肤，清单与上面两框相同。
+  // 默认 light：与旧的「打印固定亮色」行为一致，升级不动观感。
+  std::wstring printSkin;
   FontSettings font;
   // 设置窗口字体预览框显示的文字：换行分行，空 = 用内置示例。
   // 与内置示例相同也存空串，示例文案以后改了没自定义过的用户会跟着变。

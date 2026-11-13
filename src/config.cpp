@@ -34,6 +34,7 @@ FontStack DefaultMono() {
 void SetDefaults(Config* c) {
   c->skinLight = L"light";
   c->skinDark = L"dark";
+  c->printSkin = L"light";
   c->font.ui = DefaultUi();
   c->font.body.clear();
   c->font.mono = DefaultMono();
@@ -216,6 +217,13 @@ void ApplyJson(const nlohmann::json& root, Config* c) {
     const std::string id = root["skinDark"].get<std::string>();
     if (!id.empty()) c->skinDark = Utf8ToWide(id);
   }
+  // 打印皮肤是后加的键。旧配置没有它，而旧行为就是「打印用 skinLight」，
+  // 所以缺键时取 skinLight：升级后打印观感不变。
+  c->printSkin = c->skinLight;
+  if (root.contains("printSkin") && root["printSkin"].is_string()) {
+    const std::string id = root["printSkin"].get<std::string>();
+    if (!id.empty()) c->printSkin = Utf8ToWide(id);
+  }
 
   if (!root.contains("font") || !root["font"].is_object()) return;
   const nlohmann::json& font = root["font"];
@@ -327,9 +335,10 @@ const Config& ConfigLoad(void) {
     if (root.contains("version") && root["version"].is_number_integer()) {
       version = root["version"].get<int>();
     }
-    LogLine(L"CONFIG: 已读取 %s（version=%d）skinLight=\"%s\" skinDark=\"%s\" size=%dpx lh=%.2f measure=%dem log=%d",
+    LogLine(L"CONFIG: 已读取 %s（version=%d）skinLight=\"%s\" skinDark=\"%s\" printSkin=\"%s\" "
+            L"size=%dpx lh=%.2f measure=%dem log=%d",
             path, version, g_config.skinLight.c_str(), g_config.skinDark.c_str(),
-            g_config.font.sizePx,
+            g_config.printSkin.c_str(), g_config.font.sizePx,
             g_config.font.lineHeight, g_config.font.measureEm, g_config.enableLog ? 1 : 0);
     if (version > kConfigVersion) {
       LogLine(L"CONFIG: 文件版本 %d 高于本插件支持的 %d，未识别的键会被原样保留",
@@ -465,6 +474,7 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
   // 旧键 skin 不再写；若旧文件里有，走未知键保留原样，旧版插件回读也不出错
   root["skinLight"] = WideToUtf8(c.skinLight);
   root["skinDark"] = WideToUtf8(c.skinDark);
+  root["printSkin"] = WideToUtf8(c.printSkin);
   nlohmann::json font = root.contains("font") && root["font"].is_object()
                             ? root["font"]
                             : nlohmann::json::object();
@@ -520,10 +530,11 @@ bool ConfigSave(const Config& input, ConfigSaveFailure* failure) {
     std::lock_guard<std::mutex> lock(g_modeMutex);
     g_config = c;
   }
-  LogLine(L"CONFIG: 已写入 %s skinLight=\"%s\" skinDark=\"%s\" size=%dpx lh=%.2f measure=%dem "
+  LogLine(L"CONFIG: 已写入 %s skinLight=\"%s\" skinDark=\"%s\" printSkin=\"%s\" "
+          L"size=%dpx lh=%.2f measure=%dem "
           L"net=%d outside=%d render=%d%d%d%d%d%d copy=%d%d/%d lines=%d ws=%d/%d ind=%d "
           L"tools=%d%d log=%d dopusViewer=%d exts=%d linkWait=%d prewarm=%d idle=%d",
-          path, c.skinLight.c_str(), c.skinDark.c_str(),
+          path, c.skinLight.c_str(), c.skinDark.c_str(), c.printSkin.c_str(),
           c.font.sizePx, c.font.lineHeight, c.font.measureEm,
           c.netImageMode, (c.allowParentImages ? 1 : 0) + (c.allowAbsoluteImages ? 2 : 0),
           c.renderMermaid ? 1 : 0,

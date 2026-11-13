@@ -877,6 +877,8 @@ const PRINT = {
   root: null,
   docId: 0,
   timer: 0,
+  mode: '',    // 'print' | 'export'：两条路共用铺全文，但收尾与取消时机不同
+  cancel: false,
 }
 
 const COPY = { busy: false }
@@ -2667,7 +2669,21 @@ function onKeyDown(e) {
     openFind()
     return
   }
+  if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'p' || e.key === 'P')) {
+    // 不能让 Chromium 自己接：虚拟滚动下 DOM 里只有视口块，@media print 又只认
+    // 打印容器，默认打印拿到的是一份残缺内容
+    e.preventDefault()
+    if (e.shiftKey) postRaw('export-request')
+    else startPrint()
+    return
+  }
   if (e.key === 'Escape') {
+    if (PRINT.mode === 'export' && PRINT.busy) {
+      e.preventDefault()
+      PRINT.cancel = true
+      postRaw('status|正在取消导出…')
+      return
+    }
     if (IMGZ.open) {  // 遮罩最先消费 Esc，其次才是搜索条与大纲抽屉
       e.preventDefault()
       closeZoomMask()
@@ -5262,6 +5278,8 @@ function cleanupPrint() {
     PRINT.root = null
   }
   PRINT.busy = false
+  PRINT.mode = ''
+  // cancel 不在这里清：收到 export-end 时正要在下一批里退出循环，清了就白设
 }
 
 // 已允许的远程图直接放行；不在这里发起新的网络图确认。
@@ -5283,12 +5301,13 @@ function waitImages(root) {
   return Promise.race([all, new Promise((resolve) => setTimeout(resolve, 4000))])
 }
 
-async function buildPrintView() {
+async function buildPrintView(onProgress) {
   const docId = V.docId
   const total = V.blockCount
   const parts = []
   for (let from = 0; from < total; from += PRINT_BATCH) {
     if (docId !== V.docId) throw new Error('文档已切换')
+    if (PRINT.cancel) throw Object.assign(new Error('已取消'), { cancelled: true })
     const count = Math.min(PRINT_BATCH, total - from)
     const res = await fetch(BLOCKS_URL + '?from=' + from + '&count=' + count, { cache: 'no-store' })
     if (!res.ok) throw new Error('HTTP ' + res.status)
@@ -5308,6 +5327,7 @@ async function buildPrintView() {
       if (it.flags & 0x80) html += '<p>（块过大，打印时已截断）</p>'
       parts.push('<div class="pblk">' + html + '</div>')
     }
+    if (onProgress) onProgress(from + count, total)
   }
   if (docId !== V.docId) throw new Error('文档已切换')
 
@@ -5335,6 +5355,8 @@ async function startPrint() {
     return
   }
   PRINT.busy = true
+  PRINT.mode = 'print'
+  PRINT.cancel = false
   PRINT.docId = V.docId
   postRaw('status|正在准备打印…')
   const t0 = performance.now()
@@ -5361,6 +5383,49 @@ async function startPrint() {
     const msg = String((err && err.message) || err)
     postRaw('status|打印准备失败：' + msg)
     report('print-error', msg)
+  }
+}
+
+/* 导出 PDF：与打印共用铺全文这一段，但不弹打印对话框——宿主让引擎直接把页面
+   写成 PDF，不经过打印机驱动，文字才保持可复制。进度按块数回报，Esc 可取消。 */
+async function startExport() {
+  if (!V.active) {
+    postRaw('export-error|没有可导出的文档')
+    return
+  }
+  if (PRINT.busy) {
+    postRaw('export-error|上一次打印或导出还没结束')
+    return
+  }
+  PRINT.busy = true
+  PRINT.mode = 'export'
+  PRINT.cancel = false
+  PRINT.docId = V.docId
+  const t0 = performance.now()
+  try {
+    const root = await buildPrintView((done, total) => {
+      if (PRINT.cancel) return
+      postRaw('export-progress|' + done + '|' + total)
+    })
+    if (PRINT.docId !== V.docId || !V.active) {
+      root.remove()
+      PRINT.busy = false
+      PRINT.mode = ''
+      postRaw('export-error|文档已切换')
+      return
+    }
+    PRINT.root = root
+    const n = root.querySelectorAll('.pblk').length
+    report('export-ready', (performance.now() - t0).toFixed(0) + '|' + n)
+    postRaw('export-ready')
+    // 宿主生成完会发 export-end| 清场；消息丢了也不能把全文 DOM 永远留在页面里
+    PRINT.timer = setTimeout(cleanupPrint, 10 * 60 * 1000)
+  } catch (err) {
+    const cancelled = !!(err && err.cancelled)
+    const msg = String((err && err.message) || err)
+    cleanupPrint()
+    if (!cancelled) report('export-error', msg)
+    postRaw('export-error|' + (cancelled ? '已取消导出' : '导出准备失败：' + msg))
   }
 }
 
@@ -5461,6 +5526,24 @@ function onHostMessage(event) {
 
   if (type === 'print') {
     startPrint()
+    return
+  }
+
+  if (type === 'export') {
+    startExport()
+    return
+  }
+
+  if (type === 'export-cancel') {
+    // 宿主取消（例如窗口关掉）：循环里下一次检查就会退出
+    if (PRINT.mode === 'export' && PRINT.busy) PRINT.cancel = true
+    return
+  }
+
+  if (type === 'export-end') {
+    // 宿主已经收尾（完成、失败或取消）：铺全文的循环若还在跑，下一批就会退出
+    PRINT.cancel = true
+    cleanupPrint()
     return
   }
 
@@ -5751,6 +5834,9 @@ window.addEventListener('error', (e) => {
   report('js-error', (e.message || 'error') + ' @' + (e.filename || '') + ':' + (e.lineno || 0))
 })
 window.addEventListener('afterprint', () => {
+  // 导出不经过打印对话框，引擎也可能发 afterprint：这时候清掉打印容器，
+  // 正在写的 PDF 就只剩空白页
+  if (PRINT.mode === 'export') return
   cleanupPrint()
   postRaw('print-done')
 })
