@@ -105,6 +105,7 @@ bool g_slug = false;        // 5 秒后查标题 slug 表、点页内锚点，�
 bool g_settingsClose = false;  // settings 模式：打开 6 秒后关掉设置窗口，验关窗是否干净
 // export 模式：先让页面铺全文，再让宿主把页面写成 PDF，用来核对产出的文本层。
 bool g_export = false;
+UINT g_exportWaitMs = 4000;  // 铺全文到发起生成之间的等待：大文档要按实测放大
 wchar_t g_szPdf[MAX_PATH * 2] = L"";
 bool g_settingsRender = false; // settings 模式：开窗后切到「渲染」页，便于截图核对布局
 bool g_settingsAdv = false;    // settings 模式：开窗后切到「高级」页
@@ -445,8 +446,8 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
           return 0;
         }
         const bool posted = WebHostPost(g_viewer, L"export|");
-        ExportNote(L"铺全文请求 %s", posted ? L"已发出" : L"失败");
-        if (posted) ::SetTimer(hwnd, kExportGoTimerId, 4000, nullptr);
+        ExportNote(L"铺全文请求 %s，等 %u ms", posted ? L"已发出" : L"失败", g_exportWaitMs);
+        if (posted) ::SetTimer(hwnd, kExportGoTimerId, g_exportWaitMs, nullptr);
       } else if (wParam == kExportGoTimerId) {
         // 第 2 步：宿主侧 PrintToPdfStream（异步，回调里写文件）
         ::KillTimer(hwnd, kExportGoTimerId);
@@ -872,6 +873,13 @@ void ExtractArgs(LPWSTR pszCmdLine) {
   }
   if (*p && wcsstr(p, L"dump")) g_dump = true;
   if (*p && wcsstr(p, L"export")) g_export = true;
+  if (g_export) {
+    const wchar_t* ex = wcsstr(p, L"exportwait=");
+    if (ex) {
+      const int v = _wtoi(ex + 11);
+      if (v > 0) g_exportWaitMs = static_cast<UINT>(v);
+    }
+  }
   if (*p && wcsstr(p, L"seam")) g_seam = true;
   if (*p && wcsstr(p, L"consent")) g_consent = true;
   if (*p && wcsstr(p, L"reload")) g_reload = true;
@@ -1063,7 +1071,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     ::SetTimer(g_hwndMain, kShotTimerId, g_shotAfterMs, nullptr);
   }
   if (!g_release) {
-    ::SetTimer(g_hwndMain, kQuitTimerId, g_drop ? kDropQuitAfterMs : kQuitAfterMs, nullptr);
+    // export 模式要按等待时长顺延，否则大文档还在铺全文就被 40 秒的默认退出掐掉
+    const UINT quitMs = g_export ? (g_shotAfterMs + g_exportWaitMs + 60000)
+                                 : (g_drop ? kDropQuitAfterMs : kQuitAfterMs);
+    ::SetTimer(g_hwndMain, kQuitTimerId, quitMs, nullptr);
   }
 
   MSG msg;

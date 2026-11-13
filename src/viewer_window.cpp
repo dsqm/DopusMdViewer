@@ -39,10 +39,13 @@ const wchar_t kDocBase[] = L"https://mddoc.localhost/";
 constexpr UINT_PTR kDarkPollTimerId = 1;
 constexpr UINT kDarkPollMs = 500;
 constexpr ULONGLONG kPrintLightMaxMs = 6ull * 60 * 1000;
-// 超过这个大小的文档，导出前先确认一次：铺全文期间页面没有中间反馈。
-constexpr ULONGLONG kExportConfirmBytes = 2ull * 1024 * 1024;
-// 导出等引擎回调的上限：渲染进程崩掉时回调不会来。
-constexpr ULONGLONG kExportTimeoutMs = 10ull * 60 * 1000;
+// 导出与打印共用这道门槛：铺全文是把整个文档塞进一个 DOM，再让引擎分页。
+// 实测 5 MB / 36 万行的文档，铺完之后 PrintToPdfStream 长时间不回回调，也不产出
+// 文件；同一时刻宿主线程被占住，DOpus 的菜单会一起僵住。所以宁可明确拒绝。
+constexpr ULONGLONG kExportMaxBytes = 2ull * 1024 * 1024;
+// 导出等引擎回调的上限：渲染进程崩掉时回调不会来。文档已限 2 MB，
+// 正常几秒内结束，留 3 分钟足够，且卡死后能比较快恢复可用状态。
+constexpr ULONGLONG kExportTimeoutMs = 3ull * 60 * 1000;
 
 struct ViewerState {
   HWND hwndSelf;
@@ -460,14 +463,14 @@ void StartExport(ViewerState* st) {
     return;
   }
 
-  // 铺全文没有中间反馈，大文档先给一次机会反悔（快捷键触发时尤其是）
-  if (st->ullFileSize > kExportConfirmBytes) {
-    wchar_t text[512];
-    ::StringCchPrintfW(text, ARRAYSIZE(text),
-                       L"文档约 %llu MB，导出需要较长时间。\n"
-                       L"过程中可在状态栏看进度，按 Esc 取消。\n\n继续导出？",
-                       static_cast<unsigned long long>(st->ullFileSize / (1024ull * 1024ull)));
-    if (::MessageBoxW(st->hwndSelf, text, kTitle, MB_ICONQUESTION | MB_OKCANCEL) != IDOK) return;
+  // 大文档不分段：铺全文没有中间反馈，引擎分页也可能不返回。直接拒绝，
+  // 比跑到 100% 后无声卡死强。
+  if (st->ullFileSize > kExportMaxBytes) {
+    LogLine(L"VIEWER: 导出被拒绝，文档 %llu 字节超过上限 %llu", st->ullFileSize,
+            kExportMaxBytes);
+    SetStatus(st, L"文档超过 %llu MB，暂不支持导出",
+              static_cast<unsigned long long>(kExportMaxBytes / (1024ull * 1024ull)));
+    return;
   }
 
   std::wstring path;

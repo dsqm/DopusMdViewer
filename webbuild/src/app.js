@@ -2478,6 +2478,13 @@ function resetVirtual() {
 }
 
 function applyIndex(base, prefix, est, fileSize, enc, lastVisible, complete, docKey, session) {
+  // 换文档等于把上一份的打印容器作废：导出若还在铺全文就立刻收手。
+  // 不收的话 PRINT.busy 一直为真，下一次导出会被自己挡住。
+  if (PRINT.busy) {
+    PRINT.cancel = true
+    cleanupPrint()
+    postRaw('export-error|文档已切换')
+  }
   resetVirtual()
   bindDom()
   document.body.classList.add('virtual')
@@ -5417,6 +5424,8 @@ async function startExport() {
     PRINT.root = root
     const n = root.querySelectorAll('.pblk').length
     report('export-ready', (performance.now() - t0).toFixed(0) + '|' + n)
+    // 铺完只是把 DOM 造好：引擎还要排版分页，这一段没有进度可报
+    postRaw('status|正在生成 PDF…')
     postRaw('export-ready')
     // 宿主生成完会发 export-end| 清场；消息丢了也不能把全文 DOM 永远留在页面里
     PRINT.timer = setTimeout(cleanupPrint, 10 * 60 * 1000)

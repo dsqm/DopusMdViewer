@@ -1609,8 +1609,9 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     case kCmdExportPdf: {
       // 异步：PrintToPdfStream 的回调回到本线程，结果用事件送回查看器。
       // 不能在这里等回调——宿主线程的消息泵一停，回调永远不会到达。
+      // lParam 是调用方堆上分配的路径，本分支接管所有权。
+      std::unique_ptr<std::wstring> path(reinterpret_cast<std::wstring*>(lParam));
       if (g_host.borrower != reinterpret_cast<HWND>(wParam)) return 0;
-      const std::wstring* path = reinterpret_cast<const std::wstring*>(lParam);
       if (!g_host.webview || !g_host.env || !path || path->empty()) return 0;
       if (g_host.pdfBusy) {
         // 回调丢了（渲染进程崩过）不能让导出永久锁死
@@ -1977,12 +1978,18 @@ bool WebHostShowPrintUI(HWND hViewer) {
 
 bool WebHostExportPdf(HWND hViewer, const std::wstring& path) {
   if (!hViewer || path.empty()) return false;
-  LRESULT result = 0;
-  if (!SendCommand(kCmdExportPdf, reinterpret_cast<WPARAM>(hViewer),
-                   reinterpret_cast<LPARAM>(&path), &result)) {
+  HWND host = EnsureHostThread();
+  if (!host || !::IsWindow(host)) return false;
+  // 只投递、不等结果：发起打印会让宿主线程停住几秒（引擎要排版分页），
+  // 同步 SendMessage 会把 DOpus 的 UI 一起拖住，菜单点不出来。
+  std::wstring* copy = new (std::nothrow) std::wstring(path);
+  if (!copy) return false;
+  if (!::PostMessageW(host, kCmdExportPdf, reinterpret_cast<WPARAM>(hViewer),
+                      reinterpret_cast<LPARAM>(copy))) {
+    delete copy;
     return false;
   }
-  return result != 0;
+  return true;
 }
 
 bool WebHostExecuteScript(HWND hViewer, const std::wstring& script) {
