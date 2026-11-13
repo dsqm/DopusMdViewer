@@ -21,3 +21,7 @@ void ViewerNotifyConfigChanged(void);
 
 // 设置已更新（无载荷）。
 #define WM_MDV_CONFIG_CHANGED (WM_APP + 0x311)
+
+// 只给 tools/hosttest 用：按给定路径导出 PDF，跳过保存对话框。
+// 其余流程与右键菜单完全一致（皮肤、分段、状态栏），返回是否已发出请求。
+bool ViewerTestExport(HWND hViewer, const wchar_t* path);

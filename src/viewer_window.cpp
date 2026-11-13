@@ -39,11 +39,7 @@ const wchar_t kDocBase[] = L"https://mddoc.localhost/";
 constexpr UINT_PTR kDarkPollTimerId = 1;
 constexpr UINT kDarkPollMs = 500;
 constexpr ULONGLONG kPrintLightMaxMs = 6ull * 60 * 1000;
-// 导出与打印共用这道门槛：铺全文是把整个文档塞进一个 DOM，再让引擎分页。
-// 实测 5 MB / 36 万行的文档，铺完之后 PrintToPdfStream 长时间不回回调，也不产出
-// 文件；同一时刻宿主线程被占住，DOpus 的菜单会一起僵住。所以宁可明确拒绝。
-constexpr ULONGLONG kExportMaxBytes = 2ull * 1024 * 1024;
-// 导出等引擎回调的上限：渲染进程崩掉时回调不会来。文档已限 2 MB，
+// 导出等引擎回调的上限：渲染进程崩掉时回调不会来。单份不超 2 MB，
 // 正常几秒内结束，留 3 分钟足够，且卡死后能比较快恢复可用状态。
 constexpr ULONGLONG kExportTimeoutMs = 3ull * 60 * 1000;
 
@@ -77,6 +73,10 @@ struct ViewerState {
   // 导出 PDF：路径在保存对话框里定下后一直留到 done/error 落地。
   bool exporting;
   std::wstring exportPath;
+  // 分段导出：一份一个 PDF。页数由页面按块数切成几份后告知，这里只按段号命名。
+  int exportSeg;
+  int exportSegs;
+  int exportOk;
   // 当前皮肤 --md-bg：页面出来前宿主窗口先铺同色，暗色下不闪白。
   COLORREF bgColor;
   // 页面最后右键的图片（imgctx 帧）：「打开方式」要还原磁盘路径，「放大查看」
@@ -437,9 +437,25 @@ bool PickPdfTarget(ViewerState* st, std::wstring* out) {
   return picked;
 }
 
+// 分段时在扩展名前插 -01、-02；单份原样返回。
+std::wstring SegmentedPath(const std::wstring& path, int seg, int segs) {
+  if (segs <= 1) return path;
+  wchar_t suffix[16];
+  ::StringCchPrintfW(suffix, ARRAYSIZE(suffix), L"-%02d", seg + 1);
+  const size_t dot = path.find_last_of(L'.');
+  const size_t slash = path.find_last_of(L"\\/");
+  if (dot == std::wstring::npos || (slash != std::wstring::npos && dot < slash)) {
+    return path + suffix;
+  }
+  return path.substr(0, dot) + suffix + path.substr(dot);
+}
+
 void EndExport(ViewerState* st, const wchar_t* status) {
   st->exporting = false;
   st->exportPath.clear();
+  st->exportSeg = 0;
+  st->exportSegs = 1;
+  st->exportOk = 0;
   if (st->pagedSkin) {
     st->pagedSkin = false;
     PushChrome(st);
@@ -463,16 +479,8 @@ void StartExport(ViewerState* st) {
     return;
   }
 
-  // 大文档不分段：铺全文没有中间反馈，引擎分页也可能不返回。直接拒绝，
-  // 比跑到 100% 后无声卡死强。
-  if (st->ullFileSize > kExportMaxBytes) {
-    LogLine(L"VIEWER: 导出被拒绝，文档 %llu 字节超过上限 %llu", st->ullFileSize,
-            kExportMaxBytes);
-    SetStatus(st, L"文档超过 %llu MB，暂不支持导出",
-              static_cast<unsigned long long>(kExportMaxBytes / (1024ull * 1024ull)));
-    return;
-  }
-
+  // 大文档由页面按块切成几份分别写（见 startExport）：整篇塞进一个 DOM 时
+  // 引擎分页会长时间不返回，切成小份才产得出来。
   std::wstring path;
   if (!PickPdfTarget(st, &path)) {
     LogLine(L"VIEWER: 导出取消（保存对话框）");
@@ -481,6 +489,9 @@ void StartExport(ViewerState* st) {
 
   st->exportPath = path;
   st->exporting = true;
+  st->exportSeg = 0;
+  st->exportSegs = 1;  // 页面在 export-ready 里报真实段数
+  st->exportOk = 0;
   st->pagedSkin = true;
   st->pagedStartTick = ::GetTickCount64();
   LogLine(L"VIEWER: 导出 PDF 请求 -> %s", path.c_str());
@@ -1397,6 +1408,12 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   std::wstring rest;
   if (!msg::SplitType(frame, &type, &rest)) return;
 
+  // 导出要跨页面、宿主线程、文件三层，出问题时只有这一条时间线能对齐
+  if (type == L"export" ||
+      (type.rfind(L"export-", 0) == 0 && type != L"export-progress")) {
+    LogLine(L"VIEWER: 页面消息 %s|%s", type.c_str(), rest.c_str());
+  }
+
   if (type == L"event") {
     const std::wstring kind = msg::SecondField(rest);
     const std::wstring detail = rest.size() > kind.size() + 1 ? rest.substr(kind.size() + 1) : L"";
@@ -1441,8 +1458,18 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
 
   if (type == L"export-ready") {
     if (!st->exporting) return;
-    const bool ok = WebHostExportPdf(st->hwndSelf, st->exportPath);
-    LogLine(L"VIEWER: 导出内容就绪，PrintToPdfStream %s", ok ? L"成功" : L"失败");
+    // export-ready|<段号 0 基>|<总段数>
+    const size_t sep = rest.find(L'|');
+    const int seg = _wtoi(rest.c_str());
+    const int segs = sep == std::wstring::npos ? 1 : _wtoi(rest.c_str() + sep + 1);
+    st->exportSeg = seg;
+    st->exportSegs = segs > 0 ? segs : 1;
+    // 每段单独计时：整轮由页面串行驱动，不能让 3 分钟超时只够第一份
+    st->pagedStartTick = ::GetTickCount64();
+    const std::wstring target = SegmentedPath(st->exportPath, st->exportSeg, st->exportSegs);
+    const bool ok = WebHostExportPdf(st->hwndSelf, target);
+    LogLine(L"VIEWER: 第 %d/%d 份内容就绪，PrintToPdfStream %s -> %s", st->exportSeg + 1,
+            st->exportSegs, ok ? L"已发起" : L"失败", target.c_str());
     if (!ok) EndExport(st, L"导出失败：预览引擎不可用");
     return;
   }
@@ -1458,14 +1485,35 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   }
 
   if (type == L"export-done") {
-    LogLine(L"VIEWER: 导出完成 %s", rest.c_str());
+    // 一份写完（宿主线程的回调）：让页面继续铺下一份，全部铺完由页面收尾
+    if (!st->exporting) return;
+    ++st->exportOk;
+    LogLine(L"VIEWER: 第 %d/%d 份已写入 %s", st->exportSeg + 1, st->exportSegs, rest.c_str());
+    if (st->exportSegs > 1) SetStatus(st, L"已生成 %d/%d 份", st->exportOk, st->exportSegs);
+    wchar_t ack[32];
+    ::StringCchPrintfW(ack, ARRAYSIZE(ack), L"export-ack|%d", st->exportSeg);
+    WebHostPost(st->hwndSelf, ack);
+    return;
+  }
+
+  if (type == L"export-all-done") {
+    const int segs = _wtoi(rest.c_str());
+    const std::wstring leaf = UtilLeafName(st->exportPath.c_str());
+    LogLine(L"VIEWER: 导出完成，共 %d 份", segs);
     EndExport(st, nullptr);
-    SetStatus(st, L"已导出 PDF：%s", UtilLeafName(rest.c_str()));
+    if (segs > 1) {
+      SetStatus(st, L"已导出 %d 份 PDF", segs);
+    } else {
+      SetStatus(st, L"已导出 PDF：%s", leaf.c_str());
+    }
     return;
   }
 
   if (type == L"export-error") {
+    // 宿主写失败的这一份要明确通知页面：它正停在 waitExportAck 上
+    const bool fromHost = st->exporting;
     LogLine(L"VIEWER: 导出失败：%s", rest.c_str());
+    if (fromHost) WebHostPost(st->hwndSelf, L"export-fail|" + rest);
     EndExport(st, nullptr);
     SetStatus(st, L"%s", rest.empty() ? L"导出失败" : rest.c_str());
     return;
@@ -2104,6 +2152,9 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->pagedStartTick = 0;
   st->exporting = false;
   st->exportPath.clear();
+  st->exportSeg = 0;
+  st->exportSegs = 1;
+  st->exportOk = 0;
   // 初始底色：第一帧占位就要按主题铺，不能等 PushChrome（它要页面就绪才跑）
   st->bgColor = st->darkMode ? RGB(0x28, 0x2C, 0x34) : ::GetSysColor(COLOR_WINDOW);
   {
@@ -2155,4 +2206,24 @@ void ViewerNotifyConfigChanged(void) {
   for (HWND hwnd : targets) {
     if (::IsWindow(hwnd)) ::PostMessageW(hwnd, WM_MDV_CONFIG_CHANGED, 0, 0);
   }
+}
+
+// 只给 tools/hosttest：跳过保存对话框，其余流程与右键菜单一致（皮肤、分段、状态栏）。
+bool ViewerTestExport(HWND hViewer, const wchar_t* path) {
+  if (!hViewer || !path || !*path) return false;
+  ViewerState* st = reinterpret_cast<ViewerState*>(::GetWindowLongPtrW(hViewer, GWLP_USERDATA));
+  if (!st || !st->docOpened || !st->hasHost || st->webFailed || !WebHostIsReady()) return false;
+  if (st->exporting) return false;
+
+  st->exportPath = path;
+  st->exporting = true;
+  st->exportSeg = 0;
+  st->exportSegs = 1;  // 页面在 export-ready 里报真实段数
+  st->exportOk = 0;
+  st->pagedSkin = true;
+  st->pagedStartTick = ::GetTickCount64();
+  LogLine(L"VIEWER: 测试导出请求 -> %s", path);
+  SetStatus(st, L"正在准备导出…");
+  PushChrome(st);
+  return WebHostPost(hViewer, L"export|");
 }

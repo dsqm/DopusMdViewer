@@ -23,6 +23,7 @@
 #include "../../src/settings_dlg.h"
 #include "../../src/webhost.h"
 #include "../../src/log.h"
+#include "../../src/util.h"
 
 namespace {
 
@@ -61,7 +62,6 @@ const UINT_PTR kWsSelTimerId = 34;
 const UINT_PTR kSettingsCloseTimerId = 35;
 const UINT_PTR kTableGeomTimerId = 36;
 const UINT_PTR kExportPushTimerId = 37;
-const UINT_PTR kExportGoTimerId = 38;
 const UINT_PTR kExportCheckTimerId = 39;
 const UINT kTwoAfterMs = 3000;
 const UINT kTwoCloseAfterMs = 6500;  // two 模式下关掉第二个查看器，验宿主交回
@@ -434,8 +434,8 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
             L"requestAnimationFrame(step);},3000);";
         if (g_viewer) WebHostExecuteScript(g_viewer, script);
       } else if (wParam == kExportPushTimerId) {
-        // export 模式第 1 步：与右键菜单同一条消息，让页面把全文铺进打印容器。
-        // 页面未就绪就 1 秒后再看：这里不依赖固定延时去猜加载速度。
+        // export 模式：走查看器自己的导出流程（跳过保存对话框），页面与宿主的分段
+        // 握手因此与右键菜单完全一致。
         ::KillTimer(hwnd, kExportPushTimerId);
         if (!g_viewer) {
           ExportNote(L"没有查看器");
@@ -445,21 +445,22 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
           ::SetTimer(hwnd, kExportPushTimerId, 1000, nullptr);
           return 0;
         }
-        const bool posted = WebHostPost(g_viewer, L"export|");
-        ExportNote(L"铺全文请求 %s，等 %u ms", posted ? L"已发出" : L"失败", g_exportWaitMs);
-        if (posted) ::SetTimer(hwnd, kExportGoTimerId, g_exportWaitMs, nullptr);
-      } else if (wParam == kExportGoTimerId) {
-        // 第 2 步：宿主侧 PrintToPdfStream（异步，回调里写文件）
-        ::KillTimer(hwnd, kExportGoTimerId);
-        const bool ok = g_viewer && WebHostExportPdf(g_viewer, g_szPdf);
-        ExportNote(L"PrintToPdfStream %s -> %s", ok ? L"已发起" : L"失败", g_szPdf);
-        ::SetTimer(hwnd, kExportCheckTimerId, 6000, nullptr);
+        const bool ok = ViewerTestExport(g_viewer, g_szPdf);
+        ExportNote(L"测试导出请求 %s -> %s", ok ? L"已发出" : L"失败", g_szPdf);
+        if (ok) ::SetTimer(hwnd, kExportCheckTimerId, g_exportWaitMs, nullptr);
       } else if (wParam == kExportCheckTimerId) {
         ::KillTimer(hwnd, kExportCheckTimerId);
-        const DWORD attr = ::GetFileAttributesW(g_szPdf);
-        ExportNote(L"结果 %s（attr=0x%08lX）",
-                   attr == INVALID_FILE_ATTRIBUTES ? L"文件不存在" : L"文件已生成",
-                   static_cast<unsigned long>(attr));
+        // 分段时第一份是 -01.pdf；单份就是原路径
+        std::wstring seg1 = g_szPdf;
+        const size_t dot = seg1.find_last_of(L'.');
+        if (dot != std::wstring::npos) {
+          seg1 = seg1.substr(0, dot) + L"-01" + seg1.substr(dot);
+        }
+        const DWORD whole = ::GetFileAttributesW(g_szPdf);
+        const DWORD first = ::GetFileAttributesW(seg1.c_str());
+        ExportNote(L"结果 单份=%s 首段=%s",
+                   whole == INVALID_FILE_ATTRIBUTES ? L"无" : L"有",
+                   first == INVALID_FILE_ATTRIBUTES ? L"无" : L"有");
       } else if (wParam == kDumpTimerId) {
         ::KillTimer(hwnd, kDumpTimerId);
         const wchar_t* script =
@@ -949,6 +950,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
   g_hInst = hInstance;
   ExtractArgs(lpCmdLine);
   ConfigGet();  // 让 hosttest 也遵守 enableLog
+  // export 模式要看清加载与导出两条链路的日志：数据目录在 hosttest 里解析不出，
+  // 只剩 OutputDebugString 这一个出口，开关必须在这里就打开。
+  if (g_export) LogSetEnabled(true);
 
   // 模拟 InitEx 之后的延迟预热（预热在宿主线程里再等 3 秒）。
   if (g_prewarm) WebHostPrewarm(true, 3);
@@ -1029,6 +1033,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     if (slash) *(slash + 1) = 0;
     ::StringCchPrintfW(g_szPdf, ARRAYSIZE(g_szPdf), L"%shosttest-export.pdf", exe);
     ExportNote(L"export 模式启动，输出 %s", g_szPdf);
+    ExportNote(L"数据目录=[%s]", UtilDataDir().c_str());
     ::SetTimer(g_hwndMain, kExportPushTimerId, g_shotAfterMs, nullptr);
   }
   if (g_consent) {
@@ -1071,8 +1076,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPWSTR lpCmdLine, int 
     ::SetTimer(g_hwndMain, kShotTimerId, g_shotAfterMs, nullptr);
   }
   if (!g_release) {
-    // export 模式要按等待时长顺延，否则大文档还在铺全文就被 40 秒的默认退出掐掉
-    const UINT quitMs = g_export ? (g_shotAfterMs + g_exportWaitMs + 60000)
+    // export 模式按等待时长顺延，否则大文档还在铺全文就被 40 秒的默认退出掐掉；
+    // 分段导出是分钟级，这里直接给足 20 分钟
+    const UINT quitMs = g_export ? (g_shotAfterMs + 1200000)
                                  : (g_drop ? kDropQuitAfterMs : kQuitAfterMs);
     ::SetTimer(g_hwndMain, kQuitTimerId, quitMs, nullptr);
   }

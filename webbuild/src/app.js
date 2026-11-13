@@ -64,6 +64,12 @@ const SEL_EDGE = 42           // 拖选到离视口边缘多少 px 开始自动�
 const PRINT_MAX_FILE = 2 * 1024 * 1024
 const PRINT_BATCH = 200
 
+// 分段导出：每份按「内容量」切，不按块数——块大小差得很远（5 MB 样本有 14.7 万块，
+// 平均每块只有几十字节）。超过上限就拒绝，再多份数也没有使用价值。
+const EXPORT_SEG_BYTES = 512 * 1024
+const EXPORT_MAX_SEGS = 30
+const EXPORT_ACK_MS = 180000  // 等宿主写完一份的上限
+
 // 全选复制：复制的是渲染后的文本（不是 Markdown 源文本）。整篇提取有成本，
 // 超过这个字符数就截断并提示；1M 级文档可以完整复制，再大只复制前缀。
 const COPY_MAX_CHARS = 1200000
@@ -882,6 +888,34 @@ const PRINT = {
 }
 
 const COPY = { busy: false }
+
+// 分段导出时页面与宿主的握手：页面铺好一份 → 宿主写文件 → 回 ack → 页面继续。
+const EXPORT = { ack: null }
+
+function exportAck(ok) {
+  const fn = EXPORT.ack
+  if (!fn) return
+  EXPORT.ack = null
+  fn(ok)
+}
+
+function waitExportAck() {
+  return new Promise((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      EXPORT.ack = null
+      resolve(false)
+    }, EXPORT_ACK_MS)
+    EXPORT.ack = (ok) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(ok)
+    }
+  })
+}
 
 const OUT = {
   items: [],
@@ -5308,14 +5342,16 @@ function waitImages(root) {
   return Promise.race([all, new Promise((resolve) => setTimeout(resolve, 4000))])
 }
 
-async function buildPrintView(onProgress) {
+async function buildPrintView(onProgress, first, last) {
   const docId = V.docId
   const total = V.blockCount
+  const begin = Math.max(0, first || 0)
+  const end = Math.min(total, last === undefined ? total : last)
   const parts = []
-  for (let from = 0; from < total; from += PRINT_BATCH) {
+  for (let from = begin; from < end; from += PRINT_BATCH) {
     if (docId !== V.docId) throw new Error('文档已切换')
     if (PRINT.cancel) throw Object.assign(new Error('已取消'), { cancelled: true })
-    const count = Math.min(PRINT_BATCH, total - from)
+    const count = Math.min(PRINT_BATCH, end - from)
     const res = await fetch(BLOCKS_URL + '?from=' + from + '&count=' + count, { cache: 'no-store' })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const items = parseFrames(await res.arrayBuffer())
@@ -5334,6 +5370,7 @@ async function buildPrintView(onProgress) {
       if (it.flags & 0x80) html += '<p>（块过大，打印时已截断）</p>'
       parts.push('<div class="pblk">' + html + '</div>')
     }
+    // 进度按全文块数算：分段时条子也是整篇走到 100%
     if (onProgress) onProgress(from + count, total)
   }
   if (docId !== V.docId) throw new Error('文档已切换')
@@ -5404,31 +5441,73 @@ async function startExport() {
     postRaw('export-error|上一次打印或导出还没结束')
     return
   }
+
+  // 超大文档按内容量切成几份，一份一个 PDF：整篇塞进一个 DOM 时引擎分页会长时间
+  // 不返回（5 MB 实测如此），切成小份才能真的产出来。小文档仍是一份。
+  let segBlocks = V.blockCount
+  if (V.fileSize > PRINT_MAX_FILE && V.blockCount > 0) {
+    const avg = V.fileSize / V.blockCount
+    if (avg > 0) segBlocks = Math.max(PRINT_BATCH * 2, Math.floor(EXPORT_SEG_BYTES / avg))
+  }
+  const segs = Math.max(1, Math.ceil(V.blockCount / Math.max(1, segBlocks)))
+  if (segs > EXPORT_MAX_SEGS) {
+    postRaw('export-error|文档太大：需要切成 ' + segs + ' 份，超过上限 ' + EXPORT_MAX_SEGS)
+    return
+  }
+
   PRINT.busy = true
   PRINT.mode = 'export'
   PRINT.cancel = false
   PRINT.docId = V.docId
+
   const t0 = performance.now()
   try {
-    const root = await buildPrintView((done, total) => {
-      if (PRINT.cancel) return
-      postRaw('export-progress|' + done + '|' + total)
-    })
-    if (PRINT.docId !== V.docId || !V.active) {
-      root.remove()
-      PRINT.busy = false
-      PRINT.mode = ''
-      postRaw('export-error|文档已切换')
-      return
+    for (let seg = 0; seg < segs; seg++) {
+      if (PRINT.cancel) {
+        PRINT.busy = false
+        PRINT.mode = ''
+        postRaw('export-error|已取消导出')
+        return
+      }
+      const from = seg * segBlocks
+      const to = Math.min(from + segBlocks, V.blockCount)
+      const root = await buildPrintView((done, total) => {
+        if (PRINT.cancel) return
+        postRaw('export-progress|' + done + '|' + total)
+      }, from, to)
+
+      if (PRINT.docId !== V.docId || !V.active) {
+        root.remove()
+        PRINT.busy = false
+        PRINT.mode = ''
+        postRaw('export-error|文档已切换')
+        return
+      }
+
+      PRINT.root = root
+      const n = root.querySelectorAll('.pblk').length
+      report('export-ready', (performance.now() - t0).toFixed(0) + '|' + n + '|' + seg + '/' + segs)
+      // 铺完只是把 DOM 造好：引擎还要排版分页，这一段没有进度可报
+      postRaw('status|正在生成 PDF' + (segs > 1 ? '（' + (seg + 1) + '/' + segs + '）' : '') + '…')
+      postRaw('export-ready|' + seg + '|' + segs)
+
+      // 等宿主把这一份写完再铺下一份：容器同时只能有一份
+      const ok = await waitExportAck()
+      if (PRINT.root) {
+        PRINT.root.remove()
+        PRINT.root = null
+      }
+      if (!ok) {
+        PRINT.busy = false
+        PRINT.mode = ''
+        return
+      }
     }
-    PRINT.root = root
-    const n = root.querySelectorAll('.pblk').length
-    report('export-ready', (performance.now() - t0).toFixed(0) + '|' + n)
-    // 铺完只是把 DOM 造好：引擎还要排版分页，这一段没有进度可报
-    postRaw('status|正在生成 PDF…')
-    postRaw('export-ready')
-    // 宿主生成完会发 export-end| 清场；消息丢了也不能把全文 DOM 永远留在页面里
-    PRINT.timer = setTimeout(cleanupPrint, 10 * 60 * 1000)
+
+    PRINT.busy = false
+    PRINT.mode = ''
+    PRINT.cancel = false
+    postRaw('export-all-done|' + segs)
   } catch (err) {
     const cancelled = !!(err && err.cancelled)
     const msg = String((err && err.message) || err)
@@ -5549,9 +5628,21 @@ function onHostMessage(event) {
     return
   }
 
+  if (type === 'export-ack') {
+    // 宿主写完一份：继续铺下一份
+    exportAck(true)
+    return
+  }
+
+  if (type === 'export-fail') {
+    exportAck(false)
+    return
+  }
+
   if (type === 'export-end') {
-    // 宿主已经收尾（完成、失败或取消）：铺全文的循环若还在跑，下一批就会退出
+    // 宿主已经收尾（完成、失败或取消）：等 ack 的循环与铺全文的循环都收手
     PRINT.cancel = true
+    exportAck(false)
     cleanupPrint()
     return
   }
