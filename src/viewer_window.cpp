@@ -43,27 +43,26 @@ constexpr UINT kDarkPollMs = 500;
 // 对话框关闭后补做被延后的加载（见 HandleLoad）
 constexpr UINT kMsgPendingLoad = WM_APP + 0x312;
 constexpr ULONGLONG kPrintLightMaxMs = 6ull * 60 * 1000;
-// 导出等引擎回调的上限：渲染进程崩掉时回调不会来。单份不超 2 MB，
-// 正常几秒内结束，留 3 分钟足够，且卡死后能比较快恢复可用状态。
-constexpr ULONGLONG kExportTimeoutMs = 3ull * 60 * 1000;
-// 分段：单份不超过 2 MB（再大引擎分页就不返回）。每份放多少块由页面按真实块数
-// 与文件大小算——索引完成后块数可能比估计值多一倍，这边算会和页面算出不同的份数。
-constexpr int kExportMaxSegs = 30;
+// 导出等引擎回调的上限：渲染进程崩掉时回调不会来。与 webhost 的 pdfBusy 回收
+// （5 分钟）同长，否则宿主先放弃、引擎还在写，会留下孤儿 .part 文件。
+// 单份按排版量切分，普通版面几秒、密集版面几十秒。
+constexpr ULONGLONG kExportTimeoutMs = 5ull * 60 * 1000;
+// 分段：单份源文本不超过 512 KB，且按采样得到的 DOM 节点密度切到分页成本拐点
+// （引擎分页耗时随单段 DOM 规模超线性增长，段做大反而更慢）。
+// 上限只作保护阀，不再是「文档大小」的天花板。
+constexpr int kExportMaxSegs = 512;
 // 页面协议版本：与 app.js 的 PAGE_PROTO 一一对应。只换 DLL 不换 web 资源时，
 // 旧页面发的是旧帧格式（export-ready 不带页数估算），静默解析会让进度估成错的，
 // 所以两边对不上就直接拒绝导出并提示。
-constexpr int kPageProto = 4;
-// 引擎分页（PrintToPdfStream）没有进度回调，预告时长与百分比只能折算。量过三份文档：
-// 小文档 2–3 秒；512 KB 普通正文约 5 秒（约 350 页）；512 KB 的密集样本（表格/代码块/
-// 公式堆在一起）约 50–60 秒（约 800 页）。块数与字节数都撑不住这个差异——同样 1.48 万块，
-// 0.5 MB 与 1.9 MB 都是 60 秒上下；每页耗时也差 8 倍。**排版对象个数（DOM 节点数）**
-// 才是共同来源，所以页面把页数与节点数一起报上来，这里按节点折算，每份写完用实测校正。
-constexpr double kExportBaseMs = 2600;      // 引擎起分页与写文件的固定开销
-// 实测每节点：普通正文 0.07 毫秒、表格/公式密集 0.25 毫秒（同样 512 KB，前者 5.5 秒、
-// 后者 50 秒）。初值取小的那个：预估偏小只是条子早点跳完，偏大会让人觉得卡住。
-constexpr double kExportPerNodeMs = 0.10;
-constexpr double kExportPerPageMs = 30.0;   // 拿不到节点数时的兜底（按页）
-constexpr double kExportPerBlockMs = 1.0;   // 连页数也没有时的兜底（按块）
+constexpr int kPageProto = 5;
+// 引擎分页（PrintToPdfStream）没有进度回调，预告时长与百分比只能折算。排版对象个数
+// （DOM 节点数）是唯一与耗时同向的量；分段按节点预算切到成本拐点后，各份规模接近，
+// 用「实测毫秒 / 节点数」这个单价折算即可。旧版按「2.6 秒固定开销 + 单价」拟合，
+// 那是大段时代的截距：现在一份约 2 万节点、2.3 秒，固定开销会把预告抬到 5.7 秒。
+constexpr double kExportMinMs = 1500;       // 起分页与写文件的下限，小文档按它兜底
+constexpr double kExportPerNodeMs = 0.11;   // 约 2.3 秒 / 2.1 万节点
+constexpr double kExportPerPageMs = 16.0;   // 拿不到节点数时的兜底（按页）
+constexpr double kExportPerBlockMs = 0.8;   // 连页数也没有时的兜底（按块）
 
 double g_exportMsPerNode = kExportPerNodeMs;
 double g_exportMsPerPage = kExportPerPageMs;
@@ -82,35 +81,33 @@ double PredictExportMs(int nodes, int pages, int blocks) {
   } else {
     body = g_exportMsPerBlock * (blocks > 0 ? blocks : 0);
   }
-  const double ms = kExportBaseMs + body;
-  if (ms < 1500) return 1500;
-  if (ms > 10.0 * 60 * 1000) return 10.0 * 60 * 1000;
-  return ms;
+  if (body < kExportMinMs) return kExportMinMs;
+  if (body > 10.0 * 60 * 1000) return 10.0 * 60 * 1000;
+  return body;
 }
 
 // 按实测校正折算系数：页面报了什么就校正什么（节点优先，其后页数、块数）。
-// 量太小的时候耗时几乎全是固定开销，反推出来的单价没有意义，跳过（否则系数会被带偏）。
+// 量太小的时候耗时几乎全在下限里，反推出来的单价没有意义，跳过（否则系数会被带偏）。
 // first = 本次导出的第一份：上一轮的系数可能来自完全不同的文档，直接换成这次量到的值；
 // 之后几份内容量相近，取加权平均把单次抖动压掉（直接覆盖会让进度条一跳一跳）。
 void CalibrateExport(double spentMs, int nodes, int pages, int blocks, bool first) {
-  const double body = spentMs - kExportBaseMs;
-  if (body <= 0) return;
+  if (spentMs <= 0) return;
   if (nodes > 200) {
-    double v = body / nodes;
+    double v = spentMs / nodes;
     if (v < 0.01) v = 0.01;
     if (v > 200.0) v = 200.0;
     g_exportMsPerNode = first ? v : g_exportMsPerNode * 0.3 + v * 0.7;
     return;
   }
   if (pages > 0) {
-    double v = body / pages;
+    double v = spentMs / pages;
     if (v < 1.0) v = 1.0;
     if (v > 500.0) v = 500.0;
     g_exportMsPerPage = first ? v : g_exportMsPerPage * 0.3 + v * 0.7;
     return;
   }
   if (blocks < 2000) return;
-  double v = body / blocks;
+  double v = spentMs / blocks;
   if (v < 0.05) v = 0.05;
   if (v > 60.0) v = 60.0;
   g_exportMsPerBlock = first ? v : g_exportMsPerBlock * 0.3 + v * 0.7;
@@ -565,11 +562,12 @@ bool PickPdfTarget(ViewerState* st, std::wstring* out) {
   return picked;
 }
 
-// 分段的中间文件：<name>.part01.pdf …。全部写完再合并成用户要的那一份。
+// 分段的中间文件：<name>.part001.pdf …。全部写完再合并成用户要的那一份。
+// 三位编号：上百段时文件名仍等宽，清理脚本按序号匹配不会漏。
 std::wstring PartPath(const std::wstring& base, int seg, int segs) {
   if (segs <= 1) return base;
   wchar_t suffix[24];
-  ::StringCchPrintfW(suffix, ARRAYSIZE(suffix), L".part%02d", seg + 1);
+  ::StringCchPrintfW(suffix, ARRAYSIZE(suffix), L".part%03d", seg + 1);
   const size_t dot = base.find_last_of(L'.');
   const size_t slash = base.find_last_of(L"\\/");
   if (dot == std::wstring::npos || (slash != std::wstring::npos && dot < slash)) {
@@ -1723,7 +1721,7 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     st->exportSegs = v[1] > 0 ? v[1] : 1;
     st->exportSegPages = v[2] > 0 ? v[2] : 0;
     st->exportSegNodes = v[3] > 0 ? v[3] : 0;
-    // 每段单独计时：整轮由页面串行驱动，不能让 3 分钟超时只够第一份
+    // 每段单独计时：整轮由页面串行驱动，总耗时可以是几十分钟
     st->pagedStartTick = ::GetTickCount64();
     st->waitingPdf = true;
     st->lastStatusSec = 0;
@@ -2437,10 +2435,10 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
             UpdateExportStatus(st);
           }
         }
-        // 页面不回计划说明链路断了，别让「正在准备」无声挂着
-        if (st->exportPlanPending && ::GetTickCount64() - st->planTick > 10000) {
+        // 页面先等全文索引（最长 20 秒）再采样节点密度算计划，超时给足余量
+        if (st->exportPlanPending && ::GetTickCount64() - st->planTick > 60000) {
           st->exportPlanPending = false;
-          LogLine(L"VIEWER: 10 秒内没收到导出计划，放弃");
+          LogLine(L"VIEWER: 60 秒内没收到导出计划，放弃");
           SetStatus(st, L"导出准备超时（页面无响应）");
         }
         return 0;

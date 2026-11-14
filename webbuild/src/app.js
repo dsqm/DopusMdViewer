@@ -64,14 +64,27 @@ const SEL_EDGE = 42           // 拖选到离视口边缘多少 px 开始自动�
 const PRINT_MAX_FILE = 2 * 1024 * 1024
 const PRINT_BATCH = 200
 
-// 分段导出的份数上限：与宿主侧同一档，宿主算好的每份块数由 export| 帧带下来，
-// 这里只按实际块数核对，超了就拒绝（再多份数也没有使用价值）。
-const EXPORT_MAX_SEGS = 30
-const EXPORT_ACK_MS = 180000  // 等宿主写完一份的上限
+// 分段导出的份数上限：与宿主侧同一档。段数不再是「文档大小」的天花板——
+// 40 MB 文档实测切成 83 段，密集版面按节点预算切会更细，留足余量。
+const EXPORT_MAX_SEGS = 512
+const EXPORT_ACK_MS = 300000  // 等宿主写完一份的上限，与宿主的 5 分钟回收一致
+
+// 每段的目标排版量。实测引擎分页耗时随单段 DOM 规模超线性增长：43k 节点约 5.5 秒
+// （0.07 毫秒/节点），74k 节点约 12 秒（0.13 毫秒/节点）。把段做大只会少付几次
+// 启动开销，远不够补回分页变慢；按「节点数」切到成本拐点才划算。密集版面因此
+// 切得更细，单份不会再拖到几十秒。
+const EXPORT_NODE_BUDGET = 45000
+// 采样只渲染少量块，实测会低估实际密度（约 1.6 倍）；切段按保守值算，
+// 宁可多切一份，也不要让某一份落进超线性区。
+const EXPORT_DENSITY_FACTOR = 2
+const EXPORT_MAX_SEG_BYTES = 512 * 1024    // 单段源文本硬上限：再大引擎分页不返回
+const EXPORT_MIN_SEG_BYTES = 64 * 1024     // 单段下限：避免极密集版面切出过多份
+const EXPORT_SAMPLE_SPOTS = 6              // 采样点数量（均匀分布在全文）
+const EXPORT_SAMPLE_BLOCKS = 400           // 每个采样点渲染的块数
 
 // 页面协议版本：与插件里 kPageProto 一一对应。改动两边交互的帧格式时一起加一，
 // 只换 DLL 不换 web 资源会被宿主发现并提示，不会静默按旧格式解析。
-const PAGE_PROTO = 4
+const PAGE_PROTO = 5
 
 // 全选复制：复制的是渲染后的文本（不是 Markdown 源文本）。整篇提取有成本，
 // 超过这个字符数就截断并提示；1M 级文档可以完整复制，再大只复制前缀。
@@ -458,7 +471,10 @@ function copyButtonHtml(kind, extraAttrs) {
     ' title="' + label + '" aria-label="' + label + '">' + iconSvg('i-copy') + '</button>'
 }
 
-md.renderer.rules.fence = (tokens, idx) => {
+md.renderer.rules.fence = (tokens, idx, options, env) => {
+  // 打印/导出用的 DOM 只交给引擎排版：@media print 已隐藏的行号、空白标记、
+  // 复制按钮不再生成。纸面内容一字不变，节点数却少一大块（引擎耗时按节点走）。
+  const lean = !!(env && env.lean)
   const token = tokens[idx]
   const info = (token.info || '').trim()
   const lang = info.split(/\s+/)[0].toLowerCase()
@@ -482,8 +498,8 @@ md.renderer.rules.fence = (tokens, idx) => {
   } else {
     body = escapeHtml(code)
   }
-  // 空白符标记：字形在伪元素里，文本节点原样保留
-  body = markWhitespace(body, state.render.codeWs, true)
+  // 空白符标记：字形在伪元素里，文本节点原样保留；打印时不生成（打印样式已关掉它们）
+  if (!lean) body = markWhitespace(body, state.render.codeWs, true)
 
   const cls = 'language-' + (lang || 'none')
   const note = tooHuge
@@ -493,14 +509,15 @@ md.renderer.rules.fence = (tokens, idx) => {
 
   // 复制按钮取的是 <code> 的 textContent：hljs 只加 span 不改字符，
   // 所以拿到的就是源码原文，不用另存一份。
-  const btn = state.render.copyCode ? copyButtonHtml('code') : ''
+  const btn = !lean && state.render.copyCode ? copyButtonHtml('code') : ''
   // 行号格子挂在 <code> 里而不是 <pre> 里：<pre> 内可能先有一个 .code-note，
-  // 锚在 <code> 上就不用管它把首行推下去多少。
+  // 锚在 <code> 上就不用管它把首行推下去多少。打印时只保留类名（打印样式靠
+  // .has-ln 把左内边距清零），不生成格子本身。
   let gutter = ''
   let lnCls = ''
   if (state.render.lineNumbers) {
     const shown = displayLines(code)
-    gutter = lineGutter(shown)
+    if (!lean) gutter = lineGutter(shown)
     lnCls = ' has-ln ' + lineGutterWidth(shown)
   }
   return '<div class="mdv-cb">' + btn
@@ -517,13 +534,14 @@ md.renderer.rules.code_block = (tokens, idx, options, env, self) => {
   if (!state.render.indentedBlocks) {
     return defaultCodeBlock(tokens, idx, options, env, self)
   }
+  const lean = !!(env && env.lean)
   const code = tokens[idx].content
-  const body = markWhitespace(escapeHtml(code), state.render.codeWs, true)
+  const body = lean ? escapeHtml(code) : markWhitespace(escapeHtml(code), state.render.codeWs, true)
   let gutter = ''
   let lnCls = ''
   if (state.render.lineNumbers) {
     const shown = displayLines(code)
-    gutter = lineGutter(shown)
+    if (!lean) gutter = lineGutter(shown)
     lnCls = ' has-ln ' + lineGutterWidth(shown)
   }
   return '<pre><code' + (lnCls ? ' class="' + lnCls.trim() + '"' : '') + '>' + gutter + body
@@ -550,7 +568,7 @@ md.renderer.rules.table_close = (tokens, idx, options, env, self) => {
   while (open >= 0 && tokens[open].type !== 'table_open') open--
   const map = open >= 0 ? tokens[open].map : null
   let btn = ''
-  if (state.render.copyTable && map && env) {
+  if (state.render.copyTable && map && env && !env.lean) {
     const lines = ' data-l0="' + map[0] + '" data-l1="' + map[1] + '"'
     if (Number.isInteger(env.blockIndex)) {
       // 线上路径：逐块解析，行号相对本块，点的时候按块号回源
@@ -1141,12 +1159,17 @@ function sanitizeBlock(html, text) {
   return text.includes('<') ? sanitize(html) : html
 }
 
-function renderBlockHtml(text, flags, i) {
-  const cached = htmlCacheGet(i)
-  if (cached !== null) return cached
+function renderBlockHtml(text, flags, i, lean) {
+  // 导出是单向顺序遍历，缓存命中率为零，还会把屏幕预览常驻块的缓存挤掉；
+  // 打印态的 HTML 与屏幕态也不同，绝不能混用同一份缓存。
+  if (!lean) {
+    const cached = htmlCacheGet(i)
+    if (cached !== null) return cached
+  }
   let html
   try {
     const env = blockEnv()
+    if (lean) env.lean = true
     // 表格复制按钮要带块号，点击时才回源文档按 token.map 切 Markdown 源码
     env.blockIndex = i
     const slug = SLUG.byBlock.get(i)
@@ -1173,7 +1196,7 @@ function renderBlockHtml(text, flags, i) {
     report('render-error', String(err))
     html = '<pre>' + escapeHtml(text) + '</pre>'
   }
-  htmlCachePut(i, html)
+  if (!lean) htmlCachePut(i, html)
   return html
 }
 
@@ -4017,13 +4040,14 @@ function bigTextAsTsv(text) {
 
 // 一块的分块表 HTML。markdown-it 的表格规则会给整表套一层 .mdv-cb 与复制按钮，
 // 这里只取 <table> 本身——按钮由外层那一个负责。
-function bigTableChunkHtml(header, rows, withHead) {
+function bigTableChunkHtml(header, rows, withHead, lean) {
   if (!rows.length) return ''
   const src = header + '\n' + rows.join('\n') + '\n'
   let html
   try {
     const env = blockEnv()
     env.blockIndex = -1
+    if (lean) env.lean = true   // 打印用的整表不要复制按钮
     html = md.render(src, env)
   } catch (err) {
     report('bigtable-render', String(err))
@@ -4529,7 +4553,7 @@ async function bigTablePrintHtml(i) {
   const lines = text.split('\n')
   if (lines.length && lines[lines.length - 1] === '') lines.pop()
   if (lines.length < 3) return ''
-  const html = bigTableChunkHtml(lines[0] + '\n' + lines[1], lines.slice(2), true)
+  const html = bigTableChunkHtml(lines[0] + '\n' + lines[1], lines.slice(2), true, true)
   return html ? '<div class="bt-print">' + html + '</div>' : ''
 }
 
@@ -5345,9 +5369,10 @@ function waitImages(root) {
   return Promise.race([all, new Promise((resolve) => setTimeout(resolve, 4000))])
 }
 
-async function buildPrintView(onProgress, first, last) {
+async function buildPrintView(onProgress, first, last, fixedTotal) {
   const docId = V.docId
-  const total = V.blockCount
+  // 导出时把总块数冻在计划那一刻：全文索引后续若又变动，段边界不能跟着漂移
+  const total = fixedTotal > 0 ? fixedTotal : V.blockCount
   const begin = Math.max(0, first || 0)
   const end = Math.min(total, last === undefined ? total : last)
   const parts = []
@@ -5368,7 +5393,7 @@ async function buildPrintView(onProgress, first, last) {
           continue
         }
       }
-      let html = renderBlockHtml(it.text, it.flags, it.i)
+      let html = renderBlockHtml(it.text, it.flags, it.i, true)
       if (it.i === V.lastVisible && FOOT.html) html += FOOT.html
       if (it.flags & 0x80) html += '<p>（块过大，打印时已截断）</p>'
       parts.push('<div class="pblk">' + html + '</div>')
@@ -5435,38 +5460,122 @@ async function startPrint() {
 
 /* 导出 PDF：与打印共用铺全文这一段，但不弹打印对话框——宿主让引擎直接把页面
    写成 PDF，不经过打印机驱动，文字才保持可复制。进度按块数回报，Esc 可取消。 */
-/* 分段计划：每段约 512 KB 内容。块大小差得很远（5 MB 样本 14.7 万块、平均 36 字节），
-   按固定块数切会切出几十段，所以按「文件大小 / 块数」估每段多少块。 */
-function exportPlan() {
+/* 分段计划按「排版量」而不是字节数。同样一份 3 MB 文档，每份 7.4 万节点时引擎
+   分页要 12 秒（共 38 秒），每份 2.2 万节点时只要 2.3 秒（共 27 秒）——耗时随单段
+   DOM 规模超线性增长，段做大省下的固定开销补不回分页变慢。做法是先在全文均匀取
+   几处样本，用打印态渲染量出「每块平均节点数」，据此把每份切到节点预算附近，
+   再用源文本字节数封顶/托底。 */
+function fullIndexReady() {
+  // 首屏没收尾时全文计数先存在 pendingFullCount 里，V.blockCount 仍是估算值
+  return V.fullIndex && !V.initializing && !V.pendingFullCount
+}
+
+function waitFullIndex(ms) {
+  if (fullIndexReady()) return Promise.resolve()
+  // 前缀只扫 8 MB，全文索引没到手时块数还是估算值；拿它定段数与边界会漏内容
+  return new Promise((resolve) => {
+    const t0 = performance.now()
+    const tick = () => {
+      if (fullIndexReady() || performance.now() - t0 >= ms) resolve()
+      else setTimeout(tick, 50)
+    }
+    tick()
+  })
+}
+
+// 采样容器不进 #print-root，也不影响正在显示的内容：只数打印态 DOM 节点密度。
+async function samplePrintDensity() {
+  const total = V.blockCount
+  const probe = document.createElement('div')
+  probe.style.cssText = 'position:absolute;left:-100000px;top:0;width:718px;'
+  document.body.appendChild(probe)
+  let blocks = 0
+  let nodes = 0
+  try {
+    for (let s = 0; s < EXPORT_SAMPLE_SPOTS; s++) {
+      const from = Math.min(Math.max(0, total - 1),
+        Math.floor((s + 0.5) * total / EXPORT_SAMPLE_SPOTS))
+      const count = Math.min(EXPORT_SAMPLE_BLOCKS, total - from)
+      const res = await fetch(BLOCKS_URL + '?from=' + from + '&count=' + count, { cache: 'no-store' })
+      if (!res.ok) continue
+      const items = parseFrames(await res.arrayBuffer())
+      let html = ''
+      for (const it of items) {
+        if (it.flags & 0x20) continue
+        html += '<div class="pblk">' + renderBlockHtml(it.text, it.flags, it.i, true) + '</div>'
+        blocks++
+      }
+      if (!html) continue
+      probe.innerHTML = html
+      nodes += probe.querySelectorAll('*').length
+    }
+  } catch (err) {
+    report('export-sample', String((err && err.message) || err))
+  } finally {
+    probe.remove()
+  }
+  return blocks > 0 ? nodes / blocks : 0
+}
+
+async function exportPlan() {
+  // 小文档在前缀扫描阶段就已全文索引完，不必等
+  if (V.fileSize > PRINT_MAX_FILE) await waitFullIndex(20000)
   const blocks = Math.max(1, V.blockCount)
   let segBlocks = blocks
   if (V.fileSize > PRINT_MAX_FILE) {
     const avg = V.fileSize / blocks
-    if (avg > 0) segBlocks = Math.max(PRINT_BATCH * 2, Math.floor((512 * 1024) / avg))
+    const density = await samplePrintDensity()
+    const byBytes = avg > 0 ? Math.floor(EXPORT_MAX_SEG_BYTES / avg) : blocks
+    const byNodes = density > 0
+      ? Math.floor(EXPORT_NODE_BUDGET / (density * EXPORT_DENSITY_FACTOR)) : blocks
+    let n = Math.max(1, Math.min(byBytes, byNodes))
+    const minN = avg > 0 ? Math.floor(EXPORT_MIN_SEG_BYTES / avg) : 0
+    if (minN > 0) n = Math.max(n, minN)
+    segBlocks = Math.max(Math.min(PRINT_BATCH * 2, blocks), Math.min(blocks, n))
   }
   return { segBlocks, segs: Math.max(1, Math.ceil(blocks / Math.max(1, segBlocks))) }
 }
 
-/* 估算这一份会印成几页。引擎的排版结果脚本拿不到，只能在屏幕样式下把渲染好的容器
-   量一遍高度：临时改成绝对定位放到屏幕外（#print-root 平时是 display:none，量不到），
-   A4 正文区宽 190 mm、高 277 mm（页边距 10 mm）。与打印样式的差异（行号、表宽、
-   分页规则）是个相对稳定的比例，折算成「每页耗时」时会被一起吸收，所以只拿来进步度
-   与剩余时间，不作别的用途。 */
+/* 粗略估这一份会印成几页。整根量高会强制一次全量布局，而引擎随后还要按打印样式
+   再布局一次，密集版面这一下就能占掉几秒。这里只让 24 个抽样块参与布局，按高度
+   截尾均值外推（巨型表格块能把普通平均值抬高十倍）。页数只用于进度兜底，宿主优先
+   按 DOM 节点数折算；抽样值比真实页数偏小，但足以维持降级时的量级。 */
 function estimatePrintPages(root) {
+  const blks = root.querySelectorAll('.pblk')
+  const n = blks.length
+  if (!n) return 0
   const px = 96 / 25.4
   const pageH = 277 * px
+  const step = Math.max(1, Math.floor(n / 24))
   const prev = root.getAttribute('style')
+  const picked = []
+  root.classList.add('probe-pages')
   root.style.display = 'block'
   root.style.position = 'absolute'
   root.style.left = '-100000px'
   root.style.top = '0'
   root.style.width = (190 * px).toFixed(1) + 'px'
+  for (let i = 0; i < n; i += step) {
+    blks[i].classList.add('probe-on')
+    picked.push(blks[i])
+  }
   let h = 0
   try {
-    h = root.getBoundingClientRect().height
+    const heights = []
+    for (const el of picked) {
+      const mb = parseFloat(getComputedStyle(el).marginBottom) || 0
+      heights.push(el.getBoundingClientRect().height + mb)
+    }
+    heights.sort((a, b) => a - b)
+    const mid = heights[Math.floor(heights.length / 2)] || 0
+    let sum = 0
+    for (const x of heights) sum += Math.min(x, mid * 4)
+    h = heights.length ? (sum / heights.length) * n : 0
   } catch (err) {
     h = 0
   }
+  for (const el of picked) el.classList.remove('probe-on')
+  root.classList.remove('probe-pages')
   if (prev === null) root.removeAttribute('style')
   else root.setAttribute('style', prev)
   return h > 0 ? Math.ceil(h / pageH) : 0
@@ -5482,8 +5591,11 @@ async function startExport(segBlocks, planSegs) {
     return
   }
 
-  const blocks = segBlocks > 0 ? segBlocks : V.blockCount
-  const segs = planSegs > 0 ? planSegs : Math.max(1, Math.ceil(V.blockCount / Math.max(1, blocks)))
+  // 计划是在全文索引就绪后算的，把总块数冻在这里：段边界用同一个分母，
+  // 后续索引再变动也不会让最后一段突然塞进远超计划的块数。
+  const totalBlocks = Math.max(1, V.blockCount)
+  const blocks = segBlocks > 0 ? segBlocks : totalBlocks
+  const segs = planSegs > 0 ? planSegs : Math.max(1, Math.ceil(totalBlocks / Math.max(1, blocks)))
   if (segs > EXPORT_MAX_SEGS) {
     postRaw('export-error|文档太大：需要切成 ' + segs + ' 段，超过上限 ' + EXPORT_MAX_SEGS)
     return
@@ -5504,12 +5616,12 @@ async function startExport(segBlocks, planSegs) {
         return
       }
       const from = seg * blocks
-      const to = Math.min(from + blocks, V.blockCount)
+      const to = Math.min(from + blocks, totalBlocks)
       const root = await buildPrintView((done, total) => {
         if (PRINT.cancel) return
         // 进度按「本份」算：整篇口径下第一份要爬很久，看起来像卡住
         postRaw('export-progress|' + seg + '|' + segs + '|' + done + '|' + total)
-      }, from, to)
+      }, from, to, totalBlocks)
 
       if (PRINT.docId !== V.docId || !V.active) {
         root.remove()
@@ -5657,9 +5769,14 @@ function onHostMessage(event) {
 
   if (type === 'export-plan') {
     // 份数只有页面算得准：全文索引完成后真实块数可能比估计值多一倍，
-    // 宿主拿这个数去弹确认框，才不会出现「说的是 11 份、实际 22 份」
-    const plan = exportPlan()
-    postRaw('export-plan|' + plan.segBlocks + '|' + plan.segs)
+    // 宿主拿这个数去弹确认框，才不会出现「说的是 11 份、实际 22 份」。
+    // 计划现在要采样节点密度，是异步的；失败要明确报错，别让宿主等到超时。
+    exportPlan().then((plan) => {
+      postRaw('export-plan|' + plan.segBlocks + '|' + plan.segs)
+    }).catch((err) => {
+      report('export-plan-error', String((err && err.message) || err))
+      postRaw('export-error|导出准备失败：无法生成分段计划')
+    })
     return
   }
 

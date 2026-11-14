@@ -68,7 +68,7 @@ struct Part {
   int pages = 0;
   int count = 0;
   int info = 0;
-  int delta = 0;
+  long long delta = 0;  // 累计对象号偏移，可能超过 int（上百份时）
 };
 
 bool ParsePart(Part* p, std::wstring* err) {
@@ -240,7 +240,7 @@ size_t FindStreamKeyword(const std::string& s) {
 
 // 把「对象号 代次 R/obj」里的对象号加 delta。流数据整段跳过：那里的字节是
 // 压缩内容，改写会毁掉图像或文字。
-std::string RewriteRefs(const std::string& s, int delta) {
+std::string RewriteRefs(const std::string& s, long long delta) {
   if (delta == 0) return s;
   std::string out;
   out.reserve(s.size() + s.size() / 64 + 16);
@@ -276,7 +276,7 @@ std::string RewriteRefs(const std::string& s, int delta) {
   return out;
 }
 
-std::string RewriteObject(const std::string& body, int delta) {
+std::string RewriteObject(const std::string& body, long long delta) {
   const size_t sp = FindStreamKeyword(body);
   if (sp != std::string::npos) {
     size_t dataStart = sp + 6;
@@ -296,7 +296,7 @@ std::string RewriteObject(const std::string& body, int delta) {
 }
 
 // 把字典里 key 引用的对象号改成 num；没有这个键就插在字典开头。
-void SetRefInDict(std::string* body, const char* key, int num) {
+void SetRefInDict(std::string* body, const char* key, long long num) {
   const size_t pos = body->find(key);
   if (pos != std::string::npos) {
     size_t i = pos + std::strlen(key);
@@ -319,74 +319,106 @@ void SetRefInDict(std::string* body, const char* key, int num) {
   body->insert(dictPos + 2, std::string(" ") + key + " " + std::to_string(num) + " 0 R");
 }
 
-void AppendRef(std::string* out, int num) {
+void AppendRef(std::string* out, long long num) {
   out->append(std::to_string(num));
   out->append(" 0 R ");
 }
 
-bool WriteAll(const std::wstring& path, const std::string& data, std::wstring* err) {
-  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (h == INVALID_HANDLE_VALUE) {
-    *err = L"无法写入输出文件";
-    return false;
-  }
-  size_t done = 0;
-  while (done < data.size()) {
-    const DWORD chunk = static_cast<DWORD>(std::min<size_t>(data.size() - done, 1u << 20));
+// 边写边记运行位置：xref 里要的是「对象写入前」的绝对文件偏移。
+// 不再把整份 PDF 攒成一个 std::string，峰值内存就只跟单份 part 有关。
+bool WriteBytes(HANDLE h, const char* data, size_t len, long long* pos, std::wstring* err) {
+  while (len > 0) {
+    const DWORD chunk = static_cast<DWORD>(std::min<size_t>(len, 1u << 20));
     DWORD written = 0;
-    if (!::WriteFile(h, data.data() + done, chunk, &written, nullptr) || written == 0) {
-      ::CloseHandle(h);
+    if (!::WriteFile(h, data, chunk, &written, nullptr) || written != chunk) {
       *err = L"写入过程中失败";
       return false;
     }
-    done += written;
+    data += written;
+    len -= written;
+    *pos += written;
   }
-  ::CloseHandle(h);
   return true;
 }
+
+bool WriteStr(HANDLE h, const std::string& s, long long* pos, std::wstring* err) {
+  return WriteBytes(h, s.data(), s.size(), pos, err);
+}
+
+bool WriteCStr(HANDLE h, const char* s, long long* pos, std::wstring* err) {
+  return WriteBytes(h, s, std::strlen(s), pos, err);
+}
+
+struct PartMeta {
+  int root = 0;
+  int pages = 0;
+  int count = 0;
+  int info = 0;
+  long long delta = 0;
+};
 
 }  // namespace
 
 bool PdfMergeFiles(const std::vector<std::wstring>& parts, const std::wstring& outPath,
                    std::wstring* err) {
+  std::wstring localErr;
+  if (!err) err = &localErr;
   if (parts.size() < 2) {
-    if (err) *err = L"至少需要两份";
+    *err = L"至少需要两份";
     return false;
   }
 
-  std::vector<Part> ps(parts.size());
+  // 第一遍只留元信息：第一份 Catalog 的 /Pages 要指向新页树根，而新根编号取决于
+  // 全部份的对象总数。先算出来才能动笔，否则要回头改已写出的对象。
+  std::vector<PartMeta> meta(parts.size());
+  long long base = 0;
+  long long totalCount = 0;
   for (size_t i = 0; i < parts.size(); ++i) {
-    if (!UtilReadFileBytes(parts[i], kMaxPartBytes, &ps[i].bytes)) {
-      if (err) *err = L"读不到输入文件";
+    Part p;
+    if (!UtilReadFileBytes(parts[i], kMaxPartBytes, &p.bytes)) {
+      *err = L"读不到输入文件";
       return false;
     }
-    if (!ParsePart(&ps[i], err)) return false;
-  }
-
-  // 对象号分配：每份的 Size 覆盖 0..Size-1，第二份起整体平移
-  int base = 0;
-  int totalCount = 0;
-  for (Part& p : ps) {
-    p.delta = base;
-    base += p.size - 1;
+    if (!ParsePart(&p, err)) return false;
+    meta[i].root = p.root;
+    meta[i].pages = p.pages;
+    meta[i].count = p.count;
+    meta[i].info = p.info;
+    meta[i].delta = base;
+    // 对象 0 恒为空闲，每份实际写出的对象是 1..Size-1
+    base += static_cast<long long>(p.size) - 1;
     totalCount += p.count;
   }
-  const int totalMax = base;
-  const int newPages = totalMax + 1;
-  const int catalog = ps[0].root;  // 复用第一份的 Catalog（它的 delta 是 0）
-  const int info = ps[0].info;
-
-  std::string out;
-  size_t estimate = 0;
-  for (const Part& p : ps) estimate += p.bytes.size();
-  out.reserve(estimate + 4096);
-  out += "%PDF-1.4\n%\xd3\xeb\xe9\xe1\n";
-
+  const long long newPages = base + 1;
+  const long long catalog = meta[0].root;  // 复用第一份的 Catalog（delta 为 0）
+  const long long info = meta[0].info;
   std::vector<long long> newOffsets(static_cast<size_t>(newPages) + 2, -1);
 
-  for (size_t i = 0; i < ps.size(); ++i) {
-    Part& p = ps[i];
+  const std::wstring tmp = outPath + L".tmp";
+  HANDLE h = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    *err = L"无法写入输出文件";
+    return false;
+  }
+
+  bool ok = true;
+  long long pos = 0;
+  ok = WriteCStr(h, "%PDF-1.4\n%\xd3\xeb\xe9\xe1\n", &pos, err);
+
+  // 第二遍：逐份读入、逐对象写出，内存里始终只有一份 part
+  for (size_t i = 0; ok && i < parts.size(); ++i) {
+    Part p;
+    if (!UtilReadFileBytes(parts[i], kMaxPartBytes, &p.bytes)) {
+      *err = L"读不到输入文件";
+      ok = false;
+      break;
+    }
+    if (!ParsePart(&p, err)) {
+      ok = false;
+      break;
+    }
+    p.delta = meta[i].delta;
     for (size_t k = 0; k < p.sorted.size(); ++k) {
       const int num = p.sorted[k].second;
       std::string body = ObjectBody(p, k);
@@ -395,56 +427,88 @@ bool PdfMergeFiles(const std::vector<std::wstring>& parts, const std::wstring& o
       // 第一份的 Catalog 要指向新的页树根；每份自己的页树根要挂到新根下
       if (i == 0 && num == p.root) SetRefInDict(&body, "/Pages", newPages);
       if (num == p.pages) SetRefInDict(&body, "/Parent", newPages);
-      const int newNum = num + p.delta;
+      const long long newNum = static_cast<long long>(num) + p.delta;
       if (newNum >= 0 && static_cast<size_t>(newNum) < newOffsets.size()) {
-        newOffsets[static_cast<size_t>(newNum)] = static_cast<long long>(out.size());
+        newOffsets[static_cast<size_t>(newNum)] = pos;
       }
-      out += body;
-      if (out.empty() || out.back() != '\n') out += '\n';
+      if (!WriteStr(h, body, &pos, err)) {
+        ok = false;
+        break;
+      }
+      if (body.back() != '\n' && !WriteCStr(h, "\n", &pos, err)) {
+        ok = false;
+        break;
+      }
     }
-    // 这一份已经写完，早点释放，合并十几份时峰值内存能少一半
-    p.bytes.clear();
-    p.bytes.shrink_to_fit();
   }
 
   // 新的页树根：Kids 指向各份原来的页树根，Count 相加
-  newOffsets[static_cast<size_t>(newPages)] = static_cast<long long>(out.size());
-  out += std::to_string(newPages);
-  out += " 0 obj\n<< /Type /Pages /Count ";
-  out += std::to_string(totalCount);
-  out += " /Kids [";
-  for (const Part& p : ps) AppendRef(&out, p.pages + p.delta);
-  out += "] >>\nendobj\n";
-
-  // xref：对象号 0..newPages
-  const long long xrefPos = static_cast<long long>(out.size());
-  const int xrefCount = newPages + 1;
-  out += "xref\n0 ";
-  out += std::to_string(xrefCount);
-  out += "\n";
-  for (int n = 0; n < xrefCount; ++n) {
-    const long long off = n == 0 ? -1 : newOffsets[static_cast<size_t>(n)];
-    if (off < 0) {
-      out += "0000000000 65535 f \n";
-      continue;
+  if (ok) {
+    newOffsets[static_cast<size_t>(newPages)] = pos;
+    std::string root = std::to_string(newPages);
+    root += " 0 obj\n<< /Type /Pages /Count ";
+    root += std::to_string(totalCount);
+    root += " /Kids [";
+    for (const PartMeta& m : meta) {
+      AppendRef(&root, static_cast<long long>(m.pages) + m.delta);
     }
-    char buf[32];
-    ::_snprintf_s(buf, sizeof(buf), _TRUNCATE, "%010lld 00000 n \n", off);
-    out += buf;
+    root += "] >>\nendobj\n";
+    ok = WriteStr(h, root, &pos, err);
   }
-  out += "trailer\n<< /Size ";
-  out += std::to_string(xrefCount);
-  out += " /Root ";
-  out += std::to_string(catalog);
-  out += " 0 R";
-  if (info > 0) {
-    out += " /Info ";
-    out += std::to_string(info);
-    out += " 0 R";
-  }
-  out += " >>\nstartxref\n";
-  out += std::to_string(xrefPos);
-  out += "\n%%EOF\n";
 
-  return WriteAll(outPath, out, err);
+  // xref：每行恰好 20 字节、偏移 10 位定宽。分块生成，不再攒一份与 PDF 等大的串。
+  const long long xrefPos = pos;
+  const long long xrefCount = newPages + 1;
+  if (ok) {
+    const std::string head = "xref\n0 " + std::to_string(xrefCount) + "\n";
+    ok = WriteStr(h, head, &pos, err);
+  }
+  if (ok) {
+    std::string buf;
+    buf.reserve(64 * 1024);
+    char line[32];
+    for (long long n = 0; n < xrefCount; ++n) {
+      const long long off = n == 0 ? -1 : newOffsets[static_cast<size_t>(n)];
+      if (off > 9999999999LL) {
+        *err = L"PDF 超过 10 GB，xref 偏移写不下";
+        ok = false;
+        break;
+      }
+      if (off < 0) {
+        buf += "0000000000 65535 f \n";
+      } else {
+        ::_snprintf_s(line, sizeof(line), _TRUNCATE, "%010lld 00000 n \n", off);
+        buf += line;
+      }
+      if (buf.size() >= 32 * 1024) {
+        if (!WriteStr(h, buf, &pos, err)) {
+          ok = false;
+          break;
+        }
+        buf.clear();
+      }
+    }
+    if (ok && !buf.empty()) ok = WriteStr(h, buf, &pos, err);
+  }
+  if (ok) {
+    std::string tail = "trailer\n<< /Size " + std::to_string(xrefCount) +
+                       " /Root " + std::to_string(catalog) + " 0 R";
+    if (info > 0) tail += " /Info " + std::to_string(info) + " 0 R";
+    tail += " >>\nstartxref\n" + std::to_string(xrefPos) + "\n%%EOF\n";
+    ok = WriteStr(h, tail, &pos, err);
+  }
+
+  ::CloseHandle(h);
+  if (!ok) {
+    ::DeleteFileW(tmp.c_str());
+    return false;
+  }
+  // 先落 .tmp 再替换：中途失败不会留下半个 PDF，分份文件也还在磁盘上可补救
+  if (!::MoveFileExW(tmp.c_str(), outPath.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    *err = L"无法替换输出文件";
+    ::DeleteFileW(tmp.c_str());
+    return false;
+  }
+  return true;
 }

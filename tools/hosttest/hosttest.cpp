@@ -450,11 +450,11 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         if (ok) ::SetTimer(hwnd, kExportCheckTimerId, g_exportWaitMs, nullptr);
       } else if (wParam == kExportCheckTimerId) {
         ::KillTimer(hwnd, kExportCheckTimerId);
-        // 分段时中间文件是 .part01；合并成功后只剩最终文件
+        // 分段时中间文件是 .part001；合并成功后只剩最终文件
         std::wstring seg1 = g_szPdf;
         const size_t dot = seg1.find_last_of(L'.');
         if (dot != std::wstring::npos) {
-          seg1 = seg1.substr(0, dot) + L".part01" + seg1.substr(dot);
+          seg1 = seg1.substr(0, dot) + L".part001" + seg1.substr(dot);
         }
         const DWORD whole = ::GetFileAttributesW(g_szPdf);
         const DWORD first = ::GetFileAttributesW(seg1.c_str());
