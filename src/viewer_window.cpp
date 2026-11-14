@@ -51,6 +51,10 @@ constexpr ULONGLONG kExportSegBytes = 512ull * 1024;
 constexpr int kExportMinSegBlocks = 400;
 constexpr int kExportMaxSegs = 30;
 constexpr int kExportSegSeconds = 45;
+// 页面协议版本：与 app.js 的 PAGE_PROTO 一一对应。只换 DLL 不换 web 资源时，
+// 旧页面发的是旧帧格式（导出进度只有两个字段），静默解析会让进度与份数全乱，
+// 所以两边对不上就直接拒绝导出并提示。
+constexpr int kPageProto = 2;
 
 struct ViewerState {
   HWND hwndSelf;
@@ -88,6 +92,10 @@ struct ViewerState {
   int exportOk;
   // 分段时各份先落到 .partNN.pdf，全部写完再合并成用户要的那一份
   std::vector<std::wstring> exportParts;
+  // 页面自报的协议版本（0 = 还没收到）。与 kPageProto 不符说明 web 资源没跟着更新。
+  int pageProto;
+  bool protoWarned;
+  ULONGLONG readyTick;
   // 当前皮肤 --md-bg：页面出来前宿主窗口先铺同色，暗色下不闪白。
   COLORREF bgColor;
   // 页面最后右键的图片（imgctx 帧）：「打开方式」要还原磁盘路径，「放大查看」
@@ -512,6 +520,12 @@ void StartExport(ViewerState* st) {
   }
   if (st->exporting) {
     SetStatus(st, L"正在导出，请稍候…");
+    return;
+  }
+  // 资源没跟着升级时，旧页面的进度帧与分段协议都对不上，导下去只会出怪结果
+  if (st->pageProto != kPageProto) {
+    LogLine(L"VIEWER: 拒绝导出，页面协议 %d ≠ %d", st->pageProto, kPageProto);
+    SetStatus(st, L"web 资源与插件版本不一致，无法导出（请一并更新）");
     return;
   }
 
@@ -1470,6 +1484,10 @@ void ShowOwnContextMenu(ViewerState* st) {
 // ---- 宿主事件（由宿主线程 PostMessage 过来，运行在查看器自己的线程上） ----
 
 void OnHostReady(ViewerState* st) {
+  // 页面是新的还是旧的，等它自报协议版本；没报就按旧版对待
+  st->pageProto = 0;
+  st->protoWarned = false;
+  st->readyTick = ::GetTickCount64();
   PushChrome(st);
   if (st->docOpened) PushIndex(st);
   MaybePushIndexFull(st);
@@ -1485,6 +1503,15 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   if (type == L"export" ||
       (type.rfind(L"export-", 0) == 0 && type != L"export-progress")) {
     LogLine(L"VIEWER: 页面消息 %s|%s", type.c_str(), rest.c_str());
+  }
+
+  if (type == L"proto") {
+    st->pageProto = _wtoi(rest.c_str());
+    if (st->pageProto != kPageProto) {
+      LogLine(L"VIEWER: 页面协议 %d，插件要求 %d（web 资源与 DLL 版本不一致）",
+              st->pageProto, kPageProto);
+    }
+    return;
   }
 
   if (type == L"event") {
@@ -2143,6 +2170,14 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
           LogLine(L"VIEWER: 导出超时未收到结果，已放弃本次导出");
           EndExport(st, L"导出超时，已放弃");
         }
+        // 旧页面不会自报协议版本：等 5 秒还没有就明确提示，免得导出时才发现
+        if (!st->protoWarned && st->readyTick && st->pageProto != kPageProto &&
+            ::GetTickCount64() - st->readyTick > 5000) {
+          st->protoWarned = true;
+          LogLine(L"VIEWER: 5 秒内没收到页面协议版本，按旧资源处理");
+          SetStatus(st, L"web 资源与插件版本不一致（资源 %d / 插件 %d），请一并更新",
+                    st->pageProto, kPageProto);
+        }
         return 0;
       }
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
@@ -2274,6 +2309,9 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->exportSeg = 0;
   st->exportSegs = 1;
   st->exportOk = 0;
+  st->pageProto = 0;
+  st->protoWarned = false;
+  st->readyTick = 0;
   // 初始底色：第一帧占位就要按主题铺，不能等 PushChrome（它要页面就绪才跑）
   st->bgColor = st->darkMode ? RGB(0x28, 0x2C, 0x34) : ::GetSysColor(COLOR_WINDOW);
   {

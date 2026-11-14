@@ -69,6 +69,10 @@ const PRINT_BATCH = 200
 const EXPORT_MAX_SEGS = 30
 const EXPORT_ACK_MS = 180000  // 等宿主写完一份的上限
 
+// 页面协议版本：与插件里 kPageProto 一一对应。改动两边交互的帧格式时一起加一，
+// 只换 DLL 不换 web 资源会被宿主发现并提示，不会静默按旧格式解析。
+const PAGE_PROTO = 2
+
 // 全选复制：复制的是渲染后的文本（不是 Markdown 源文本）。整篇提取有成本，
 // 超过这个字符数就截断并提示；1M 级文档可以完整复制，再大只复制前缀。
 const COPY_MAX_CHARS = 1200000
@@ -5951,6 +5955,8 @@ if (window.chrome && window.chrome.webview) {
     'ready|js=' + Math.round(performance.now()) +
       (appScript ? '|appjs=' + Math.round(appScript.duration) : '')
   )
+  // 单独一条：宿主据此判断 web 资源是不是和 DLL 同版本
+  postRaw('proto|' + PAGE_PROTO)
   document.body.classList.add('virtual')
 } else {
   // 开发模式没有宿主推档位，直接放行（远程资源仍受 CSP 约束）
