@@ -7,6 +7,7 @@
 
 #include <cstdarg>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <vector>
@@ -39,6 +40,8 @@ const wchar_t kDocBase[] = L"https://mddoc.localhost/";
 // 要覆盖页面 5 分钟的打印超时。
 constexpr UINT_PTR kDarkPollTimerId = 1;
 constexpr UINT kDarkPollMs = 500;
+// 对话框关闭后补做被延后的加载（见 HandleLoad）
+constexpr UINT kMsgPendingLoad = WM_APP + 0x312;
 constexpr ULONGLONG kPrintLightMaxMs = 6ull * 60 * 1000;
 // 导出等引擎回调的上限：渲染进程崩掉时回调不会来。单份不超 2 MB，
 // 正常几秒内结束，留 3 分钟足够，且卡死后能比较快恢复可用状态。
@@ -118,6 +121,15 @@ struct ViewerState {
   wchar_t fontFace[LF_FACESIZE];
   // DVPNMSTATUSTEXT 的指针在查看器销毁前一直有效，文本要活得比调用长。
   wchar_t szStatus[512];
+  // 确认框/保存框开着时为 true：这期间 DOpus 发来的 LOADW 一律延后处理。
+  // 模态对话框有自己的消息循环，不挡住的话换文档会插进导出流程中间，
+  // 对话框返回后就会拿旧文档的状态继续跑。
+  bool dlgBusy;
+  bool pendingLoad;
+  wchar_t pendingFile[MAX_PATH * 2];
+  // 存活令牌：窗口可能在对话框开着的时候被销毁（DOpus 换文件时重建窗格）。
+  // 调用方在弹框前取一份 shared_ptr，返回后靠它判断自己还能不能碰 st。
+  std::shared_ptr<bool> alive;
 };
 
 LONG g_liveViewers = 0;
@@ -545,6 +557,12 @@ void StartExportWithPlan(ViewerState* st, int segBlocks, int planSegs, bool inte
     SetStatus(st, L"文档太大：约需要 %d 份，超过上限 %d", planSegs, kExportMaxSegs);
     return;
   }
+  // 两条对话框都是模态循环，期间 DOpus 的消息照常进来。先记一份存活令牌，
+  // 窗口万一在这期间被销毁（换文件时重建窗格），返回后只能靠它判断还能不能碰 st。
+  const std::shared_ptr<bool> alive = st->alive;
+  bool proceed = true;
+  st->dlgBusy = true;
+
   if (planSegs > 1 && interactive) {
     // 分段是分钟级操作，先把份数与「别切文件」讲清楚，免得中途才发现
     std::wstring base = PdfDefaultName(st->szFile);
@@ -561,21 +579,39 @@ void StartExportWithPlan(ViewerState* st, int segBlocks, int planSegs, bool inte
         base.c_str(), kExportSegSeconds, (planSegs * kExportSegSeconds + 59) / 60);
     if (::MessageBoxW(st->hwndSelf, text, kTitle, MB_ICONINFORMATION | MB_OKCANCEL) != IDOK) {
       LogLine(L"VIEWER: 分段导出取消（确认框）");
-      return;
+      proceed = false;
     }
   }
 
   std::wstring path;
-  if (interactive) {
-    if (!PickPdfTarget(st, &path)) {
-      LogLine(L"VIEWER: 导出取消（保存对话框）");
-      return;
+  if (proceed) {
+    if (interactive) {
+      if (!PickPdfTarget(st, &path)) {
+        LogLine(L"VIEWER: 导出取消（保存对话框）");
+        proceed = false;
+      }
+    } else {
+      path = st->testExportPath;
+      st->testExportPath.clear();
+      if (path.empty()) proceed = false;
     }
-  } else {
-    path = st->testExportPath;
-    st->testExportPath.clear();
-    if (path.empty()) return;
   }
+  st->dlgBusy = false;
+
+  // 对话框期间窗口没了：st 已释放，后面一个字都不能碰
+  if (!alive || !*alive) {
+    LogLine(L"VIEWER: 对话框返回时查看器已销毁，放弃导出");
+    return;
+  }
+  // 对话框期间换了文档：用户的目标已经变了，不要拿旧文档继续导
+  if (st->pendingLoad) {
+    st->pendingLoad = false;
+    LogLine(L"VIEWER: 对话框期间切换了文件，放弃导出");
+    SetStatus(st, L"文档已切换，导出已取消");
+    ::PostMessageW(st->hwndSelf, kMsgPendingLoad, 0, 0);
+    return;
+  }
+  if (!proceed) return;
 
   st->exportPath = path;
   st->exporting = true;
@@ -1842,6 +1878,14 @@ const wchar_t* NoHostReason() {
 
 void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
   if (!pszPath) pszPath = L"";
+  // 模态对话框（确认框/保存框）开着时 DOpus 照样发 LOADW。此刻换文档会把导出
+  // 流程踩断：对话框返回后还在用旧文档的路径与块数。先记下，等对话框关掉再打开。
+  if (st->dlgBusy) {
+    ::StringCchCopyW(st->pendingFile, ARRAYSIZE(st->pendingFile), pszPath);
+    st->pendingLoad = true;
+    LogLine(L"VIEWER: 对话框打开期间收到 LOADW \"%s\"，延后处理", pszPath);
+    return;
+  }
   // 相对路径会让 mddoc.localhost 映射失败（映射要求绝对路径），这里统一转绝对。
   wchar_t szFull[MAX_PATH * 2];
   const DWORD cchFull = ::GetFullPathNameW(pszPath, ARRAYSIZE(szFull), szFull, nullptr);
@@ -1926,6 +1970,11 @@ void HandleClear(ViewerState* st) {
 
 LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
   switch (uMsg) {
+    case kMsgPendingLoad:
+      // 对话框关掉之后补做被延后的加载：换到新消息里做，避免还压在对话框的栈上
+      if (st->pendingFile[0]) HandleLoad(st, st->pendingFile);
+      return 0;
+
     case WM_CREATE: {
       st->hwndParent = ::GetParent(hwnd);
 
@@ -2256,6 +2305,8 @@ LRESULT CALLBACK ViewerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPara
     UnregisterViewer(hwnd);
     if (st) {
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+      // 先作废存活令牌：正在模态循环里的调用方据此放弃后续操作
+      if (st->alive) *st->alive = false;
       if (st->fontName) ::DeleteObject(st->fontName);
       if (st->fontHint) ::DeleteObject(st->fontHint);
       delete st;
@@ -2331,6 +2382,16 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->hwndSelf = nullptr;
   st->hwndParent = hWndParent;
   st->hAbortEvent = nullptr;
+  st->dlgBusy = false;
+  st->pendingLoad = false;
+  st->pendingFile[0] = L'\0';
+  try {
+    st->alive = std::make_shared<bool>(true);
+  } catch (...) {
+    LogLine(L"VIEWER: 存活令牌分配失败");
+    delete st;
+    return nullptr;
+  }
   st->szFile[0] = L'\0';
   st->ullFileSize = 0;
   st->docKey.clear();
