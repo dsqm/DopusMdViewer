@@ -71,7 +71,7 @@ const EXPORT_ACK_MS = 180000  // 等宿主写完一份的上限
 
 // 页面协议版本：与插件里 kPageProto 一一对应。改动两边交互的帧格式时一起加一，
 // 只换 DLL 不换 web 资源会被宿主发现并提示，不会静默按旧格式解析。
-const PAGE_PROTO = 3
+const PAGE_PROTO = 4
 
 // 全选复制：复制的是渲染后的文本（不是 Markdown 源文本）。整篇提取有成本，
 // 超过这个字符数就截断并提示；1M 级文档可以完整复制，再大只复制前缀。
@@ -5447,6 +5447,31 @@ function exportPlan() {
   return { segBlocks, segs: Math.max(1, Math.ceil(blocks / Math.max(1, segBlocks))) }
 }
 
+/* 估算这一份会印成几页。引擎的排版结果脚本拿不到，只能在屏幕样式下把渲染好的容器
+   量一遍高度：临时改成绝对定位放到屏幕外（#print-root 平时是 display:none，量不到），
+   A4 正文区宽 190 mm、高 277 mm（页边距 10 mm）。与打印样式的差异（行号、表宽、
+   分页规则）是个相对稳定的比例，折算成「每页耗时」时会被一起吸收，所以只拿来进步度
+   与剩余时间，不作别的用途。 */
+function estimatePrintPages(root) {
+  const px = 96 / 25.4
+  const pageH = 277 * px
+  const prev = root.getAttribute('style')
+  root.style.display = 'block'
+  root.style.position = 'absolute'
+  root.style.left = '-100000px'
+  root.style.top = '0'
+  root.style.width = (190 * px).toFixed(1) + 'px'
+  let h = 0
+  try {
+    h = root.getBoundingClientRect().height
+  } catch (err) {
+    h = 0
+  }
+  if (prev === null) root.removeAttribute('style')
+  else root.setAttribute('style', prev)
+  return h > 0 ? Math.ceil(h / pageH) : 0
+}
+
 async function startExport(segBlocks, planSegs) {
   if (!V.active) {
     postRaw('export-error|没有可导出的文档')
@@ -5496,9 +5521,13 @@ async function startExport(segBlocks, planSegs) {
 
       PRINT.root = root
       const n = root.querySelectorAll('.pblk').length
+      // 页数与节点数一起报上去：宿主按它们折算分页耗时。页数代表版面高度，节点数代表
+      // 排版对象个数——表格、代码块、公式多的文档页数不一定多，但排版慢得多。
+      const pages = estimatePrintPages(root)
+      const nodes = root.querySelectorAll('*').length
       report('export-ready', (performance.now() - t0).toFixed(0) + '|' + n + '|' + seg + '/' + segs)
-      // 铺完之后引擎要排版分页，这一段没有进度；状态由宿主按份数给出
-      postRaw('export-ready|' + seg + '|' + segs)
+      // 铺完之后引擎要排版分页，这一段没有进度；状态由宿主按份数与版面量给出
+      postRaw('export-ready|' + seg + '|' + segs + '|' + pages + '|' + nodes)
 
       // 等宿主把这一份写完再铺下一份：容器同时只能有一份
       const ok = await waitExportAck()

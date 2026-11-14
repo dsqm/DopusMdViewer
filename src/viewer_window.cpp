@@ -48,13 +48,73 @@ constexpr ULONGLONG kPrintLightMaxMs = 6ull * 60 * 1000;
 constexpr ULONGLONG kExportTimeoutMs = 3ull * 60 * 1000;
 // 分段：单份不超过 2 MB（再大引擎分页就不返回）。每份放多少块由页面按真实块数
 // 与文件大小算——索引完成后块数可能比估计值多一倍，这边算会和页面算出不同的份数。
-// 实测每份约 44 秒，用来在确认框里预告总时长。
 constexpr int kExportMaxSegs = 30;
-constexpr int kExportSegSeconds = 45;
 // 页面协议版本：与 app.js 的 PAGE_PROTO 一一对应。只换 DLL 不换 web 资源时，
-// 旧页面发的是旧帧格式（导出进度只有两个字段），静默解析会让进度与份数全乱，
+// 旧页面发的是旧帧格式（export-ready 不带页数估算），静默解析会让进度估成错的，
 // 所以两边对不上就直接拒绝导出并提示。
-constexpr int kPageProto = 3;
+constexpr int kPageProto = 4;
+// 引擎分页（PrintToPdfStream）没有进度回调，预告时长与百分比只能折算。量过三份文档：
+// 小文档 2–3 秒；512 KB 普通正文约 5 秒（约 350 页）；512 KB 的密集样本（表格/代码块/
+// 公式堆在一起）约 50–60 秒（约 800 页）。块数与字节数都撑不住这个差异——同样 1.48 万块，
+// 0.5 MB 与 1.9 MB 都是 60 秒上下；每页耗时也差 8 倍。**排版对象个数（DOM 节点数）**
+// 才是共同来源，所以页面把页数与节点数一起报上来，这里按节点折算，每份写完用实测校正。
+constexpr double kExportBaseMs = 2600;      // 引擎起分页与写文件的固定开销
+// 实测每节点：普通正文 0.07 毫秒、表格/公式密集 0.25 毫秒（同样 512 KB，前者 5.5 秒、
+// 后者 50 秒）。初值取小的那个：预估偏小只是条子早点跳完，偏大会让人觉得卡住。
+constexpr double kExportPerNodeMs = 0.10;
+constexpr double kExportPerPageMs = 30.0;   // 拿不到节点数时的兜底（按页）
+constexpr double kExportPerBlockMs = 1.0;   // 连页数也没有时的兜底（按块）
+
+double g_exportMsPerNode = kExportPerNodeMs;
+double g_exportMsPerPage = kExportPerPageMs;
+double g_exportMsPerBlock = kExportPerBlockMs;
+// 最近一份的实测耗时：份与份的内容量相近，用它推算剩余时间
+double g_exportSegMs = 0;
+
+// 单份预计耗时（毫秒）。nodes = 本份 DOM 节点数，pages = 估算页数，blocks = 块数
+// （依次降级：页面报什么就用什么）。
+double PredictExportMs(int nodes, int pages, int blocks) {
+  double body;
+  if (nodes > 0) {
+    body = g_exportMsPerNode * nodes;
+  } else if (pages > 0) {
+    body = g_exportMsPerPage * pages;
+  } else {
+    body = g_exportMsPerBlock * (blocks > 0 ? blocks : 0);
+  }
+  const double ms = kExportBaseMs + body;
+  if (ms < 1500) return 1500;
+  if (ms > 10.0 * 60 * 1000) return 10.0 * 60 * 1000;
+  return ms;
+}
+
+// 按实测校正折算系数：页面报了什么就校正什么（节点优先，其后页数、块数）。
+// 量太小的时候耗时几乎全是固定开销，反推出来的单价没有意义，跳过（否则系数会被带偏）。
+// first = 本次导出的第一份：上一轮的系数可能来自完全不同的文档，直接换成这次量到的值；
+// 之后几份内容量相近，取加权平均把单次抖动压掉（直接覆盖会让进度条一跳一跳）。
+void CalibrateExport(double spentMs, int nodes, int pages, int blocks, bool first) {
+  const double body = spentMs - kExportBaseMs;
+  if (body <= 0) return;
+  if (nodes > 200) {
+    double v = body / nodes;
+    if (v < 0.01) v = 0.01;
+    if (v > 200.0) v = 200.0;
+    g_exportMsPerNode = first ? v : g_exportMsPerNode * 0.3 + v * 0.7;
+    return;
+  }
+  if (pages > 0) {
+    double v = body / pages;
+    if (v < 1.0) v = 1.0;
+    if (v > 500.0) v = 500.0;
+    g_exportMsPerPage = first ? v : g_exportMsPerPage * 0.3 + v * 0.7;
+    return;
+  }
+  if (blocks < 2000) return;
+  double v = body / blocks;
+  if (v < 0.05) v = 0.05;
+  if (v > 60.0) v = 60.0;
+  g_exportMsPerBlock = first ? v : g_exportMsPerBlock * 0.3 + v * 0.7;
+}
 
 struct ViewerState {
   HWND hwndSelf;
@@ -90,6 +150,21 @@ struct ViewerState {
   int exportSeg;
   int exportSegs;
   int exportOk;
+  // 当前这一份的块数、页面估算的页数与预计耗时：进度百分比按它们折算，
+  // 跑完后也用它校正每页/每块的耗时
+  int exportSegBlocks;
+  int exportSegPages;
+  int exportSegNodes;
+  double exportPredMs;
+  // 整篇口径：起点时刻、本份已铺块数、已完成各份的实测耗时合计。
+  // 状态栏只报「整篇进度 + 整篇剩余」，这三个值让它在换段时也不断档。
+  ULONGLONG exportRunStartTick;
+  int exportSegBuiltBlocks;
+  double exportDoneMs;
+  // 状态栏去重：铺全文时进度帧每批都来，同样的数字重复推没有意义
+  int exportLastPct;
+  int exportLastSeg;
+  wchar_t exportLastTail[48];
   // 分段时各份先落到 .partNN.pdf，全部写完再合并成用户要的那一份
   std::vector<std::wstring> exportParts;
   // 页面自报的协议版本（0 = 还没收到）。与 kPageProto 不符说明 web 资源没跟着更新。
@@ -134,6 +209,9 @@ struct ViewerState {
 
 LONG g_liveViewers = 0;
 HINSTANCE g_hInstance = nullptr;
+
+// 状态栏的导出进度（整篇百分比 + 整篇剩余）：铺全文、引擎分页、换段三处共用一套算法
+void UpdateExportStatus(ViewerState* st);
 
 // 设置保存后要通知所有查看器（它们可能跑在不同的 UI 线程上）。
 std::mutex g_viewerMutex;
@@ -506,6 +584,16 @@ void EndExport(ViewerState* st, const wchar_t* status) {
   st->exportSeg = 0;
   st->exportSegs = 1;
   st->exportOk = 0;
+  st->exportSegBlocks = 0;
+  st->exportSegPages = 0;
+  st->exportSegNodes = 0;
+  st->exportPredMs = 0;
+  st->exportRunStartTick = 0;
+  st->exportSegBuiltBlocks = 0;
+  st->exportDoneMs = 0;
+  st->exportLastPct = -1;
+  st->exportLastSeg = -1;
+  st->exportLastTail[0] = L'\0';
   st->exportParts.clear();
   st->exportPlanPending = false;
   st->waitingPdf = false;
@@ -568,15 +656,17 @@ void StartExportWithPlan(ViewerState* st, int segBlocks, int planSegs, bool inte
     std::wstring base = PdfDefaultName(st->szFile);
     const size_t dot = base.find_last_of(L'.');
     if (dot != std::wstring::npos) base = base.substr(0, dot);
+    // 不给「几分钟」这种预告：同样的块数，密集小行的文档比普通正文慢一个数量级，
+    // 提前算只能是猜；真正的数只能等页面铺完一份、量出页数才知道（见 export-ready）。
     wchar_t text[1024];
     ::StringCchPrintfW(
         text, ARRAYSIZE(text),
         L"文档约 %llu MB，会切成 %d 段生成，最后合并成一个 PDF：\n%s.pdf\n\n"
-        L"每段约 %d 秒，总计约 %d 分钟。\n"
-        L"生成期间请不要切换文件——切换会打断导出，只有已写出的内容保留。\n\n"
+        L"生成期间请不要切换文件——切换会打断导出，只有已写出的内容保留。\n"
+        L"实际耗时取决于版面，状态栏会按进度给出剩余时间。\n\n"
         L"继续导出？",
         static_cast<unsigned long long>(st->ullFileSize / (1024ull * 1024ull)), planSegs,
-        base.c_str(), kExportSegSeconds, (planSegs * kExportSegSeconds + 59) / 60);
+        base.c_str());
     if (::MessageBoxW(st->hwndSelf, text, kTitle, MB_ICONINFORMATION | MB_OKCANCEL) != IDOK) {
       LogLine(L"VIEWER: 分段导出取消（确认框）");
       proceed = false;
@@ -618,8 +708,18 @@ void StartExportWithPlan(ViewerState* st, int segBlocks, int planSegs, bool inte
   st->exportSeg = 0;
   st->exportSegs = planSegs;
   st->exportOk = 0;
+  st->exportSegBlocks = segBlocks;
+  st->exportSegPages = 0;
+  st->exportSegNodes = 0;
+  st->exportPredMs = PredictExportMs(0, 0, segBlocks);
+  st->exportSegBuiltBlocks = 0;
+  st->exportDoneMs = 0;
+  st->exportLastPct = -1;
+  st->exportLastSeg = -1;
+  st->exportLastTail[0] = L'\0';
   st->pagedSkin = true;
   st->pagedStartTick = ::GetTickCount64();
+  st->exportRunStartTick = st->pagedStartTick;
   LogLine(L"VIEWER: 导出 PDF 请求 -> %s（每份 %d 块，共 %d 份）", path.c_str(), segBlocks,
           planSegs);
   if (planSegs > 1) {
@@ -1616,25 +1716,29 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
 
   if (type == L"export-ready") {
     if (!st->exporting) return;
-    // export-ready|<段号 0 基>|<总段数>
-    const size_t sep = rest.find(L'|');
-    const int seg = _wtoi(rest.c_str());
-    const int segs = sep == std::wstring::npos ? 1 : _wtoi(rest.c_str() + sep + 1);
-    st->exportSeg = seg;
-    st->exportSegs = segs > 0 ? segs : 1;
+    // export-ready|<段号 0 基>|<总段数>|<页数估算>|<DOM 节点数>
+    int v[4] = {0, 1, 0, 0};
+    ParseIntFields(rest, v, ARRAYSIZE(v));
+    st->exportSeg = v[0];
+    st->exportSegs = v[1] > 0 ? v[1] : 1;
+    st->exportSegPages = v[2] > 0 ? v[2] : 0;
+    st->exportSegNodes = v[3] > 0 ? v[3] : 0;
     // 每段单独计时：整轮由页面串行驱动，不能让 3 分钟超时只够第一份
     st->pagedStartTick = ::GetTickCount64();
     st->waitingPdf = true;
     st->lastStatusSec = 0;
-    if (st->exportSegs > 1) {
-      SetStatus(st, L"正在生成第 %d/%d 段 PDF…", st->exportSeg + 1, st->exportSegs);
-    } else {
-      SetStatus(st, L"正在生成 PDF…");
-    }
+    st->exportSegBuiltBlocks = 0;
+    // 分页耗时按本份的排版对象个数折算（页面量的 DOM 节点数），这是三份样本里唯一
+    // 跟耗时同向的量：页数相同、块数相同都可能差 8 倍，节点数不会
+    st->exportPredMs =
+        PredictExportMs(st->exportSegNodes, st->exportSegPages, st->exportSegBlocks);
+    UpdateExportStatus(st);
     const std::wstring target = PartPath(st->exportPath, st->exportSeg, st->exportSegs);
     const bool ok = WebHostExportPdf(st->hwndSelf, target);
-    LogLine(L"VIEWER: 第 %d/%d 份内容就绪，PrintToPdfStream %s -> %s", st->exportSeg + 1,
-            st->exportSegs, ok ? L"已发起" : L"失败", target.c_str());
+    LogLine(L"VIEWER: 第 %d/%d 份内容就绪（%d 块、约 %d 页、%d 个节点，预计 %llu 毫秒），PrintToPdfStream %s -> %s",
+            st->exportSeg + 1, st->exportSegs, st->exportSegBlocks, st->exportSegPages,
+            st->exportSegNodes, static_cast<unsigned long long>(st->exportPredMs),
+            ok ? L"已发起" : L"失败", target.c_str());
     if (!ok) EndExport(st, L"导出失败：预览引擎不可用");
     return;
   }
@@ -1645,13 +1749,12 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     int v[4] = {0, 1, 0, 0};
     ParseIntFields(rest, v, ARRAYSIZE(v));
     if (v[3] > 0) {
-      const int pct = v[2] * 100 / v[3];
-      // 百分比按「本份」算：整篇口径下第一份要爬很久，看起来像卡住
-      if (v[1] > 1) {
-        SetStatus(st, L"正在导出第 %d/%d 段… %d%%", v[0] + 1, v[1], pct);
-      } else {
-        SetStatus(st, L"正在导出… %d%%", pct);
-      }
+      // 本份真实块数：分页耗时按它折算，块数比用计划值准
+      st->exportSegBlocks = v[3];
+      st->exportSegBuiltBlocks = v[2] > v[3] ? v[3] : (v[2] > 0 ? v[2] : 0);
+      st->exportSeg = v[0];
+      st->exportSegs = v[1] > 0 ? v[1] : 1;
+      UpdateExportStatus(st);
     }
     return;
   }
@@ -1662,8 +1765,20 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     st->waitingPdf = false;
     ++st->exportOk;
     st->exportParts.push_back(rest);
-    LogLine(L"VIEWER: 第 %d/%d 份已写入 %s", st->exportSeg + 1, st->exportSegs, rest.c_str());
-    if (st->exportSegs > 1) SetStatus(st, L"已生成 %d/%d 段", st->exportOk, st->exportSegs);
+    // 用实测校正折算系数，并记下这一份的真实耗时（份与份内容量相近，剩余时间靠它推）。
+    // 块数太少时耗时几乎全是固定开销，反推出来的单价没有意义，CalibrateExport 会跳过。
+    const ULONGLONG spent = ::GetTickCount64() - st->pagedStartTick;
+    CalibrateExport(static_cast<double>(spent), st->exportSegNodes, st->exportSegPages,
+                    st->exportSegBlocks, st->exportOk == 1);
+    g_exportSegMs = static_cast<double>(spent);
+    st->exportDoneMs += static_cast<double>(spent);
+    LogLine(L"VIEWER: 第 %d/%d 份已写入 %s（实测 %llu 毫秒，预计 %llu；%d 块 %d 页 %d 节点；"
+            L"折算 %.2f 毫秒/节点、%.2f 毫秒/页、%.2f 毫秒/块）",
+            st->exportSeg + 1, st->exportSegs, rest.c_str(),
+            static_cast<unsigned long long>(spent),
+            static_cast<unsigned long long>(st->exportPredMs), st->exportSegBlocks,
+            st->exportSegPages, st->exportSegNodes, g_exportMsPerNode, g_exportMsPerPage,
+            g_exportMsPerBlock);
     wchar_t ack[32];
     ::StringCchPrintfW(ack, ARRAYSIZE(ack), L"export-ack|%d", st->exportSeg);
     WebHostPost(st->hwndSelf, ack);
@@ -1869,6 +1984,66 @@ void HandleHostEvent(ViewerState* st, int kind, const wchar_t* text) {
 }
 
 // ---- 消息处理 ----
+
+// 状态栏只有一条口径：整篇进度 + 整篇剩余。铺全文与引擎分页两段合成一份算，
+// 换段时立即按新一份的预计刷新，所以剩余时间既不退回、也不消失。
+// 剩余按「完成各份的实测 + 本份预计 + 后面几份按上一份实测」推，减去整篇已用时间。
+void UpdateExportStatus(ViewerState* st) {
+  if (!st->exporting) return;
+  const int segs = st->exportSegs > 0 ? st->exportSegs : 1;
+  const int seg = st->exportSeg;
+  const double pred = st->exportPredMs > 0
+                          ? st->exportPredMs
+                          : PredictExportMs(st->exportSegNodes, st->exportSegPages,
+                                            st->exportSegBlocks);
+  const ULONGLONG now = ::GetTickCount64();
+  if (!st->exportRunStartTick) st->exportRunStartTick = now;
+
+  // 份内进度：铺全文占一成半（按块数），引擎分页占一成半到九成半（按预计耗时）
+  double intra = 0.0;
+  if (st->waitingPdf) {
+    const double elapsed = static_cast<double>(now - st->pagedStartTick);
+    intra = pred > 0 ? 0.15 + 0.80 * elapsed / pred : 0.95;
+  } else if (st->exportSegBlocks > 0) {
+    intra = 0.15 * static_cast<double>(st->exportSegBuiltBlocks) / st->exportSegBlocks;
+  }
+  if (intra > 0.95) intra = 0.95;
+  if (intra < 0.0) intra = 0.0;
+  double pct = (static_cast<double>(seg) + intra) * 100.0 / segs;
+  if (pct > 95.0) pct = 95.0;
+
+  const double perSegRef = g_exportSegMs > 0 ? g_exportSegMs : pred;
+  double totalPred = st->exportDoneMs + pred;
+  totalPred += static_cast<double>(segs - seg - 1) * perSegRef;
+  double leftMs = totalPred - static_cast<double>(now - st->exportRunStartTick);
+  if (leftMs < 0) leftMs = 0;
+
+  // 第一份还没量出来之前（只有按块数的兜底值），剩余会偏得离谱，先只说进度；
+  // 有了实测或本份的页数/节点数估算之后再报。措辞沿用系统惯用的「大约剩余」
+  // （Windows 复制对话框的 About x minutes remaining），这里缩成「剩余约」。
+  wchar_t tail[48] = L"";
+  const bool known = st->waitingPdf || st->exportDoneMs > 0 || g_exportSegMs > 0;
+  if (known && leftMs >= 55000) {
+    ::StringCchPrintfW(tail, ARRAYSIZE(tail), L"，剩余约 %llu 分钟",
+                       static_cast<unsigned long long>((leftMs + 30000) / 60000));
+  } else if (known && leftMs >= 4000) {
+    ::StringCchPrintfW(tail, ARRAYSIZE(tail), L"，剩余约 %llu 秒",
+                       static_cast<unsigned long long>((leftMs + 999) / 1000));
+  }
+  const int shown = static_cast<int>(pct + 0.5);
+  if (shown == st->exportLastPct && seg == st->exportLastSeg &&
+      wcscmp(tail, st->exportLastTail) == 0) {
+    return;
+  }
+  st->exportLastPct = shown;
+  st->exportLastSeg = seg;
+  ::StringCchCopyW(st->exportLastTail, ARRAYSIZE(st->exportLastTail), tail);
+  if (segs > 1) {
+    SetStatus(st, L"正在生成第 %d/%d 段 PDF… %d%%%s", seg + 1, segs, shown, tail);
+  } else {
+    SetStatus(st, L"正在生成 PDF… %d%%%s", shown, tail);
+  }
+}
 
 // 没拿到宿主的原因有两种，状态栏与占位文字要分开说：宿主窗口存在但正在被别的
 // 查看器借用，和宿主线程/窗口还没建起来（建线程有几秒窗口期）。
@@ -2253,22 +2428,13 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
           SetStatus(st, L"web 资源与插件版本不一致（资源 %d / 插件 %d），请一并更新",
                     st->pageProto, kPageProto);
         }
-        // 引擎排版这一段拿不到真实进度，按「每段约 N 秒」折算一个估算值。
-        // 封顶 99%：过了预计时长就停在那里，别让人以为已经完成却不见文件。
+        // 引擎分页这一段拿不到真实进度，按「本份排版量折算的耗时」推进。
+        // 每秒刷新一次即可，文案与剩余时间都交给 UpdateExportStatus，别在这里另算一套。
         if (st->exporting && st->waitingPdf) {
           const ULONGLONG sec = (::GetTickCount64() - st->pagedStartTick) / 1000;
           if (sec != st->lastStatusSec) {
             st->lastStatusSec = sec;
-            const ULONGLONG pct =
-                sec >= static_cast<ULONGLONG>(kExportSegSeconds)
-                    ? 99
-                    : sec * 100 / static_cast<ULONGLONG>(kExportSegSeconds);
-            if (st->exportSegs > 1) {
-              SetStatus(st, L"正在生成第 %d/%d 段 PDF… %llu%%", st->exportSeg + 1, st->exportSegs,
-                        pct);
-            } else {
-              SetStatus(st, L"正在生成 PDF… %llu%%", pct);
-            }
+            UpdateExportStatus(st);
           }
         }
         // 页面不回计划说明链路断了，别让「正在准备」无声挂着
@@ -2420,6 +2586,16 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->exportSeg = 0;
   st->exportSegs = 1;
   st->exportOk = 0;
+  st->exportSegBlocks = 0;
+  st->exportSegPages = 0;
+  st->exportSegNodes = 0;
+  st->exportPredMs = 0;
+  st->exportRunStartTick = 0;
+  st->exportSegBuiltBlocks = 0;
+  st->exportDoneMs = 0;
+  st->exportLastPct = -1;
+  st->exportLastSeg = -1;
+  st->exportLastTail[0] = L'\0';
   st->pageProto = 0;
   st->protoWarned = false;
   st->readyTick = 0;
