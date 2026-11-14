@@ -2253,16 +2253,21 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
           SetStatus(st, L"web 资源与插件版本不一致（资源 %d / 插件 %d），请一并更新",
                     st->pageProto, kPageProto);
         }
-        // 引擎排版这一段没有百分比，用秒数报活，别让人以为卡死
+        // 引擎排版这一段拿不到真实进度，按「每段约 N 秒」折算一个估算值。
+        // 封顶 99%：过了预计时长就停在那里，别让人以为已经完成却不见文件。
         if (st->exporting && st->waitingPdf) {
           const ULONGLONG sec = (::GetTickCount64() - st->pagedStartTick) / 1000;
           if (sec != st->lastStatusSec) {
             st->lastStatusSec = sec;
+            const ULONGLONG pct =
+                sec >= static_cast<ULONGLONG>(kExportSegSeconds)
+                    ? 99
+                    : sec * 100 / static_cast<ULONGLONG>(kExportSegSeconds);
             if (st->exportSegs > 1) {
-              SetStatus(st, L"正在生成第 %d/%d 段 PDF… 已 %llu 秒", st->exportSeg + 1,
-                        st->exportSegs, sec);
+              SetStatus(st, L"正在生成第 %d/%d 段 PDF… %llu%%", st->exportSeg + 1, st->exportSegs,
+                        pct);
             } else {
-              SetStatus(st, L"正在生成 PDF… 已 %llu 秒", sec);
+              SetStatus(st, L"正在生成 PDF… %llu%%", pct);
             }
           }
         }
