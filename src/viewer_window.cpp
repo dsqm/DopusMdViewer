@@ -43,18 +43,15 @@ constexpr ULONGLONG kPrintLightMaxMs = 6ull * 60 * 1000;
 // 导出等引擎回调的上限：渲染进程崩掉时回调不会来。单份不超 2 MB，
 // 正常几秒内结束，留 3 分钟足够，且卡死后能比较快恢复可用状态。
 constexpr ULONGLONG kExportTimeoutMs = 3ull * 60 * 1000;
-// 分段：单份上限 2 MB（再大引擎分页就不返回），每份目标 512 KB 内容。
-// 块大小差得很远（5 MB 样本 14.7 万块、平均 36 字节），所以按「字节/块」算每份多少块，
-// 不能按固定块数切——那样会切出几十份。实测每份约 44 秒，用来预告总时长。
-constexpr ULONGLONG kExportSingleBytes = 2ull * 1024 * 1024;
-constexpr ULONGLONG kExportSegBytes = 512ull * 1024;
-constexpr int kExportMinSegBlocks = 400;
+// 分段：单份不超过 2 MB（再大引擎分页就不返回）。每份放多少块由页面按真实块数
+// 与文件大小算——索引完成后块数可能比估计值多一倍，这边算会和页面算出不同的份数。
+// 实测每份约 44 秒，用来在确认框里预告总时长。
 constexpr int kExportMaxSegs = 30;
 constexpr int kExportSegSeconds = 45;
 // 页面协议版本：与 app.js 的 PAGE_PROTO 一一对应。只换 DLL 不换 web 资源时，
 // 旧页面发的是旧帧格式（导出进度只有两个字段），静默解析会让进度与份数全乱，
 // 所以两边对不上就直接拒绝导出并提示。
-constexpr int kPageProto = 2;
+constexpr int kPageProto = 3;
 
 struct ViewerState {
   HWND hwndSelf;
@@ -96,6 +93,13 @@ struct ViewerState {
   int pageProto;
   bool protoWarned;
   ULONGLONG readyTick;
+  // 导出计划：份数由页面按真实块数算，宿主拿到后才弹确认框、才开始
+  bool exportPlanPending;
+  ULONGLONG planTick;
+  std::wstring testExportPath;  // 仅 hosttest：跳过两个对话框时用的目标路径
+  // 已发起 PrintToPdfStream、等引擎回调：这一段没有百分比，用秒数报活
+  bool waitingPdf;
+  ULONGLONG lastStatusSec;
   // 当前皮肤 --md-bg：页面出来前宿主窗口先铺同色，暗色下不闪白。
   COLORREF bgColor;
   // 页面最后右键的图片（imgctx 帧）：「打开方式」要还原磁盘路径，「放大查看」
@@ -412,15 +416,6 @@ std::wstring PdfDefaultName(const wchar_t* path) {
 }
 
 // 每份放多少块；0 = 不分段（整篇一份）。
-int ExportSegBlocks(const ViewerState* st) {
-  if (st->ullFileSize <= kExportSingleBytes || st->estBlocks == 0) return 0;
-  const double avg = static_cast<double>(st->ullFileSize) / static_cast<double>(st->estBlocks);
-  if (avg <= 0.0) return 0;
-  int blocks = static_cast<int>(static_cast<double>(kExportSegBytes) / avg);
-  if (blocks < kExportMinSegBlocks) blocks = kExportMinSegBlocks;
-  return blocks;
-}
-
 // 标准保存对话框：默认源文件目录 + 同名 .pdf。取消或失败返回 false。
 bool PickPdfTarget(ViewerState* st, std::wstring* out) {
   // 保存对话框要 COM STA。查看器窗口建在 DOpus 的 UI 线程上，那里通常已初始化，
@@ -500,6 +495,9 @@ void EndExport(ViewerState* st, const wchar_t* status) {
   st->exportSegs = 1;
   st->exportOk = 0;
   st->exportParts.clear();
+  st->exportPlanPending = false;
+  st->waitingPdf = false;
+  st->lastStatusSec = 0;
   if (st->pagedSkin) {
     st->pagedSkin = false;
     PushChrome(st);
@@ -529,17 +527,25 @@ void StartExport(ViewerState* st) {
     return;
   }
 
-  // 分段计划：整篇塞进一个 DOM 时引擎分页会长时间不返回，大文档必须切成小份。
-  // 粒度由这里算好发给页面，保证提示里的份数、实际份数、文件名后缀三者一致。
-  const int segBlocks = ExportSegBlocks(st);
-  const int planSegs =
-      segBlocks > 0 ? (static_cast<int>(st->estBlocks) + segBlocks - 1) / segBlocks : 1;
+  // 份数只有页面算得准：全文索引完成后真实块数可能比估计值多一倍，而确认框、
+  // 状态栏与文件名必须同源。所以先要一份计划，拿到之后再弹框、选路径。
+  st->exportPlanPending = true;
+  st->planTick = ::GetTickCount64();
+  if (!WebHostPost(st->hwndSelf, L"export-plan|")) {
+    st->exportPlanPending = false;
+    SetStatus(st, L"导出准备失败：页面不可达");
+  }
+}
+
+// 计划到手：份数与粒度都按页面给的值走，不再自己算一遍。
+void StartExportWithPlan(ViewerState* st, int segBlocks, int planSegs, bool interactive) {
+  if (planSegs < 1) planSegs = 1;
   if (planSegs > kExportMaxSegs) {
-    LogLine(L"VIEWER: 导出被拒绝，需要约 %d 份，超过上限 %d", planSegs, kExportMaxSegs);
+    LogLine(L"VIEWER: 导出被拒绝，需要 %d 份，超过上限 %d", planSegs, kExportMaxSegs);
     SetStatus(st, L"文档太大：约需要 %d 份，超过上限 %d", planSegs, kExportMaxSegs);
     return;
   }
-  if (planSegs > 1) {
+  if (planSegs > 1 && interactive) {
     // 分段是分钟级操作，先把份数与「别切文件」讲清楚，免得中途才发现
     std::wstring base = PdfDefaultName(st->szFile);
     const size_t dot = base.find_last_of(L'.');
@@ -547,13 +553,12 @@ void StartExport(ViewerState* st) {
     wchar_t text[1024];
     ::StringCchPrintfW(
         text, ARRAYSIZE(text),
-        L"文档约 %llu MB，会切成约 %d 份 PDF：\n%s-01.pdf、%s-02.pdf……\n\n"
-        L"每份约 %d 秒，总计约 %d 分钟。\n"
-        L"生成期间请不要切换文件——切换会打断导出，只有已写出的份数保留。\n\n"
+        L"文档约 %llu MB，会切成 %d 段生成，最后合并成一个 PDF：\n%s.pdf\n\n"
+        L"每段约 %d 秒，总计约 %d 分钟。\n"
+        L"生成期间请不要切换文件——切换会打断导出，只有已写出的内容保留。\n\n"
         L"继续导出？",
         static_cast<unsigned long long>(st->ullFileSize / (1024ull * 1024ull)), planSegs,
-        base.c_str(), base.c_str(), kExportSegSeconds,
-        (planSegs * kExportSegSeconds + 59) / 60);
+        base.c_str(), kExportSegSeconds, (planSegs * kExportSegSeconds + 59) / 60);
     if (::MessageBoxW(st->hwndSelf, text, kTitle, MB_ICONINFORMATION | MB_OKCANCEL) != IDOK) {
       LogLine(L"VIEWER: 分段导出取消（确认框）");
       return;
@@ -561,22 +566,28 @@ void StartExport(ViewerState* st) {
   }
 
   std::wstring path;
-  if (!PickPdfTarget(st, &path)) {
-    LogLine(L"VIEWER: 导出取消（保存对话框）");
-    return;
+  if (interactive) {
+    if (!PickPdfTarget(st, &path)) {
+      LogLine(L"VIEWER: 导出取消（保存对话框）");
+      return;
+    }
+  } else {
+    path = st->testExportPath;
+    st->testExportPath.clear();
+    if (path.empty()) return;
   }
 
   st->exportPath = path;
   st->exporting = true;
   st->exportSeg = 0;
-  st->exportSegs = planSegs;  // 页面按实际块数报真实段数，这里只是初值
+  st->exportSegs = planSegs;
   st->exportOk = 0;
   st->pagedSkin = true;
   st->pagedStartTick = ::GetTickCount64();
-  LogLine(L"VIEWER: 导出 PDF 请求 -> %s（每份 %d 块，预计 %d 份）", path.c_str(), segBlocks,
+  LogLine(L"VIEWER: 导出 PDF 请求 -> %s（每份 %d 块，共 %d 份）", path.c_str(), segBlocks,
           planSegs);
   if (planSegs > 1) {
-    SetStatus(st, L"正在准备导出（共 %d 份，期间不要切换文件）…", planSegs);
+    SetStatus(st, L"正在准备导出（共 %d 段，期间不要切换文件）…", planSegs);
   } else {
     SetStatus(st, L"正在准备导出…");
   }
@@ -1550,6 +1561,17 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     return;
   }
 
+  if (type == L"export-plan") {
+    // export-plan|<每份块数>|<总份数>：页面按真实块数算的，确认框用它
+    if (!st->exportPlanPending) return;
+    st->exportPlanPending = false;
+    int v[2] = {0, 1};
+    ParseIntFields(rest, v, ARRAYSIZE(v));
+    const bool interactive = st->testExportPath.empty();
+    StartExportWithPlan(st, v[0], v[1], interactive);
+    return;
+  }
+
   if (type == L"export-request") {
     // 快捷键与菜单都走这里：保存对话框必须在查看器线程上弹
     StartExport(st);
@@ -1566,8 +1588,10 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     st->exportSegs = segs > 0 ? segs : 1;
     // 每段单独计时：整轮由页面串行驱动，不能让 3 分钟超时只够第一份
     st->pagedStartTick = ::GetTickCount64();
+    st->waitingPdf = true;
+    st->lastStatusSec = 0;
     if (st->exportSegs > 1) {
-      SetStatus(st, L"正在生成第 %d/%d 份 PDF…", st->exportSeg + 1, st->exportSegs);
+      SetStatus(st, L"正在生成第 %d/%d 段 PDF…", st->exportSeg + 1, st->exportSegs);
     } else {
       SetStatus(st, L"正在生成 PDF…");
     }
@@ -1588,7 +1612,7 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
       const int pct = v[2] * 100 / v[3];
       // 百分比按「本份」算：整篇口径下第一份要爬很久，看起来像卡住
       if (v[1] > 1) {
-        SetStatus(st, L"正在导出第 %d/%d 份… %d%%", v[0] + 1, v[1], pct);
+        SetStatus(st, L"正在导出第 %d/%d 段… %d%%", v[0] + 1, v[1], pct);
       } else {
         SetStatus(st, L"正在导出… %d%%", pct);
       }
@@ -1599,10 +1623,11 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   if (type == L"export-done") {
     // 一份写完（宿主线程的回调）：让页面继续铺下一份，全部铺完由页面收尾
     if (!st->exporting) return;
+    st->waitingPdf = false;
     ++st->exportOk;
     st->exportParts.push_back(rest);
     LogLine(L"VIEWER: 第 %d/%d 份已写入 %s", st->exportSeg + 1, st->exportSegs, rest.c_str());
-    if (st->exportSegs > 1) SetStatus(st, L"已生成 %d/%d 份", st->exportOk, st->exportSegs);
+    if (st->exportSegs > 1) SetStatus(st, L"已生成 %d/%d 段", st->exportOk, st->exportSegs);
     wchar_t ack[32];
     ::StringCchPrintfW(ack, ARRAYSIZE(ack), L"export-ack|%d", st->exportSeg);
     WebHostPost(st->hwndSelf, ack);
@@ -1646,6 +1671,7 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
     const bool fromHost = st->exporting;
     const bool cancelled = rest.find(L"已取消") != std::wstring::npos;
     const int ok = st->exportOk;
+    st->waitingPdf = false;
     LogLine(L"VIEWER: 导出失败：%s", rest.c_str());
     if (fromHost) WebHostPost(st->hwndSelf, L"export-fail|" + rest);
     // 取消是放弃这次导出，中间文件留着只会占地方；真正的失败保留它们，便于事后补救
@@ -2178,6 +2204,25 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
           SetStatus(st, L"web 资源与插件版本不一致（资源 %d / 插件 %d），请一并更新",
                     st->pageProto, kPageProto);
         }
+        // 引擎排版这一段没有百分比，用秒数报活，别让人以为卡死
+        if (st->exporting && st->waitingPdf) {
+          const ULONGLONG sec = (::GetTickCount64() - st->pagedStartTick) / 1000;
+          if (sec != st->lastStatusSec) {
+            st->lastStatusSec = sec;
+            if (st->exportSegs > 1) {
+              SetStatus(st, L"正在生成第 %d/%d 段 PDF… 已 %llu 秒", st->exportSeg + 1,
+                        st->exportSegs, sec);
+            } else {
+              SetStatus(st, L"正在生成 PDF… 已 %llu 秒", sec);
+            }
+          }
+        }
+        // 页面不回计划说明链路断了，别让「正在准备」无声挂着
+        if (st->exportPlanPending && ::GetTickCount64() - st->planTick > 10000) {
+          st->exportPlanPending = false;
+          LogLine(L"VIEWER: 10 秒内没收到导出计划，放弃");
+          SetStatus(st, L"导出准备超时（页面无响应）");
+        }
         return 0;
       }
       return ::DefWindowProcW(hwnd, uMsg, wParam, lParam);
@@ -2312,6 +2357,10 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->pageProto = 0;
   st->protoWarned = false;
   st->readyTick = 0;
+  st->exportPlanPending = false;
+  st->planTick = 0;
+  st->waitingPdf = false;
+  st->lastStatusSec = 0;
   // 初始底色：第一帧占位就要按主题铺，不能等 PushChrome（它要页面就绪才跑）
   st->bgColor = st->darkMode ? RGB(0x28, 0x2C, 0x34) : ::GetSysColor(COLOR_WINDOW);
   {
@@ -2370,23 +2419,11 @@ bool ViewerTestExport(HWND hViewer, const wchar_t* path) {
   if (!hViewer || !path || !*path) return false;
   ViewerState* st = reinterpret_cast<ViewerState*>(::GetWindowLongPtrW(hViewer, GWLP_USERDATA));
   if (!st || !st->docOpened || !st->hasHost || st->webFailed || !WebHostIsReady()) return false;
-  if (st->exporting) return false;
+  if (st->exporting || st->exportPlanPending) return false;
 
-  st->exportPath = path;
-  st->exporting = true;
-  st->exportSeg = 0;
-  st->exportOk = 0;
-  // 与 StartExport 同一套分段计划，只是跳过确认框与保存对话框
-  const int segBlocks = ExportSegBlocks(st);
-  st->exportSegs =
-      segBlocks > 0 ? (static_cast<int>(st->estBlocks) + segBlocks - 1) / segBlocks : 1;
-  st->pagedSkin = true;
-  st->pagedStartTick = ::GetTickCount64();
-  LogLine(L"VIEWER: 测试导出请求 -> %s（每份 %d 块，预计 %d 份）", path, segBlocks,
-          st->exportSegs);
-  SetStatus(st, L"正在准备导出…");
-  PushChrome(st);
-  wchar_t plan[64];
-  ::StringCchPrintfW(plan, ARRAYSIZE(plan), L"export|%d", segBlocks);
-  return WebHostPost(hViewer, plan);
+  // 与右键菜单同一条链路：先向页面要计划，只是拿到后不弹确认框与保存对话框
+  st->testExportPath = path;
+  st->exportPlanPending = true;
+  st->planTick = ::GetTickCount64();
+  return WebHostPost(hViewer, L"export-plan|");
 }

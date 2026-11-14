@@ -71,7 +71,7 @@ const EXPORT_ACK_MS = 180000  // 等宿主写完一份的上限
 
 // 页面协议版本：与插件里 kPageProto 一一对应。改动两边交互的帧格式时一起加一，
 // 只换 DLL 不换 web 资源会被宿主发现并提示，不会静默按旧格式解析。
-const PAGE_PROTO = 2
+const PAGE_PROTO = 3
 
 // 全选复制：复制的是渲染后的文本（不是 Markdown 源文本）。整篇提取有成本，
 // 超过这个字符数就截断并提示；1M 级文档可以完整复制，再大只复制前缀。
@@ -5435,7 +5435,19 @@ async function startPrint() {
 
 /* 导出 PDF：与打印共用铺全文这一段，但不弹打印对话框——宿主让引擎直接把页面
    写成 PDF，不经过打印机驱动，文字才保持可复制。进度按块数回报，Esc 可取消。 */
-async function startExport(planSegBlocks) {
+/* 分段计划：每段约 512 KB 内容。块大小差得很远（5 MB 样本 14.7 万块、平均 36 字节），
+   按固定块数切会切出几十段，所以按「文件大小 / 块数」估每段多少块。 */
+function exportPlan() {
+  const blocks = Math.max(1, V.blockCount)
+  let segBlocks = blocks
+  if (V.fileSize > PRINT_MAX_FILE) {
+    const avg = V.fileSize / blocks
+    if (avg > 0) segBlocks = Math.max(PRINT_BATCH * 2, Math.floor((512 * 1024) / avg))
+  }
+  return { segBlocks, segs: Math.max(1, Math.ceil(blocks / Math.max(1, segBlocks))) }
+}
+
+async function startExport(segBlocks, planSegs) {
   if (!V.active) {
     postRaw('export-error|没有可导出的文档')
     return
@@ -5445,11 +5457,10 @@ async function startExport(planSegBlocks) {
     return
   }
 
-  // 每份多少块由宿主算好（与它弹的确认框里那份数同源），这里按实际块数核对段数
-  const segBlocks = planSegBlocks > 0 ? planSegBlocks : V.blockCount
-  const segs = Math.max(1, Math.ceil(V.blockCount / Math.max(1, segBlocks)))
+  const blocks = segBlocks > 0 ? segBlocks : V.blockCount
+  const segs = planSegs > 0 ? planSegs : Math.max(1, Math.ceil(V.blockCount / Math.max(1, blocks)))
   if (segs > EXPORT_MAX_SEGS) {
-    postRaw('export-error|文档太大：需要切成 ' + segs + ' 份，超过上限 ' + EXPORT_MAX_SEGS)
+    postRaw('export-error|文档太大：需要切成 ' + segs + ' 段，超过上限 ' + EXPORT_MAX_SEGS)
     return
   }
 
@@ -5467,8 +5478,8 @@ async function startExport(planSegBlocks) {
         postRaw('export-error|已取消导出')
         return
       }
-      const from = seg * segBlocks
-      const to = Math.min(from + segBlocks, V.blockCount)
+      const from = seg * blocks
+      const to = Math.min(from + blocks, V.blockCount)
       const root = await buildPrintView((done, total) => {
         if (PRINT.cancel) return
         // 进度按「本份」算：整篇口径下第一份要爬很久，看起来像卡住
@@ -5615,10 +5626,18 @@ function onHostMessage(event) {
     return
   }
 
+  if (type === 'export-plan') {
+    // 份数只有页面算得准：全文索引完成后真实块数可能比估计值多一倍，
+    // 宿主拿这个数去弹确认框，才不会出现「说的是 11 份、实际 22 份」
+    const plan = exportPlan()
+    postRaw('export-plan|' + plan.segBlocks + '|' + plan.segs)
+    return
+  }
+
   if (type === 'export') {
-    // export|<每份块数，0 = 整篇一份>|<宿主预估份数>
+    // export|<每段块数>|<总段数>：都按宿主转下来的计划走
     const f = rest.split('|')
-    startExport(parseInt(f[0], 10) || 0)
+    startExport(parseInt(f[0], 10) || 0, parseInt(f[1], 10) || 0)
     return
   }
 
