@@ -322,7 +322,8 @@ void ApplyPdfSettings(ICoreWebView2PrintSettings* s) {
   s->put_MarginBottom(kMarginMm * kInchPerMm);
   s->put_MarginLeft(kMarginMm * kInchPerMm);
   s->put_MarginRight(kMarginMm * kInchPerMm);
-  // 打背景是必须的：深色打印皮肤靠它出底色，亮色皮肤靠它保住代码块底色。
+  // 打背景是必须的：导出用深色打印皮肤时靠它出底色，亮色皮肤靠它保住代码块底色。
+  // 这条只管 PrintToPdfStream；打印走系统对话框，背景由对话框里的选项决定。
   s->put_ShouldPrintBackgrounds(TRUE);
   // 页眉页脚的内容由引擎写死为「日期/标题 / URI/页码」，URI 是 mddoc.localhost
   // 内部地址，对拿到 PDF 的人只是噪声；WebView2 不暴露自定义模板。
@@ -1601,8 +1602,13 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
         LogLine(L"WEBHOST: 运行时没有 ICoreWebView2_16，打印不可用");
         return 0;
       }
-      const HRESULT hr = wv16->ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_BROWSER);
-      LogLine(L"WEBHOST: ShowPrintUI hr=0x%08X", static_cast<unsigned>(hr));
+      // 系统打印对话框：不做 Chromium 的逐页预览，纸张、边距、打印机与是否打背景
+      // 都由系统对话框决定。ShowPrintUI 不接受 print settings，与导出用的
+      // ApplyPdfSettings（A4 + 10 mm + 强制背景）是两套：打印主题的底色、代码块
+      // 底色需要用户在对话框里勾选「打印背景图形」才会出。BROWSER 那条路要为
+      // 整份文档渲染预览页，页数一多光预览就先卡住。
+      const HRESULT hr = wv16->ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_SYSTEM);
+      LogLine(L"WEBHOST: ShowPrintUI(System) hr=0x%08X", static_cast<unsigned>(hr));
       return SUCCEEDED(hr) ? 1 : 0;
     }
 

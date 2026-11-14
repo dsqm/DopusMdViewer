@@ -82,9 +82,10 @@ const EXPORT_MIN_SEG_BYTES = 64 * 1024     // 单段下限：避免极密集版�
 const EXPORT_SAMPLE_SPOTS = 6              // 采样点数量（均匀分布在全文）
 const EXPORT_SAMPLE_BLOCKS = 400           // 每个采样点渲染的块数
 
-// 页面协议版本：与插件里 kPageProto 一一对应。改动两边交互的帧格式时一起加一，
-// 只换 DLL 不换 web 资源会被宿主发现并提示，不会静默按旧格式解析。
-const PAGE_PROTO = 5
+// 页面协议版本：与插件里 kPageProto 一一对应。改动两边交互的帧格式时一起加一。
+// 宿主在每次导出前发 proto-query 现问现答，不依赖启动时那一次自报：
+// 单宿主复用时切窗口不会重新加载页面，缓存偶尔吐出旧 app.js 也会让自报失真。
+const PAGE_PROTO = 6
 
 // 全选复制：复制的是渲染后的文本（不是 Markdown 源文本）。整篇提取有成本，
 // 超过这个字符数就截断并提示；1M 级文档可以完整复制，再大只复制前缀。
@@ -5334,7 +5335,7 @@ async function renderMermaidBlocks(root, generation) {
 
 /* ---------------- 打印 ----------------
    虚拟滚动下 DOM 里只有视口块，打印前把全文按块渲染进 #print-root，
-   @media print 只显示它；对话框由宿主调 ShowPrintUI 打开。 */
+   @media print 只显示它；对话框由宿主调 ShowPrintUI(SYSTEM) 打开。 */
 
 function cleanupPrint() {
   if (PRINT.timer) {
@@ -5422,7 +5423,7 @@ async function startPrint() {
   }
   if (PRINT.busy) return
   if (V.fileSize > PRINT_MAX_FILE) {
-    postRaw('status|文档超过 2 MB，暂不支持打印')
+    postRaw('status|文档超过 2 MB，暂不支持打印，请改用「导出 PDF」')
     postRaw('print-done')
     return
   }
@@ -5444,7 +5445,8 @@ async function startPrint() {
     const n = root.querySelectorAll('.pblk').length
     report('print-ready', (performance.now() - t0).toFixed(0) + '|' + n)
     postRaw('print-ready')
-    // 正常会收到 afterprint；收不到时 5 分钟后兜底清掉，别把全文 DOM 留在页面里
+    // 打印对话框由宿主调起，页面只能靠 afterprint 得知结束；对话框被直接关掉
+    // 或消息丢了都可能收不到，所以 5 分钟后兜底清掉全文 DOM
     PRINT.timer = setTimeout(() => {
       cleanupPrint()
       postRaw('print-done')
@@ -5764,6 +5766,12 @@ function onHostMessage(event) {
 
   if (type === 'print') {
     startPrint()
+    return
+  }
+
+  if (type === 'proto-query') {
+    // 导出前的版本握手：宿主拿这次应答判断，不缓存、不按窗口记
+    postRaw('proto|' + PAGE_PROTO)
     return
   }
 

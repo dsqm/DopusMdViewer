@@ -90,8 +90,9 @@ bool WebHostExecuteScript(HWND hViewer, const std::wstring& script);
 // 只给 tools/hosttest 用：发一条 DevTools 方法，用来造渲染进程崩溃（Page.crash）。
 bool WebHostCallDevTools(HWND hViewer, const std::wstring& method);
 
-// 打开 WebView2 的打印对话框（ICoreWebView2_16::ShowPrintUI）。页面要先把
-// 全文渲染进打印容器；运行时太老拿不到接口时返回 false。
+// 打开 Windows 系统打印对话框（ICoreWebView2_16::ShowPrintUI 的 SYSTEM 档，
+// 不走 Chromium 逐页预览）。页面要先把全文渲染进打印容器；
+// 运行时太老拿不到接口时返回 false。
 bool WebHostShowPrintUI(HWND hViewer);
 
 // 把当前页面（打印媒体，即页面铺好的打印容器）写成 PDF 文件。

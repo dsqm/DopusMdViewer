@@ -277,8 +277,9 @@ body.dev #doc {
 #print-root.probe-pages .pblk { display: none; }
 #print-root.probe-pages .pblk.probe-on { display: block; }
 
-/* 纸张与边距必须和 C++ 侧 PrintSettings 一致：导出的 PDF 由那边设定 A4 + 10 mm，
-   打印预览走这里。两处不一致时按谁为准取决于引擎，属于不该有的不确定性。 */
+/* 与 C++ 侧 PrintSettings（导出 PDF 用）保持 A4 + 10 mm。打印走系统对话框，
+   不接受程序化设置：用户不选时以这里的 @page 为默认，对话框里的纸张/边距会覆盖它。
+   导出那条路不受影响，边距由 PrintSettings 固定。 */
 @page { margin: 10mm; }
 
 @media print {

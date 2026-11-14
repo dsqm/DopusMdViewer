@@ -51,10 +51,13 @@ constexpr ULONGLONG kExportTimeoutMs = 5ull * 60 * 1000;
 // （引擎分页耗时随单段 DOM 规模超线性增长，段做大反而更慢）。
 // 上限只作保护阀，不再是「文档大小」的天花板。
 constexpr int kExportMaxSegs = 512;
-// 页面协议版本：与 app.js 的 PAGE_PROTO 一一对应。只换 DLL 不换 web 资源时，
-// 旧页面发的是旧帧格式（export-ready 不带页数估算），静默解析会让进度估成错的，
-// 所以两边对不上就直接拒绝导出并提示。
-constexpr int kPageProto = 5;
+// 页面协议版本：与 app.js 的 PAGE_PROTO 一一对应。旧页面发的是旧帧格式
+// （export-ready 不带页数估算），静默解析会让进度估成错的，所以两边对不上就拒绝导出。
+// 版本在每次导出前现问现答，不按窗口缓存：单宿主复用时新窗口不会重新加载页面。
+constexpr int kPageProto = 6;
+// 握手等应答的上限。页面应答是同步 postMessage，正常几毫秒；旧页面不认识
+// proto-query，不会有任何回应。
+constexpr ULONGLONG kProtoQueryTimeoutMs = 3000;
 // 引擎分页（PrintToPdfStream）没有进度回调，预告时长与百分比只能折算。排版对象个数
 // （DOM 节点数）是唯一与耗时同向的量；分段按节点预算切到成本拐点后，各份规模接近，
 // 用「实测毫秒 / 节点数」这个单价折算即可。旧版按「2.6 秒固定开销 + 单价」拟合，
@@ -164,10 +167,9 @@ struct ViewerState {
   wchar_t exportLastTail[48];
   // 分段时各份先落到 .partNN.pdf，全部写完再合并成用户要的那一份
   std::vector<std::wstring> exportParts;
-  // 页面自报的协议版本（0 = 还没收到）。与 kPageProto 不符说明 web 资源没跟着更新。
-  int pageProto;
-  bool protoWarned;
-  ULONGLONG readyTick;
+  // 导出前的协议握手：版本属于页面资源，不属于某个窗口，所以不缓存、每次现问
+  bool protoQueryPending;
+  ULONGLONG protoQueryTick;
   // 导出计划：份数由页面按真实块数算，宿主拿到后才弹确认框、才开始
   bool exportPlanPending;
   ULONGLONG planTick;
@@ -578,6 +580,7 @@ std::wstring PartPath(const std::wstring& base, int seg, int segs) {
 
 void EndExport(ViewerState* st, const wchar_t* status) {
   st->exporting = false;
+  st->protoQueryPending = false;
   st->exportPath.clear();
   st->exportSeg = 0;
   st->exportSegs = 1;
@@ -618,15 +621,23 @@ void StartExport(ViewerState* st) {
     SetStatus(st, L"正在导出，请稍候…");
     return;
   }
-  // 资源没跟着升级时，旧页面的进度帧与分段协议都对不上，导下去只会出怪结果
-  if (st->pageProto != kPageProto) {
-    LogLine(L"VIEWER: 拒绝导出，页面协议 %d ≠ %d", st->pageProto, kPageProto);
-    SetStatus(st, L"web 资源与插件版本不一致，无法导出（请一并更新）");
+  // 版本属于页面资源而不是窗口：每次导出前向当前页面现问一次。单宿主复用时
+  // 窗口切换不会重新加载页面，按窗口缓存的版本会过期；缓存偶尔吐出旧 app.js
+  // 也会让启动时那一次自报失真。
+  if (st->protoQueryPending) {
+    SetStatus(st, L"正在导出，请稍候…");
     return;
   }
+  st->protoQueryPending = true;
+  st->protoQueryTick = ::GetTickCount64();
+  if (!WebHostPost(st->hwndSelf, L"proto-query|")) {
+    st->protoQueryPending = false;
+    SetStatus(st, L"导出准备失败：页面不可达");
+  }
+}
 
-  // 份数只有页面算得准：全文索引完成后真实块数可能比估计值多一倍，而确认框、
-  // 状态栏与文件名必须同源。所以先要一份计划，拿到之后再弹框、选路径。
+// 协议握手通过后才要计划：确认框、状态栏与文件名必须和页面算出的份数同源。
+void RequestExportPlan(ViewerState* st) {
   st->exportPlanPending = true;
   st->planTick = ::GetTickCount64();
   if (!WebHostPost(st->hwndSelf, L"export-plan|")) {
@@ -1629,10 +1640,6 @@ void ShowOwnContextMenu(ViewerState* st) {
 // ---- 宿主事件（由宿主线程 PostMessage 过来，运行在查看器自己的线程上） ----
 
 void OnHostReady(ViewerState* st) {
-  // 页面是新的还是旧的，等它自报协议版本；没报就按旧版对待
-  st->pageProto = 0;
-  st->protoWarned = false;
-  st->readyTick = ::GetTickCount64();
   PushChrome(st);
   if (st->docOpened) PushIndex(st);
   MaybePushIndexFull(st);
@@ -1651,11 +1658,18 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
   }
 
   if (type == L"proto") {
-    st->pageProto = _wtoi(rest.c_str());
-    if (st->pageProto != kPageProto) {
-      LogLine(L"VIEWER: 页面协议 %d，插件要求 %d（web 资源与 DLL 版本不一致）",
-              st->pageProto, kPageProto);
+    const int proto = _wtoi(rest.c_str());
+    LogLine(L"VIEWER: 页面协议 %d，插件要求 %d", proto, kPageProto);
+    // 启动时的自报只记日志；放行与否一律看导出前那次握手的当次应答
+    if (!st->protoQueryPending) return;
+    st->protoQueryPending = false;
+    if (proto != kPageProto) {
+      LogLine(L"VIEWER: 拒绝导出，页面协议 %d ≠ %d", proto, kPageProto);
+      SetStatus(st, L"web 资源与插件版本不一致（资源 %d / 插件 %d），请一并更新",
+                proto, kPageProto);
+      return;
     }
+    RequestExportPlan(st);
     return;
   }
 
@@ -1680,7 +1694,7 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
 
   if (type == L"print-ready") {
     const bool ok = WebHostShowPrintUI(st->hwndSelf);
-    LogLine(L"VIEWER: 打印内容就绪，ShowPrintUI %s", ok ? L"成功" : L"失败");
+    LogLine(L"VIEWER: 打印内容就绪，系统打印对话框调用%s", ok ? L"成功" : L"失败");
     if (!ok) SetStatus(st, L"打印不可用：WebView2 运行时过旧");
     return;
   }
@@ -2406,7 +2420,8 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
           LogLine(L"VIEWER: DOpus 深浅色切换 dark=%d，重推皮肤", dark ? 1 : 0);
           PushChrome(st);
         }
-        // 页面中止打印时不一定发 print-done；打印皮肤不能一直留着
+        // 打印对话框由宿主调起，页面只能靠 afterprint 回报结束；系统对话框这条路
+        // 更不能假设它一定来，所以超时兜底恢复打印皮肤
         if (st->pagedSkin && !st->exporting &&
             ::GetTickCount64() - st->pagedStartTick > kPrintLightMaxMs) {
           st->pagedSkin = false;
@@ -2418,13 +2433,13 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
           LogLine(L"VIEWER: 导出超时未收到结果，已放弃本次导出");
           EndExport(st, L"导出超时，已放弃");
         }
-        // 旧页面不会自报协议版本：等 5 秒还没有就明确提示，免得导出时才发现
-        if (!st->protoWarned && st->readyTick && st->pageProto != kPageProto &&
-            ::GetTickCount64() - st->readyTick > 5000) {
-          st->protoWarned = true;
-          LogLine(L"VIEWER: 5 秒内没收到页面协议版本，按旧资源处理");
-          SetStatus(st, L"web 资源与插件版本不一致（资源 %d / 插件 %d），请一并更新",
-                    st->pageProto, kPageProto);
+        // 握手没应答：旧页面不认识 proto-query，明确报出来而不是静默放过
+        if (st->protoQueryPending &&
+            ::GetTickCount64() - st->protoQueryTick > kProtoQueryTimeoutMs) {
+          st->protoQueryPending = false;
+          LogLine(L"VIEWER: %llu 毫秒内没收到页面协议应答，按旧资源处理",
+                  kProtoQueryTimeoutMs);
+          SetStatus(st, L"web 资源与插件版本不一致（页面无应答），请一并更新");
         }
         // 引擎分页这一段拿不到真实进度，按「本份排版量折算的耗时」推进。
         // 每秒刷新一次即可，文案与剩余时间都交给 UpdateExportStatus，别在这里另算一套。
@@ -2594,9 +2609,8 @@ HWND ViewerCreate(HWND hWndParent, const RECT* lpRc, DWORD dwFlags) {
   st->exportLastPct = -1;
   st->exportLastSeg = -1;
   st->exportLastTail[0] = L'\0';
-  st->pageProto = 0;
-  st->protoWarned = false;
-  st->readyTick = 0;
+  st->protoQueryPending = false;
+  st->protoQueryTick = 0;
   st->exportPlanPending = false;
   st->planTick = 0;
   st->waitingPdf = false;
@@ -2659,11 +2673,10 @@ bool ViewerTestExport(HWND hViewer, const wchar_t* path) {
   if (!hViewer || !path || !*path) return false;
   ViewerState* st = reinterpret_cast<ViewerState*>(::GetWindowLongPtrW(hViewer, GWLP_USERDATA));
   if (!st || !st->docOpened || !st->hasHost || st->webFailed || !WebHostIsReady()) return false;
-  if (st->exporting || st->exportPlanPending) return false;
+  if (st->exporting || st->exportPlanPending || st->protoQueryPending) return false;
 
-  // 与右键菜单同一条链路：先向页面要计划，只是拿到后不弹确认框与保存对话框
+  // 与右键菜单完全同一条链路（含导出前的协议握手），只是计划到手后不弹对话框
   st->testExportPath = path;
-  st->exportPlanPending = true;
-  st->planTick = ::GetTickCount64();
-  return WebHostPost(hViewer, L"export-plan|");
+  StartExport(st);
+  return st->protoQueryPending;
 }
