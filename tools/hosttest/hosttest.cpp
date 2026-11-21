@@ -808,7 +808,11 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
       const NMHDR* hdr = reinterpret_cast<const NMHDR*>(lParam);
       if (hdr && hdr->code == DVPN_STATUSTEXT) {
         const DVPNMSTATUSTEXT* t = reinterpret_cast<const DVPNMSTATUSTEXT*>(lParam);
-        LogLine(L"TEST: 状态 \"%s\"", t->lpszStatusText ? t->lpszStatusText : L"");
+        if (t->lpszStatusText) {
+          LogLine(L"TEST: 状态 \"%s\"", t->lpszStatusText);
+        } else {
+          LogLine(L"TEST: 状态复位（交还 DOpus 原生内容）");
+        }
       }
       return 0;
     }

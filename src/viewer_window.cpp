@@ -40,6 +40,10 @@ const wchar_t kDocBase[] = L"https://mddoc.localhost/";
 // 要覆盖页面 5 分钟的打印超时。
 constexpr UINT_PTR kDarkPollTimerId = 1;
 constexpr UINT kDarkPollMs = 500;
+// 状态栏属于 DOpus：我们只临时借几秒说一句，到点发 0 交还原生多分区内容。
+// 提示本身不能长期占着——原生那条栏里的序号、缩放、大小、加载耗时都被顶掉了。
+constexpr UINT_PTR kStatusResetTimerId = 2;
+constexpr UINT kStatusResetMs = 4000;
 // 对话框关闭后补做被延后的加载（见 HandleLoad）
 constexpr UINT kMsgPendingLoad = WM_APP + 0x312;
 constexpr ULONGLONG kPrintLightMaxMs = 6ull * 60 * 1000;
@@ -273,6 +277,8 @@ void SendStatusText(ViewerState* st, const wchar_t* pszText) {
   nmt.hdr.hwndFrom = st->hwndSelf;
   nmt.hdr.idFrom = static_cast<UINT_PTR>(::GetDlgCtrlID(st->hwndSelf));
   nmt.hdr.code = static_cast<UINT>(DVPN_STATUSTEXT);
+  // pszText 为 0 才是「复位成 DOpus 原生内容」；传 L"" 只会上报一条空文本，
+  // 状态栏仍然被我们占着（SDK 的复位方式只有这一种）。
   nmt.lpszStatusText = const_cast<LPTSTR>(pszText);
   nmt.fUnicode = TRUE;
 
@@ -303,6 +309,20 @@ void SetStatus(ViewerState* st, const wchar_t* pszFormat, ...) {  va_list args;
   ::StringCchVPrintfW(st->szStatus, ARRAYSIZE(st->szStatus), pszFormat, args);
   va_end(args);
   SendStatusText(st, st->szStatus);
+  // 借来的状态栏几秒后必须还：进度类提示每帧都调这里，定时器随之续期，
+  // 跑完最后一句再到期复位；没有后续更新的长操作则提前交还原生内容。
+  if (st->hwndSelf) {
+    ::SetTimer(st->hwndSelf, kStatusResetTimerId, kStatusResetMs, nullptr);
+  }
+}
+
+// 把状态栏还给 DOpus。注意必须是 lpszStatusText=0，不能是空串——
+// 空串只是把我们的文本改成空，原生分区仍然回不来。
+void ResetStatus(ViewerState* st) {
+  if (!st || !st->hwndSelf) return;
+  ::KillTimer(st->hwndSelf, kStatusResetTimerId);
+  st->szStatus[0] = L'\0';
+  SendStatusText(st, nullptr);
 }
 
 RECT ClientRectOf(HWND hwnd) {
@@ -822,7 +842,8 @@ void OpenDoc(ViewerState* st) {
   PushChrome(st);
   PushIndex(st);
   MaybePushIndexFull(st);
-  SetStatus(st, L"%s — %llu B", UtilLeafName(st->szFile), st->ullFileSize);
+  // 文件名与字节数 DOpus 原生状态栏本来就有，这里不再上报，免得为一条重复信息
+  // 把整条原生分区顶掉。
   ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
 }
 
@@ -1683,7 +1704,6 @@ void OnHostMessage(ViewerState* st, const std::wstring& frame) {
       const double total = st->qpcLoad ? QpcMs(st->qpcLoad, t1.QuadPart) : 0.0;
       LogLine(L"VIEWER: 首屏渲染完成 %s（LOADW 起 %.1fms）", detail.c_str(), total);
       LogMemory(L"首屏后");
-      SetStatus(st, L"%s — %llu B", UtilLeafName(st->szFile), st->ullFileSize);
     } else if (kind.find(L"error") != std::wstring::npos || kind == L"csp" ||
                kind == L"skin-invalid" || kind == L"mermaid-unavailable" ||
                kind == L"anchor-missing" || kind == L"perf") {
@@ -2120,8 +2140,7 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
     if (WebHostHostExists()) {
       // 宿主在别的查看器手里：先记住路径，收回宿主时再开索引。
       LogLine(L"VIEWER: 宿主不在本窗口，先不建索引（%s）", pszPath);
-      SetStatus(st, L"%s — %llu B（%s）", UtilLeafName(pszPath), st->ullFileSize,
-                NoHostReason());
+      SetStatus(st, L"%s", NoHostReason());
       return;
     }
     // 宿主线程/窗口还没建好（建线程有几秒窗口期）：这里补借一次，失败再转空白。
@@ -2130,8 +2149,7 @@ void HandleLoad(ViewerState* st, const wchar_t* pszPath) {
       LogLine(L"VIEWER: 补借宿主成功");
     } else {
       LogLine(L"VIEWER: 宿主不可用，先不建索引（%s）", pszPath);
-      SetStatus(st, L"%s — %llu B（%s）", UtilLeafName(pszPath), st->ullFileSize,
-                NoHostReason());
+      SetStatus(st, L"%s", NoHostReason());
       return;
     }
   }
@@ -2152,6 +2170,8 @@ void HandleClear(ViewerState* st) {
   if (st->hasHost && WebHostIsReady()) {
     WebHostPost(st->hwndSelf, msg::MakeClear());
   }
+  // 没有文档了，状态栏也不该再挂着上一个文件的提示
+  ResetStatus(st);
   ::InvalidateRect(st->hwndSelf, nullptr, TRUE);
 }
 
@@ -2241,6 +2261,7 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       // 必须在这里归还宿主：DestroyWindow 会连子窗口一起销毁，而宿主此刻正是
       // 这个窗口的子窗口。等到 WM_NCDESTROY 就晚了——宿主已经没了，controller
       // 跟着失效（之后每次 postMessage 都是 0x8007139F）。
+      ::KillTimer(hwnd, kStatusResetTimerId);
       WebHostUnborrow(hwnd);
       docsrc::CloseIfOwner(hwnd);
       st->docOpened = false;
@@ -2413,6 +2434,10 @@ LRESULT HandleMessage(ViewerState* st, HWND hwnd, UINT uMsg, WPARAM wParam, LPAR
       return 0;
 
     case WM_TIMER:
+      if (wParam == kStatusResetTimerId) {
+        ResetStatus(st);
+        return 0;
+      }
       if (wParam == kDarkPollTimerId) {
         const bool dark = HostThemeDark(st);
         if (dark != st->darkMode) {
