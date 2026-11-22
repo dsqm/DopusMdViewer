@@ -29,10 +29,32 @@ import subprocess
 import sys
 import time
 
+
+def _ensure_output_encoding(stream):
+    """输出编码表示不了中文时改用 UTF-8。
+
+    Windows 控制台默认代码页不一定是中文（CI 上是 cp1252），脚本里的状态行
+    会直接抛 UnicodeEncodeError。本地 GBK 控制台能表示中文，保持原样不动。
+    """
+    encoding = getattr(stream, 'encoding', None) or 'ascii'
+    try:
+        '皮肤'.encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
+
+
+for _stream in (sys.stdout, sys.stderr):
+    _ensure_output_encoding(_stream)
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 TOOL = os.path.join(ROOT, 'tools', 'skinedit')
 BIN = os.path.join(TOOL, 'bin')
 WEB = os.path.join(ROOT, 'web')
+
+
 def find_msvc():
     """定位 MSVC 工具集目录：环境变量 → 本机固定安装 → vswhere 找到的 VS。"""
     override = os.environ.get('MDV_MSVC_DIR')
