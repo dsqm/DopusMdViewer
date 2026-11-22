@@ -17,7 +17,8 @@ bin 是发布目录：exe 与 assets 同级，pack.bat 也在那里，打包就�
 容忍警告等于让它长期挂着。
 
 exe 不链插件任何 TU（util / skin / log 一概不要），只链 WebView2 静态加载器——皮肤
-编辑器要能单独拷走。MSVC 与 SDK 的位置写死在本机安装处，换机器改下面几个常量。
+编辑器要能单独拷走。MSVC 与 Windows SDK 自动探测（本机固定安装 → vswhere / Windows
+Kits 最新版），也可用 MDV_MSVC_DIR / MDV_SDK_DIR 覆盖。
 cmd.exe 在本机从 shell 起不来，所以这里直接调 cl.exe / rc.exe / link.exe。
 """
 
@@ -32,39 +33,78 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 TOOL = os.path.join(ROOT, 'tools', 'skinedit')
 BIN = os.path.join(TOOL, 'bin')
 WEB = os.path.join(ROOT, 'web')
-MSVC_VER = '14.44.35207'
-SDK_VER = '10.0.26100.0'
-VS = r'C:\VS2022'
-SDK = r'C:\Program Files (x86)\Windows Kits\10'
+def find_msvc():
+    """定位 MSVC 工具集目录：环境变量 → 本机固定安装 → vswhere 找到的 VS。"""
+    override = os.environ.get('MDV_MSVC_DIR')
+    if override and os.path.isdir(override):
+        return override
 
-MSVC = os.path.join(VS, 'VC', 'Tools', 'MSVC', MSVC_VER)
+    candidates = [r'C:\VS2022']
+    vswhere = os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'),
+                           'Microsoft Visual Studio', 'Installer', 'vswhere.exe')
+    if os.path.isfile(vswhere):
+        p = subprocess.run([vswhere, '-latest', '-products', '*',
+                            '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+                            '-property', 'installationPath'],
+                           capture_output=True, text=True)
+        root = p.stdout.strip()
+        if root:
+            candidates.append(root)
+
+    for root in candidates:
+        tools = os.path.join(root, 'VC', 'Tools', 'MSVC')
+        if not os.path.isdir(tools):
+            continue
+        versions = sorted(v for v in os.listdir(tools)
+                          if os.path.isdir(os.path.join(tools, v)))
+        if versions:
+            return os.path.join(tools, versions[-1])
+    return None
+
+
+def find_sdk():
+    """定位 Windows SDK：环境变量 → 本机固定安装，取最新的 10.x。"""
+    root = os.environ.get('MDV_SDK_DIR') or r'C:\Program Files (x86)\Windows Kits\10'
+    inc = os.path.join(root, 'Include')
+    if not os.path.isdir(inc):
+        return None, None
+    versions = sorted(v for v in os.listdir(inc) if v.startswith('10.'))
+    if not versions:
+        return None, None
+    return root, versions[-1]
+
+
+MSVC = find_msvc()
+SDK, SDK_VER = find_sdk()
+
 OBJ = os.path.join(ROOT, 'build', 'obj-skinedit')
 OUT = os.path.join(BIN, 'skinedit.exe')
 ASSETS = os.path.join(BIN, 'assets')
 
-CL = os.path.join(MSVC, 'bin', 'Hostx64', 'x64', 'cl.exe')
-RC = os.path.join(SDK, 'bin', SDK_VER, 'x64', 'rc.exe')
-LINK = os.path.join(MSVC, 'bin', 'Hostx64', 'x64', 'link.exe')
+CL = os.path.join(MSVC, 'bin', 'Hostx64', 'x64', 'cl.exe') if MSVC else ''
+RC = os.path.join(SDK, 'bin', SDK_VER, 'x64', 'rc.exe') if SDK else ''
+LINK = os.path.join(MSVC, 'bin', 'Hostx64', 'x64', 'link.exe') if MSVC else ''
 
 env = dict(os.environ)
-env['INCLUDE'] = ';'.join([
-    os.path.join(MSVC, 'include'),
-    os.path.join(SDK, 'Include', SDK_VER, 'ucrt'),
-    os.path.join(SDK, 'Include', SDK_VER, 'shared'),
-    os.path.join(SDK, 'Include', SDK_VER, 'um'),
-    os.path.join(SDK, 'Include', SDK_VER, 'winrt'),
-    os.path.join(ROOT, 'sdk', 'webview2', 'include'),
-])
-env['LIB'] = ';'.join([
-    os.path.join(MSVC, 'lib', 'x64'),
-    os.path.join(SDK, 'Lib', SDK_VER, 'ucrt', 'x64'),
-    os.path.join(SDK, 'Lib', SDK_VER, 'um', 'x64'),
-])
-env['PATH'] = ';'.join([
-    os.path.join(MSVC, 'bin', 'Hostx64', 'x64'),
-    os.path.join(SDK, 'bin', SDK_VER, 'x64'),
-    os.environ.get('PATH', ''),
-])
+if MSVC and SDK:
+    env['INCLUDE'] = ';'.join([
+        os.path.join(MSVC, 'include'),
+        os.path.join(SDK, 'Include', SDK_VER, 'ucrt'),
+        os.path.join(SDK, 'Include', SDK_VER, 'shared'),
+        os.path.join(SDK, 'Include', SDK_VER, 'um'),
+        os.path.join(SDK, 'Include', SDK_VER, 'winrt'),
+        os.path.join(ROOT, 'sdk', 'webview2', 'include'),
+    ])
+    env['LIB'] = ';'.join([
+        os.path.join(MSVC, 'lib', 'x64'),
+        os.path.join(SDK, 'Lib', SDK_VER, 'ucrt', 'x64'),
+        os.path.join(SDK, 'Lib', SDK_VER, 'um', 'x64'),
+    ])
+    env['PATH'] = ';'.join([
+        os.path.join(MSVC, 'bin', 'Hostx64', 'x64'),
+        os.path.join(SDK, 'bin', SDK_VER, 'x64'),
+        os.environ.get('PATH', ''),
+    ])
 
 ISSUE = re.compile(r'(error [A-Z]+\d+|fatal error|warning [A-Z]+\d+|LNK\d+)')
 
@@ -219,6 +259,10 @@ def main():
 
     os.makedirs(OBJ, exist_ok=True)
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
+
+    if not MSVC or not SDK:
+        print('找不到 MSVC 或 Windows SDK：可用 MDV_MSVC_DIR / MDV_SDK_DIR 指定')
+        return 1
 
     for exe in (CL, RC, LINK):
         if not os.path.isfile(exe):

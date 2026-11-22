@@ -1,0 +1,85 @@
+name: build
+description: 编译插件与皮肤工具，并打成两个发布包
+
+# 两个 workflow 共用这一份构建步骤：CI 只上传产物，release 直接拿产物发版。
+# 版本号在这里固定一次（MDV_VERSION），插件与皮肤工具才会是同一个版本。
+
+outputs:
+  version:
+    description: 本次构建的版本号（年.月.日.时分）
+    value: ${{ steps.version.outputs.version }}
+  plugin_zip:
+    description: 插件本体包路径
+    value: ${{ steps.pack.outputs.plugin_zip }}
+  skinedit_zip:
+    description: 皮肤工具包路径
+    value: ${{ steps.pack.outputs.skinedit_zip }}
+
+runs:
+  using: composite
+  steps:
+    - name: 安装 Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: npm
+        cache-dependency-path: webbuild/package-lock.json
+
+    - name: 安装 Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: 安装前端依赖
+      shell: pwsh
+      working-directory: webbuild
+      run: npm ci
+
+    - name: 固定版本号
+      id: version
+      shell: pwsh
+      run: |
+        powershell -NoProfile -ExecutionPolicy Bypass -File tools\gen-version.ps1
+        $inc = Get-Content build\obj\version.rc.inc -Raw
+        $ver = [regex]::Match($inc, 'MDV_VER_STRING\s+"([^"]+)"').Groups[1].Value
+        if (-not $ver) { throw '版本号生成失败' }
+        "MDV_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+    - name: 编译插件
+      shell: cmd
+      run: build.bat < nul
+
+    - name: 编译皮肤工具
+      shell: pwsh
+      run: python tools/skinedit/build.py
+
+    - name: 打包
+      id: pack
+      shell: pwsh
+      run: |
+        $ver = "${{ steps.version.outputs.version }}"
+        $out = 'build\release'
+        New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+        # 插件本体：DLL + 资源目录 + 说明与协议
+        $stage = Join-Path $out 'DopusMdViewer'
+        Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        Copy-Item 'bin\DopusMdViewer.dll' $stage
+        Copy-Item -Recurse 'bin\DopusMdViewer' (Join-Path $stage 'DopusMdViewer')
+        Copy-Item 'README.md', 'LICENSE' $stage
+        $pluginZip = Join-Path $out "DopusMdViewer-$ver.zip"
+        Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $pluginZip -Force
+
+        # 皮肤工具：pack.bat 是唯一打包口径（README.txt 与 assets 都在里面）
+        cmd /c "tools\skinedit\bin\pack.bat < nul"
+        if ($LASTEXITCODE -ne 0) { throw '皮肤工具打包失败' }
+        $skineditZip = Get-ChildItem 'tools\skinedit\bin\skinedit-*.zip' |
+          Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if (-not $skineditZip) { throw '找不到皮肤工具 zip' }
+        $skineditOut = Join-Path $out $skineditZip.Name
+        Copy-Item $skineditZip.FullName $skineditOut -Force
+
+        "plugin_zip=$pluginZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        "skinedit_zip=$skineditOut" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8

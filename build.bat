@@ -41,7 +41,9 @@ set "RC=%SDK_ROOT%\bin\%SDK_VER%\x64\rc.exe"
 set "DUMPBIN=%MSVC%\bin\Hostx64\x64\dumpbin.exe"
 set "W2INC=%PROJ%sdk\webview2\include"
 set "W2LIB=%PROJ%sdk\webview2\x64\WebView2LoaderStatic.lib"
-set "DOPUSINC=%PROJ%..\SDK\Headers"
+set "DOPUSINC=%PROJ%sdk\dopus"
+rem 需要换一份 SDK 时用环境变量覆盖（CI 或本地试验）
+if defined DOPUS_SDK_DIR set "DOPUSINC=%DOPUS_SDK_DIR%"
 set "ESBUILD=%PROJ%webbuild\node_modules\@esbuild\win32-x64\esbuild.exe"
 
 echo.

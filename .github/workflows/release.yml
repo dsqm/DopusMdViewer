@@ -1,0 +1,49 @@
+name: release
+
+# 手动发布：Actions 页面点 Run workflow。
+# 构建两个包（插件本体 / 皮肤工具），按上一个 tag 到本次 tag 的提交生成更新记录，
+# 然后创建 tag 与 GitHub Release。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: build
+        uses: ./.github/actions/compile
+
+      - name: 生成更新记录
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\gen-release-notes.ps1 `
+            -Version "${{ steps.build.outputs.version }}" `
+            -Repo "${{ github.repository }}" `
+            -OutFile release-notes.md
+
+      - name: 检查 tag 是否已存在
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.build.outputs.version }}"
+          git rev-parse -q --verify "refs/tags/$tag" | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "tag $tag 已存在，先删掉或换一次构建" }
+
+      - name: 发布
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.build.outputs.version }}" `
+            "${{ steps.build.outputs.plugin_zip }}" `
+            "${{ steps.build.outputs.skinedit_zip }}" `
+            --target "${{ github.sha }}" `
+            --title "DopusMdViewer ${{ steps.build.outputs.version }}" `
+            --notes-file release-notes.md
