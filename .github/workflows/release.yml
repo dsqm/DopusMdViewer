@@ -33,8 +33,10 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ steps.build.outputs.version }}"
-          git rev-parse -q --verify "refs/tags/$tag" | Out-Null
-          if ($LASTEXITCODE -eq 0) { throw "tag $tag 已存在，先删掉或换一次构建" }
+          # 用 tag --list 而不是 rev-parse：后者在 tag 不存在时退出码为 1，
+          # 会被 runner 的「原生命令非零即抛」抢先当成步骤失败。
+          $existing = git tag --list $tag
+          if ($existing) { throw "tag $tag 已存在，先删掉或换一次构建" }
 
       - name: 发布
         shell: pwsh

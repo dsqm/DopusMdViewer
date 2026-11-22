@@ -15,6 +15,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# PowerShell 7.4+ 默认把原生命令的非零退出码当异常抛出；本脚本按退出码分支，
+# 这里关掉它，否则「仓库还没有 tag」这类正常分支会直接失败。
+if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
+
 # Windows PowerShell 5.1 默认按控制台代码页解码原生命令输出，中文提交信息会变乱码。
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
