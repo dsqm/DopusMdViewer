@@ -17,13 +17,13 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: build
         uses: ./.github/actions/compile
 
       - name: 上传产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: DopusMdViewer-${{ steps.build.outputs.version }}
           path: |
