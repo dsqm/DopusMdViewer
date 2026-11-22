@@ -18,3 +18,8 @@
 #define IDC_PREVIEW_HINT    2021
 #define IDC_PREVIEW_TEXT    2022
 #define IDC_PREVIEW_DEFAULT 2023
+
+// Skin tool help (SkinHelpDlgProc in settings_dlg.cpp).
+#define IDD_SKIN_HELP      2030
+#define IDC_SKIN_HELP_TEXT 2031
+#define IDC_SKIN_HELP_OPEN 2032

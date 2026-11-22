@@ -91,6 +91,7 @@ enum {
   kIdOpenLog,
   kIdOpenConfig,
   kIdOpenSkins,
+  kIdSkinHelp,
   kIdPrewarm,
   kIdLinkOpenMode,
   kIdLinkConfirmWait,
@@ -500,6 +501,58 @@ void ShowTextHelp(HWND owner, const wchar_t* title, const wchar_t* text,
 void ShowConfigHelp(HWND owner, const wchar_t* text, HFONT font) {
   ShowTextHelp(owner, loc::T(loc::Str::ConfigFolder), text, kDataAliasName,
                loc::T(loc::Str::CopyAlias), font);
+}
+
+/* ---------------- 皮肤工具说明 ----------------
+   皮肤目录旁边放一个「帮助」：说明皮肤就是 .css，并指向配套的图形化皮肤工具
+   skinedit。工具本身不在插件里，所以给一个「打开仓库」直接跳过去。 */
+
+void OpenExternalLink(HWND owner, const wchar_t* url);
+
+INT_PTR CALLBACK SkinHelpDlgProc(HWND dlg, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+  switch (uMsg) {
+    case WM_INITDIALOG: {
+      const HFONT font = reinterpret_cast<HFONT>(lParam);
+      ::SetWindowTextW(dlg, loc::T(loc::Str::SkinHelpTitle));
+      ::SetDlgItemTextW(dlg, IDC_SKIN_HELP_TEXT, loc::T(loc::Str::SkinHelpText));
+      ::SetDlgItemTextW(dlg, IDC_SKIN_HELP_OPEN, loc::T(loc::Str::SkinHelpOpenRepo));
+      ::SetDlgItemTextW(dlg, IDOK, loc::T(loc::Str::SkinHelpClose));
+      if (font) {
+        HWND controls[] = {::GetDlgItem(dlg, IDC_SKIN_HELP_TEXT),
+                           ::GetDlgItem(dlg, IDC_SKIN_HELP_OPEN), ::GetDlgItem(dlg, IDOK)};
+        for (HWND h : controls) ApplyFont(h, font);
+      }
+      HWND edit = ::GetDlgItem(dlg, IDC_SKIN_HELP_TEXT);
+      if (edit) ::SetFocus(edit);
+      return TRUE;
+    }
+
+    case WM_COMMAND:
+      if (LOWORD(wParam) == IDC_SKIN_HELP_OPEN && HIWORD(wParam) == BN_CLICKED) {
+        OpenExternalLink(dlg, kGithubUrl);
+        return TRUE;
+      }
+      if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+        ::EndDialog(dlg, 0);
+        return TRUE;
+      }
+      return FALSE;
+
+    case WM_CLOSE:
+      ::EndDialog(dlg, 0);
+      return TRUE;
+
+    default:
+      return FALSE;
+  }
+}
+
+void ShowSkinHelp(DialogState* st) {
+  if (::DialogBoxParamW(ModuleHandle(), MAKEINTRESOURCEW(IDD_SKIN_HELP), st->hwnd, SkinHelpDlgProc,
+                        reinterpret_cast<LPARAM>(st->font)) == -1) {
+    ::MessageBoxW(st->hwnd, loc::T(loc::Str::SkinHelpText), loc::T(loc::Str::SkinHelpTitle),
+                  MB_OK | MB_ICONINFORMATION);
+  }
 }
 
 /* ---------------- 键盘导航 ----------------
@@ -2191,6 +2244,9 @@ void BuildUi(DialogState* st) {
   // 按钮摆在亮色框右侧，但创建在两个下拉之后：Tab 顺序先走完两框再到按钮
   AddControl(st, 0, L"BUTTON", loc::T(loc::Str::OpenSkins), BS_PUSHBUTTON | WS_TABSTOP, 390, 54,
              114, 24, kIdOpenSkins);
+  // 皮肤工具说明：紧挨「打开皮肤目录」，不占下拉框的位置
+  AddControl(st, 0, L"BUTTON", loc::T(loc::Str::SkinHelp), BS_PUSHBUTTON | WS_TABSTOP, 510, 54,
+             40, 24, kIdSkinHelp);
 
   // 打印与导出 PDF 都用这一份皮肤（清单与上面两框相同）。
   y = 122;
@@ -2895,6 +2951,9 @@ void OnCommand(DialogState* st, int id, int code) {
       return;
     case kIdOpenSkins:
       OpenFolder(st->hwnd, SkinUserDir());
+      return;
+    case kIdSkinHelp:
+      ShowSkinHelp(st);
       return;
     case kIdConfigHelp: {
       const std::wstring dir = UtilDataDir();

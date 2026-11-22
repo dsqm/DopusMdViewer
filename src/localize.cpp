@@ -104,6 +104,15 @@ const wchar_t* const kZh[kCount] = {
     /* OpenLog          */ L"打开日志目录",
     /* OpenConfig       */ L"打开配置目录",
     /* OpenSkins        */ L"打开皮肤目录",
+    /* SkinHelp         */ L"帮助",
+    /* SkinHelpTitle    */ L"皮肤工具",
+    /* SkinHelpText     */
+    L"皮肤即皮肤目录下的 .css 文件，既可手动编辑，也可用配套的图形化工具 skinedit 制作：\r\n"
+    L"以可视化方式调整颜色、字号与间距，实时预览效果，导出后放入皮肤目录即可生效。\r\n\r\n"
+    L"工具源码位于仓库的 tools/skinedit 目录；发布页提供打包好的 skinedit-*.zip，独立运行，无需安装到 DOpus。\r\n\r\n"
+    L"仓库：https://github.com/dsqm/DopusMdViewer",
+    /* SkinHelpOpenRepo */ L"打开仓库",
+    /* SkinHelpClose    */ L"关闭",
     /* ConfigFolder     */ L"配置目录",
     /* ConfigFolderHelp */
     L"默认位置在 DOpus 的用户数据目录，随 DOpus 配置一起备份。\r\n\r\n"

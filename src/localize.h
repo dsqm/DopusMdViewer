@@ -104,6 +104,11 @@ enum class Str : int {
   OpenLog,
   OpenConfig,
   OpenSkins,
+  SkinHelp,
+  SkinHelpTitle,
+  SkinHelpText,
+  SkinHelpOpenRepo,
+  SkinHelpClose,
   ConfigFolder,
   ConfigFolderHelp,  // 两个 %s：别名名、当前路径
   WebViewCache,
